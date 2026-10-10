@@ -39,6 +39,14 @@ never executed in either power state:
                                       power-off collides with the snapshot
                                       the first one wrote — invisible until
                                       the second cycle.
+
+FOURTH: a policy document is not gated (the roles are free, so power.tf keeps
+them across power cycles), which makes any list inside one that is built from
+a GATED resource EMPTY under `power = "off"` -- and IAM rejects a statement
+with no Resource. `resources = [for s in aws_ecs_service.this : s.id]` sat in
+the scheduler role this way and would have failed the power-off apply part-way
+through, at the policy update. Only `coalescelist(<loop>, [<match-nothing
+ARN>])` survives; try() and compact() leave an empty list empty.
 """
 
 from __future__ import annotations
@@ -257,6 +265,138 @@ def destroy_blockers(body: str, locals_text: dict[str, str]) -> list[str]:
     return found
 
 
+POLICY_DOC = re.compile(r'^data\s+"aws_iam_policy_document"\s+"([a-z0-9_]+)"\s*\{', re.M)
+_FOR_IN = re.compile(r"\bfor\s+[a-z0-9_]+(?:\s*,\s*[a-z0-9_]+)?\s+in\s+")
+
+
+def _strip_comments(text: str) -> str:
+    """Drop `#` and `//` comments, leaving string literals alone."""
+    out = []
+    for line in text.splitlines():
+        quoted = False
+        for i, ch in enumerate(line):
+            if ch == '"' and line[i - 1 : i] != "\\":
+                quoted = not quoted
+            elif not quoted and (ch == "#" or line.startswith("//", i)):
+                line = line[:i]
+                break
+        out.append(line)
+    return "\n".join(out)
+
+
+def _close(text: str, open_idx: int) -> int:
+    """Index of the bracket that closes the one at `open_idx` (len if none)."""
+    depth = 0
+    for i in range(open_idx, len(text)):
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(text)
+
+
+def _enclosing_calls(text: str, pos: int) -> list[tuple[str, int]]:
+    """(name, index of "(") of every call whose arguments contain `pos`.
+
+    String literals are skipped by toggling on `"`, so a quote nested inside a
+    `${...}` interpolation is read loosely. Nothing in a policy document needs
+    one, and a misread can only make a wrapper go unrecognised, which fails
+    the check rather than passing it.
+    """
+    stack: list[tuple[str, int]] = []
+    quoted = False
+    for i in range(pos):
+        ch = text[i]
+        if ch == '"' and text[i - 1 : i] != "\\":
+            quoted = not quoted
+        elif quoted:
+            continue
+        elif ch in "([{":
+            name = re.search(r"([a-z0-9_]+)\s*$", text[:i]) if ch == "(" else None
+            stack.append((name.group(1) if name else "", i))
+        elif ch in ")]}" and stack:
+            stack.pop()
+    return [(n, i) for n, i in reversed(stack) if n]
+
+
+def _loop_source(doc: str, start: int) -> str:
+    """The collection a `for ... in` iterates: from `start` to its `:`."""
+    depth = 0
+    for i in range(start, len(doc)):
+        ch = doc[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth < 0:
+                break
+        elif ch == ":" and depth == 0:
+            return doc[start:i]
+    return doc[start:]
+
+
+def _last_argument(args: str) -> tuple[int, str]:
+    """(offset, text) of the last top-level argument of a call's argument list."""
+    args = args.rstrip().rstrip(",")
+    depth, quoted, start = 0, False, 0
+    for i, ch in enumerate(args):
+        if ch == '"' and args[i - 1 : i] != "\\":
+            quoted = not quoted
+        elif quoted:
+            continue
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            start = i + 1
+    return start, args[start:].strip()
+
+
+def _survives_empty(doc: str, pos: int) -> bool:
+    """True if the list at `pos` sits inside a coalescelist() that has a real
+    fallback: the last argument is not `[]`, and is not where `pos` is."""
+    for name, open_idx in _enclosing_calls(doc, pos):
+        if name != "coalescelist":
+            continue
+        inner = open_idx + 1
+        offset, fallback = _last_argument(doc[inner : _close(doc, open_idx)])
+        if fallback and not re.fullmatch(r"\[\s*\]", fallback) and pos < inner + offset:
+            return True
+    return False
+
+
+def unwrapped_gated_lists(gated: set[str]) -> list[str]:
+    """Lists in an ungated policy document that go empty under power=off."""
+    found = []
+    for tf in sorted(TF.glob("*.tf")):
+        text = _strip_comments(tf.read_text())
+        for m in POLICY_DOC.finditer(text):
+            doc = text[m.start() : _close(text, m.end() - 1) + 1]
+            if GATED.search(doc):
+                # A gated document does not exist under power=off either.
+                continue
+            hits = [
+                (loop.start(), addr)
+                for loop in _FOR_IN.finditer(doc)
+                for addr in sorted(gated)
+                if re.search(rf"\b{re.escape(addr)}\b", _loop_source(doc, loop.end()))
+            ] + [
+                (s.start(), addr)
+                for addr in sorted(gated)
+                for s in re.finditer(rf"\b{re.escape(addr)}\[\*\]", doc)
+            ]
+            found += [
+                f"data.aws_iam_policy_document.{m.group(1)} builds a list from "
+                f"{addr}  ({tf.name})"
+                for pos, addr in hits
+                if not _survives_empty(doc, pos)
+            ]
+    return found
+
+
 def blocks():
     for tf in sorted(TF.glob("*.tf")):
         text = tf.read_text()
@@ -269,11 +409,14 @@ def blocks():
 
 def main() -> int:
     ungated, wrongly_gated, unknown, blocked = [], [], [], []
+    gated_addrs: set[str] = set()
     locals_text = _parse_locals("\n".join(f.read_text() for f in sorted(TF.glob("*.tf"))))
     for fname, rtype, rname, body in blocks():
         addr = f"{rtype}.{rname}  ({fname})"
         gated = bool(GATED.search(body))
         key = f"{rtype}.{rname}"
+        if gated:
+            gated_addrs.add(key)
         if key in ADDRESS_MUST_GATE:
             if not gated:
                 ungated.append(addr)
@@ -290,6 +433,7 @@ def main() -> int:
             unknown.append(addr)
         if gated:
             blocked += [f"{addr}\n      {why}" for why in destroy_blockers(body, locals_text)]
+    emptied = unwrapped_gated_lists(gated_addrs)
 
     for label, items, why in (
         (
@@ -316,6 +460,12 @@ def main() -> int:
             "power=off would fail PART WAY THROUGH, after the ALB, the NAT "
             "gateway and the ECS services are already gone",
         ),
+        (
+            "policy-document list that goes empty under power=off",
+            emptied,
+            "IAM rejects a statement with no Resource, and the policy is not "
+            "gated; wrap it as coalescelist([...], [\"arn:aws:<svc>:::<type>/none\"])",
+        ),
     ):
         if items:
             print(f"\n{len(items)} {label}:", file=sys.stderr)
@@ -323,12 +473,13 @@ def main() -> int:
                 print(f"  - {a}", file=sys.stderr)
             print(f"  -> {why}", file=sys.stderr)
 
-    if ungated or wrongly_gated or unknown or blocked:
+    if ungated or wrongly_gated or unknown or blocked or emptied:
         return 1
     total = sum(1 for _ in blocks())
     print(
         f"AWS power flag: {total} resource(s); every hourly-billed one gated, "
-        f"every stateful one kept, and every gated one destroyable."
+        f"every stateful one kept, every gated one destroyable, and no "
+        f"policy document left with an empty list."
     )
     return 0
 

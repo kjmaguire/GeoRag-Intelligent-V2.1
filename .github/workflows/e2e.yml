@@ -19,40 +19,43 @@
 # + a stub backend on plain ubuntu-latest in under three minutes. A
 # self-hosted `georag-e2e` runner is not needed and is not coming.
 #
-# What actually blocks this suite is four concrete, checkable things — all
-# verified 2026-08-21, and NONE of them a runner:
+# What actually blocks this suite is three concrete, checkable things — all
+# verified 2026-08-21 (and re-verified 2026-10-10), and NONE of them a runner:
 #
-#   1. `@playwright/test` is not in package.json. Not a version mismatch —
-#      the package is absent from dependencies and devDependencies alike,
-#      so the specs' `import { test } from '@playwright/test'` cannot even
-#      typecheck, and `npx playwright test` would fetch an unpinned package
-#      at job runtime. Adding a dependency needs a maintainer decision.
-#
-#   2. `DemoProjectSeeder` does not exist. The old job called
+#   1. `DemoProjectSeeder` does not exist. The old job called
 #      `db:seed --class=DemoProjectSeeder`; a repo-wide grep finds that name
-#      in exactly one place — the old job itself. It has never existed.
+#      in exactly one place — the old job itself. It has never existed, and
+#      the "Migrate + seed" step below still names it: that step cannot run,
+#      which is why the e2e job is gated on the preflight job.
 #
-#   3. `DemoUserSeeder` is not a substitute. It grants a demo user access to
+#   2. `DemoUserSeeder` is not a substitute. It grants a demo user access to
 #      an ALREADY-EXISTING project ("Seed a demo user with owner access to
-#      the existing project"); it creates no project. A CI database migrated
-#      from empty has nothing for it to attach to, so the specs would log in
-#      successfully and then find no project to drive.
+#      the existing project"), the hardcoded 019d74a1-fba8-7165-9ae6-a5bf93eef97d;
+#      it creates no project. `DemoHoleAnalysisSeeder` is no substitute either:
+#      it adds structures and geochemistry to that project's existing collars.
+#      A CI database migrated from empty has neither the project nor the
+#      collars, so the specs would log in successfully and then find no
+#      project to drive.
 #
-#   4. The password does not match. DemoUserSeeder hardcodes `georag2026`;
+#   3. The password does not match. DemoUserSeeder hardcodes `georag2026`;
 #      the specs default to `password` and the old job passed a
 #      `CI_DEMO_PASSWORD` secret that is not set on this repo.
 #
-# Until 1-4 are resolved this workflow is dispatch-only. That is deliberate:
+# This list used to carry a fourth: `@playwright/test` absent from
+# package.json. It is there now (^1.63.0, in package-lock.json as well), so
+# it no longer blocks anything; the preflight keeps checking it only so the
+# dependency cannot be dropped again without this job saying so.
+#
+# Until 1-3 are resolved this workflow is dispatch-only. That is deliberate:
 # a workflow that runs nothing must not appear in the PR checks list at all.
 # A stub that reports green is worse than no check, because it occupies the
 # slot where a real check would be noticed to be missing.
 #
 # To bring it online:
-#   1. `npm i -D @playwright/test` and commit the lockfile change.
-#   2. Write DemoProjectSeeder (workspace + project + membership + at least
+#   1. Write DemoProjectSeeder (workspace + project + membership + at least
 #      one ingested document, so chat-citation.spec.ts has something to cite).
-#   3. Set repo secret CI_DEMO_PASSWORD, or make the seeder read one.
-#   4. Delete the `preflight` job below. The rig after it is modelled on
+#   2. Set repo secret CI_DEMO_PASSWORD, or make the seeder read one.
+#   3. Delete the `preflight` job below. The rig after it is modelled on
 #      ci.yml's proven e2e-smoke job and should need no further changes.
 
 name: E2E — Playwright (dispatch-only, not wired)
@@ -71,7 +74,7 @@ env:
 jobs:
   # ─── Preflight ────────────────────────────────────────────────────────
   # Fails with a precise reason rather than skipping into a green tick.
-  # Delete this job once the four blockers above are cleared.
+  # Delete this job once the three blockers above are cleared.
   preflight:
     name: Preflight — are the specs runnable yet?
     runs-on: ubuntu-latest
@@ -79,17 +82,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the four known blockers
+      - name: Check the known blockers
         run: |
           blocked=0
 
+          # Resolved (see the header) and kept as a guard against regressing.
           if ! grep -q '"@playwright/test"' package.json; then
             echo "::error::@playwright/test is not in package.json — the specs cannot run"
             blocked=1
           fi
 
           if [ ! -f database/seeders/DemoProjectSeeder.php ]; then
-            echo "::error::database/seeders/DemoProjectSeeder.php does not exist — the specs have no project to drive"
+            echo "::error::database/seeders/DemoProjectSeeder.php does not exist, and no other seeder creates a project to drive (DemoUserSeeder needs project 019d74a1-… to exist already) — the 'Migrate + seed' step below would die on 'Target class [DemoProjectSeeder] does not exist'"
             blocked=1
           fi
 
@@ -105,7 +109,7 @@ jobs:
             exit 1
           fi
 
-          echo "All four blockers clear — delete the preflight job."
+          echo "All blockers clear — delete the preflight job."
 
   # ─── The real suite ───────────────────────────────────────────────────
   # Modelled on ci.yml's e2e-smoke job (ubuntu-latest, ~3 minutes), not on
@@ -170,6 +174,9 @@ jobs:
           cp .env.example .env 2>/dev/null || true
           php artisan key:generate --force
 
+      # DemoProjectSeeder does not exist yet (header, blocker 1). The preflight
+      # job fails first and keeps this step from running; write the seeder
+      # before deleting the preflight.
       - name: Migrate + seed
         run: |
           php artisan migrate --force

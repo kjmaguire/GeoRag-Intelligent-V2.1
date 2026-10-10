@@ -47,7 +47,7 @@ class CsvLithologyExporter
                 'grain_size',
                 'logged_by',
                 'logged_date',
-            ]);
+            ], escape: '');
 
             $query = DB::table('silver.lithology as l')
                 ->join('silver.collars as c', 'l.collar_id', '=', 'c.collar_id')
@@ -69,7 +69,7 @@ class CsvLithologyExporter
                 ]);
 
             if (! empty($filters['hole_id'])) {
-                $query->where('c.hole_id', $filters['hole_id']);
+                CollarExportQuery::whereHoleId($query, (string) $filters['hole_id'], 'c');
             }
             if (isset($filters['min_confidence'])) {
                 $minConf = (float) $filters['min_confidence'];
@@ -101,7 +101,7 @@ class CsvLithologyExporter
                             $row->grain_size,
                             $row->logged_by,
                             $row->logged_date,
-                        ]);
+                        ], escape: '');
                     }
                 });
         } finally {

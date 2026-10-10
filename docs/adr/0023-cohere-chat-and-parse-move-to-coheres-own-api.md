@@ -1,7 +1,8 @@
 # ADR 0023: Cohere chat and parse move to Cohere's own API
 
 - **Date**: 2026-09-15
-- **Status**: Proposed
+- **Status**: Accepted (2026-09-15); the "embeddings do not move" sub-decision
+  was superseded by ADR-0025 (2026-10-04)
 - **Deciders**: Kyle Maguire (SME)
 - **Supersedes**: ADR-0022 decision 1 (Cohere route = Amazon Bedrock, option
   D). The rest of ADR-0022 stands unchanged: AWS is still the production

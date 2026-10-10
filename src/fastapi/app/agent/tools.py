@@ -62,7 +62,7 @@ from app.agent.deps import AgentDeps
 from app.agent.log_safe import query_hash
 from app.config import settings
 from app.services.dem_elevation import EFFECTIVE_ELEVATION_SQL
-from app.services.reranker import RERANKER_BACKEND
+from app.services.reranker import RERANKER_BACKEND, reranker_backend_is_hosted
 
 
 def _metered(tool_name: str):
@@ -196,6 +196,16 @@ class CollarRecord:
     file supplied, in whatever CRS it used. The only collar geometry is
     ``geom_4326`` (the SRID-32613 ``geom`` twin was retired 2026-09-29), and
     the agent is instructed to cite these numerics verbatim.
+
+    THEIR CRS IS NOT RECORDED PER ROW. Two collars of one project can come
+    from files in different zones or units, so easting/northing are not
+    comparable between collars and are not a position on the earth; the
+    longitude / latitude pair (WGS84) is. ``georef_method``, ``crs_confidence``
+    and ``spatial_uncertainty_m`` say how far to trust where the collar sits
+    (GIS audit 2026-10). They are kept out of ``repr`` (the context window
+    shows ``position_caveat`` in words instead) and the numeric two are
+    non-content keys for the Layer 3 guard: a confidence or an uncertainty is
+    not data a claim may be grounded on.
     """
 
     hole_id: str
@@ -214,6 +224,53 @@ class CollarRecord:
     drill_date: str | None
     longitude: float | None = None
     latitude: float | None = None
+    #: silver.collars.georef_method: 'declared' | 'detected' | 'assumed' |
+    #: 'manual' | 'survey'; None when the row records none.
+    georef_method: str | None = field(default=None, repr=False)
+    #: silver.collars.crs_confidence, 0..1: how well the coordinates fit the
+    #: CRS they were read as. None when not scored.
+    crs_confidence: float | None = field(default=None, repr=False)
+    #: silver.collars.spatial_uncertainty_m: the stated horizontal
+    #: uncertainty of the position, metres. None when not recorded.
+    spatial_uncertainty_m: float | None = field(default=None, repr=False)
+    #: Plain words, no digits, for what is doubtful about the position (see
+    #: ``position_caveat``); None when nothing is.
+    position_caveat: str | None = field(default=None, repr=False)
+
+
+#: spatial_parser warns ``crs_low_confidence`` below this; the same line.
+_LOW_CRS_CONFIDENCE = 0.5
+
+
+def _as_float(value: Any) -> float | None:
+    """A REAL column as a float, None staying None."""
+    return None if value is None else float(value)
+
+
+def position_caveat(
+    georef_method: str | None, crs_confidence: float | None,
+) -> str | None:
+    """Words for what is doubtful about a collar's position, or None.
+
+    Deliberately free of digits: the confidence and the uncertainty are not
+    evidence a numeric claim may be grounded on (Layer 3), so the model is
+    told that a position is doubtful, never handed a number to quote.
+    """
+    parts: list[str] = []
+    if georef_method == "assumed":
+        parts.append("coordinate system was ASSUMED, not declared by the source file")
+    if crs_confidence is not None and crs_confidence < _LOW_CRS_CONFIDENCE:
+        parts.append("the coordinates fit their stated coordinate system poorly")
+    return "; ".join(parts) or None
+
+
+#: What easting / northing are, for every tool that returns them. No digits.
+COLLAR_COORDINATE_NOTE = (
+    "easting and northing are exactly as the source file supplied them, in that "
+    "file's own coordinate system, which is not recorded per collar and may "
+    "differ between collars; do not compare them across holes or present them "
+    "as map coordinates. longitude and latitude are WGS84."
+)
 
 
 @dataclass
@@ -233,6 +290,16 @@ class SpatialQueryResult:
     #: "timeout" / "error" when the query did not complete, so an outage is
     #: reported rather than read as "no holes" (audit item 12).
     retrieval_failure: str | None = None
+    #: How the search centre (center_easting / center_northing) was read, or
+    #: None when no centre was given: "EPSG:4326 (longitude/latitude)", the
+    #: project's declared CRS, or the 32613 DEFAULT. A centre in the wrong CRS
+    #: finds nothing, so an empty result must say which one was used.
+    centre_crs: str | None = None
+    #: True when the project declares no CRS and the 32613 default was applied
+    #: to a projected centre.
+    centre_crs_defaulted: bool = False
+    #: What easting / northing mean (see CollarRecord). No digits.
+    coordinate_note: str = COLLAR_COORDINATE_NOTE
 
 
 @dataclass
@@ -457,6 +524,9 @@ class DownholeLogsResult:
     intervals: list[LithologyInterval]
     count: int
     data_source: str  # "PostGIS silver.lithology_logs"
+    #: "timeout" / "error" when the query did not complete, so an outage is
+    #: reported rather than read as "no logs for this hole" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -786,6 +856,7 @@ async def query_spatial_collars(
     # their historical behaviour unchanged.
     workspace_id = ctx.deps.workspace_id
     spatial_filter = ""
+    centre_srid_sql: str | None = None
     bind_args: list = [project_id]
     param_idx = 2  # $1 already used for project_id
 
@@ -812,13 +883,23 @@ async def query_spatial_collars(
         # geography, so radius_m is metres wherever the project is. The
         # geography cast gives up the GIST index; a project holds thousands
         # of collars, not millions, and the project_id filter bounds it.
+        # The CRS of the centre: lon/lat when it fits, else the project's
+        # declared CRS, else the 32613 DEFAULT. Built once and reused to REPORT
+        # which was used (centre_srid_sql, $1 = project, $2/$3 = the centre) -
+        # a silent default is how a search finds nothing and nobody knows why.
+        def _centre_srid(x: str, y: str) -> str:
+            return (
+                f"CASE WHEN abs({x}::double precision) <= 180"
+                f" AND abs({y}::double precision) <= 90 THEN 4326"
+                f" ELSE COALESCE((SELECT p.crs_epsg FROM silver.projects p"
+                f" WHERE p.project_id = $1::uuid), 32613) END"
+            )
+
+        centre_srid_sql = _centre_srid("$2", "$3")
         spatial_filter = (
             f" AND ST_DWithin(geom_4326::geography, ST_Transform(ST_SetSRID("
             f"ST_MakePoint(${param_idx}::double precision, ${param_idx + 1}::double precision),"
-            f" CASE WHEN abs(${param_idx}::double precision) <= 180"
-            f" AND abs(${param_idx + 1}::double precision) <= 90 THEN 4326"
-            f" ELSE COALESCE((SELECT p.crs_epsg FROM silver.projects p"
-            f" WHERE p.project_id = $1::uuid), 32613) END), 4326)::geography,"
+            f" {_centre_srid(f'${param_idx}', f'${param_idx + 1}')}), 4326)::geography,"
             f" ${param_idx + 2}::double precision)"
         )
         bind_args.extend([center_easting, center_northing, radius_m])
@@ -850,6 +931,10 @@ async def query_spatial_collars(
         "drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
         "ST_Y(geom_4326) AS latitude, "
+        # How far to trust the position (GIS audit 2026-10): the CRS method and
+        # fit, and the stated uncertainty. The CRS of easting/northing is not
+        # on the row.
+        "georef_method, crs_confidence, spatial_uncertainty_m, "
         # Matching rows BEFORE the LIMIT: the sample below is alphabetical
         # and capped, so len(rows) says nothing about the project.
         "COUNT(*) OVER() AS total_count "
@@ -887,9 +972,40 @@ async def query_spatial_collars(
                     drill_date=row["drill_date"],
                     longitude=row["longitude"],
                     latitude=row["latitude"],
+                    georef_method=row.get("georef_method"),
+                    crs_confidence=_as_float(row.get("crs_confidence")),
+                    spatial_uncertainty_m=_as_float(row.get("spatial_uncertainty_m")),
+                    position_caveat=position_caveat(
+                        row.get("georef_method"), _as_float(row.get("crs_confidence")),
+                    ),
                 )
                 for row in rows
             ], _total
+
+    async def _centre_crs() -> tuple[str, bool] | None:
+        """Which CRS the search centre was read in, by the SAME CASE the filter uses."""
+        if centre_srid_sql is None:
+            return None
+        async with ctx.deps.acquire_scoped() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {centre_srid_sql} AS srid, "
+                "NOT EXISTS (SELECT 1 FROM silver.projects p "
+                "WHERE p.project_id = $1::uuid AND p.crs_epsg IS NOT NULL) AS defaulted",
+                project_id, center_easting, center_northing,
+            )
+        if row is None:
+            return None
+        srid, defaulted = int(row["srid"]), bool(row["defaulted"])
+        if srid == 4326:
+            return "EPSG:4326 (longitude/latitude)", False
+        if defaulted:
+            return (
+                f"EPSG:{srid} (the DEFAULT: this project declares no CRS, so the "
+                "centre was read as UTM zone 13N; if it is not, the search is in "
+                "the wrong place)",
+                True,
+            )
+        return f"EPSG:{srid} (the project's declared CRS)", False
 
     failure: str | None = None
     total_count: int | None = None
@@ -910,12 +1026,25 @@ async def query_spatial_collars(
         collars = []
         failure = "error"
 
+    centre_crs: str | None = None
+    centre_crs_defaulted = False
+    if failure is None:
+        try:
+            decided = await asyncio.wait_for(_centre_crs(), timeout=settings.TIMEOUT_POSTGIS_S)
+        except Exception:  # noqa: BLE001 - an enrichment: the search itself already ran
+            logger.warning("query_spatial_collars: could not resolve the centre CRS", exc_info=True)
+            decided = None
+        if decided is not None:
+            centre_crs, centre_crs_defaulted = decided
+
     return SpatialQueryResult(
         collars=collars,
         count=len(collars),
         data_source="PostGIS silver.collars",
         total_count=total_count,
         retrieval_failure=failure,
+        centre_crs=centre_crs,
+        centre_crs_defaulted=centre_crs_defaulted,
     )
 
 
@@ -1116,7 +1245,8 @@ async def query_downhole_logs(
         "easting, northing, elevation, "
         "total_depth, hole_type, azimuth, dip, status, drill_date::text, "
         "ST_X(geom_4326) AS longitude, "
-        "ST_Y(geom_4326) AS latitude "
+        "ST_Y(geom_4326) AS latitude, "
+        "georef_method, crs_confidence, spatial_uncertainty_m "
         "FROM silver.collars "
         f"WHERE project_id = $1 AND UPPER(hole_id) = UPPER($2){workspace_clause} "
         "LIMIT 1"
@@ -1154,6 +1284,13 @@ async def query_downhole_logs(
                 drill_date=collar_row["drill_date"],
                 longitude=collar_row["longitude"],
                 latitude=collar_row["latitude"],
+                georef_method=collar_row.get("georef_method"),
+                crs_confidence=_as_float(collar_row.get("crs_confidence")),
+                spatial_uncertainty_m=_as_float(collar_row.get("spatial_uncertainty_m")),
+                position_caveat=position_caveat(
+                    collar_row.get("georef_method"),
+                    _as_float(collar_row.get("crs_confidence")),
+                ),
             )
 
         intervals = [
@@ -1176,6 +1313,7 @@ async def query_downhole_logs(
         ]
         return collar_rec, intervals
 
+    failure: str | None = None
     try:
         collar, intervals = await asyncio.wait_for(
             _run(),
@@ -1189,6 +1327,7 @@ async def query_downhole_logs(
             hole_id,
         )
         collar, intervals = None, []
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_downhole_logs failed project=%s hole=%s",
@@ -1196,6 +1335,7 @@ async def query_downhole_logs(
             hole_id,
         )
         collar, intervals = None, []
+        failure = "error"
 
     logger.info(
         "query_downhole_logs: project=%s hole=%s intervals=%d collar_found=%s",
@@ -1210,6 +1350,7 @@ async def query_downhole_logs(
         intervals=intervals,
         count=len(intervals),
         data_source="PostGIS silver.lithology_logs",
+        retrieval_failure=failure,
     )
 
 
@@ -2568,8 +2709,10 @@ async def search_documents(
             # yes/no logits, see _Qwen3CausalReranker.predict). Both are
             # ALREADY in [0, 1]; sigmoiding them squeezes every score into
             # [0.5, 0.73] (audit item 21). Only the cross_encoder backend
-            # emits raw unbounded logits.
-            needs_sigmoid = RERANKER_BACKEND not in ("bedrock", "qwen3_causal")
+            # emits raw unbounded logits -- and only it is assumed to: a
+            # value that is not a known backend is read as probability-scale
+            # (see the floor below), never as logits.
+            needs_sigmoid = RERANKER_BACKEND == "cross_encoder"
 
             # Pair chunks with raw scores, threshold, sort, top-K.
             #
@@ -2586,12 +2729,21 @@ async def search_documents(
             #     problem, so it gets RERANKER_SCORE_THRESHOLD_PROBABILITY
             #     rather than the logit floor.
             pre_threshold_count = len(chunks)
-            if RERANKER_BACKEND == "bedrock":
-                min_score = settings.RERANKER_SCORE_THRESHOLD_HOSTED
-            elif RERANKER_BACKEND == "qwen3_causal":
+            # Only the explicit logit backend gets the logit floor (whose 0.0
+            # default is a no-op on a probability). Anything else -- bedrock,
+            # and a value that is not a backend at all (the service refuses to
+            # start with one, but this is the line that would otherwise run
+            # unfiltered) -- is held to the hosted floor. That floor (0.2) was
+            # measured against Rerank v4 and has NOT been validated on Rerank
+            # 3.5 (ADR-0022): it is a carried-over number, not a calibrated one.
+            # The score it gates IS a [0, 1] relevance score; the threshold on
+            # it is what still has to be measured.
+            if RERANKER_BACKEND == "qwen3_causal":
                 min_score = settings.RERANKER_SCORE_THRESHOLD_PROBABILITY
-            else:
+            elif RERANKER_BACKEND == "cross_encoder":
                 min_score = settings.RERANKER_SCORE_THRESHOLD
+            else:
+                min_score = settings.RERANKER_SCORE_THRESHOLD_HOSTED
             paired = [
                 (chunk, score)
                 for chunk, score in zip(chunks, raw_scores, strict=False)
@@ -2657,12 +2809,18 @@ async def search_documents(
     # precision stage, so its absence is the same typed failure as the stage
     # failing twice. Only the explicitly local/dev backends keep the
     # degrade-to-RRF path below.
-    if RERANKER_BACKEND == "bedrock":
+    #
+    # "Explicitly local" is a closed set (cross_encoder, qwen3_causal). This
+    # used to test `== "bedrock"` (2026-10-10 audit, finding 10), so any other
+    # value ("cohere", a typo) took the lenient path, failed to load a
+    # CrossEncoder and returned 12 RRF-ordered chunks with no floor.
+    if reranker_backend_is_hosted(RERANKER_BACKEND):
         logger.error(
             "RERANKER_UNAVAILABLE search_documents: RERANKER_BACKEND=%s but no "
-            "reranker is configured (empty BEDROCK_RERANK_MODEL_ID or a failed "
-            "startup); refusing to return %d unfiltered RRF-order candidates "
-            "for project=%s. This is NOT an empty corpus.",
+            "reranker is configured (empty BEDROCK_RERANK_MODEL_ID, a failed "
+            "startup or an unrecognised backend); refusing to return %d "
+            "unfiltered RRF-order candidates for project=%s. This is NOT an "
+            "empty corpus.",
             RERANKER_BACKEND,
             len(chunks),
             project_id,
@@ -3055,15 +3213,25 @@ class ProjectSummaryResult:
         "PostGIS silver.campaigns + silver.collars + "
         "silver.geophysics_surveys + silver.reports"
     )
+    #: "timeout" / "error" when the breakdown queries did not complete. The
+    #: empty breakdown is then an outage, not "the project has no data" (audit
+    #: item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
 class IngestGapStats:
-    """Bronze → silver ingest-stage coverage gap.
+    """Bronze → silver ingest-stage coverage gap, for ONE project.
 
-    indexed: count of rows in ``bronze.ingest_manifest`` for this workspace.
-    processed: count of distinct manifest rows that have a downstream
-        ``bronze.provenance`` entry pointing at a row in ``silver.reports``.
+    indexed: count of rows in ``bronze.ingest_manifest`` that belong to this
+        project -- its PLSS sections, as named in the source paths of the
+        provenance rows of its collars and reports. For a project with none
+        (it did not come from the bulk archive import; the manifest has no
+        project column and the live pipeline writes no provenance), the files
+        uploaded to it, from ``silver.ingest_progress`` (latest attempt each).
+    processed: for an archive project, count of its distinct
+        ``silver.reports`` that have a ``bronze.provenance`` entry; otherwise
+        its uploaded files whose latest attempt completed.
     gap_pct: 100 * (indexed - processed) / indexed when indexed > 0, else 0.
     """
 
@@ -3108,7 +3276,7 @@ class CoverageFindingRow:
 class CoverageGapResult:
     """Return type for ``query_coverage_gap``.
 
-    ingest_gap: bronze→silver coverage stats for the workspace.
+    ingest_gap: bronze→silver coverage stats for the project.
     attribute_coverage: per-attribute coverage rows for the project.
     findings: rows from silver.completeness_findings for this project.
     gap_geojson: FeatureCollection of project collars with per-feature
@@ -3134,6 +3302,10 @@ class CoverageGapResult:
         "silver.collars + silver.assays_v2 + silver.lithology_logs + "
         "silver.completeness_findings"
     )
+    #: "timeout" / "error" when the coverage queries did not complete. The
+    #: zeroed ingest gap and empty coverage rows are then an outage, not "no
+    #: gaps" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 # Columns the §04e schema defines that may or may not be populated.
@@ -3187,16 +3359,30 @@ async def _compute_pending_fields(
     project. Cheap: each probe is ``LIMIT 1`` on indexed columns. Failures
     degrade gracefully — on any error we fall back to the full candidate
     list so the OIUR uncertainty block is never under-stated.
+
+    One ``TIMEOUT_POSTGIS_S`` deadline covers the pool wait and all three
+    probes. ``pool.acquire()`` has no timeout of its own: with the pool
+    exhausted it waited until the whole-query deadline, so a tool that had
+    already finished its real work held the answer back for the probes
+    (audit 2026-10 finding 8). A timeout takes the same fail-closed path as
+    any other error.
     """
     if deps.pg_pool is None:
         return list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
     pending: list[str] = []
     try:
-        async with deps.pg_pool.acquire() as conn:
-            for field, sql in _PENDING_FIELD_PROBE_SQL.items():
-                row = await conn.fetchrow(sql, workspace_id, project_id)
-                if row is None:
-                    pending.append(field)
+        async with asyncio.timeout(settings.TIMEOUT_POSTGIS_S):
+            async with deps.pg_pool.acquire() as conn:
+                for field, sql in _PENDING_FIELD_PROBE_SQL.items():
+                    row = await conn.fetchrow(sql, workspace_id, project_id)
+                    if row is None:
+                        pending.append(field)
+    except TimeoutError:
+        logger.warning(
+            "_compute_pending_fields timed out after %.1fs workspace=%s project=%s",
+            settings.TIMEOUT_POSTGIS_S, workspace_id, project_id,
+        )
+        return list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
     except Exception:
         logger.exception(
             "_compute_pending_fields failed workspace=%s project=%s",
@@ -3242,6 +3428,7 @@ async def query_project_summary(
             project_id=project_id,
             workspace_id=workspace_id,
             count=0,
+            retrieval_failure="error",
         )
 
     # ── Campaigns ──
@@ -3389,6 +3576,7 @@ async def query_project_summary(
         workspace_id,
         project_id,
     )
+    failure: str | None = None
     try:
         breakdown = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
     except TimeoutError:
@@ -3398,6 +3586,7 @@ async def query_project_summary(
             project_id,
         )
         breakdown = []
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_project_summary failed workspace=%s project=%s",
@@ -3405,8 +3594,15 @@ async def query_project_summary(
             project_id,
         )
         breakdown = []
+        failure = "error"
 
-    pending_fields = await _compute_pending_fields(deps, workspace_id, project_id)
+    # Three more serial probes with no deadline of their own would only add to
+    # an outage; the full candidate list is what they fall back to on error.
+    pending_fields = (
+        list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
+        if failure
+        else await _compute_pending_fields(deps, workspace_id, project_id)
+    )
 
     return ProjectSummaryResult(
         technique_breakdown=breakdown,
@@ -3414,6 +3610,7 @@ async def query_project_summary(
         project_id=project_id,
         workspace_id=workspace_id,
         count=len(breakdown),
+        retrieval_failure=failure,
     )
 
 
@@ -3513,9 +3710,11 @@ async def query_coverage_gap(
 
     Three signals are surfaced:
 
-      1. **Ingest gap**: bronze.ingest_manifest rows for the workspace that
-         have no provenance pointer into silver.reports. The 2026-05-25
-         audit observed 39,744 indexed vs 1,209 processed (~97% gap).
+      1. **Ingest gap**: bronze.ingest_manifest rows of THIS project (found
+         through its PLSS sections, see the query below) against the
+         project's reports that have a provenance pointer. The 2026-05-25
+         audit observed 39,744 indexed vs 1,209 processed (~97% gap) --
+         for the whole workspace; a project's own numbers are its share.
 
       2. **Attribute coverage**: for each known §04e detail table
          (assays / lithology / structure / alteration / samples), what
@@ -3548,6 +3747,7 @@ async def query_coverage_gap(
             project_id=project_id,
             workspace_id=workspace_id,
             count=0,
+            retrieval_failure="error",
         )
 
     selected_dims: set[str] | None = None
@@ -3556,14 +3756,51 @@ async def query_coverage_gap(
 
     # ── Ingest stage ──
     # bronze.ingest_manifest is workspace-scoped (workspace_id column added
-    # in the 2026-05-25 bronze tenancy migration). The "processed" count
-    # is the distinct manifest_id values that appear in bronze.provenance
-    # tied to a silver.reports row — the strongest available ingest signal.
+    # in the 2026-05-25 bronze tenancy migration) and has NO project column:
+    # it is the manifest of the one-off bulk archive import, whose only
+    # project signal is `guessed_project`, a PLSS section token. This used to
+    # count the whole workspace's manifest against the whole workspace's
+    # processed reports, so a project answer reported every OTHER project's
+    # file counts too (2026-10-10 audit, finding 12): a 40,000-file archive in
+    # the workspace read as a 97 % ingest gap on a project that had none of it.
+    #
+    # The project's rows are found the way the Sources page finds them
+    # (SourcesController::resolveProjectSections): the PLSS sections named in
+    # the source paths of the provenance rows of THIS project's collars and
+    # reports. The "processed" count is the distinct reports of this project
+    # that appear in bronze.provenance -- the strongest available ingest
+    # signal for that archive.
+    #
+    # A project that did not come from the archive (everything uploaded
+    # through the live pipeline, which writes no provenance) has no sections,
+    # and reporting it as 0 / 0 told the model nothing had been ingested. Its
+    # files are in silver.ingest_progress instead: indexed is its files (the
+    # latest attempt of each), processed the ones that completed. The two
+    # sources are never added together, so nothing is counted twice.
     ingest_sql = """
         WITH indexed AS (
             SELECT COUNT(*)::int AS n
-            FROM bronze.ingest_manifest
-            WHERE workspace_id = $1::uuid
+            FROM bronze.ingest_manifest m
+            WHERE m.workspace_id = $1::uuid
+              AND m.guessed_project IN (
+                  SELECT substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/')
+                  FROM bronze.provenance bp
+                  WHERE bp.workspace_id = $1::uuid
+                    AND bp.target_schema = 'silver'
+                    AND bp.target_table = 'collars'
+                    AND bp.target_id IN (
+                        SELECT c.collar_id FROM silver.collars c WHERE c.project_id = $2::uuid
+                    )
+                  UNION
+                  SELECT substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/')
+                  FROM bronze.provenance bp
+                  WHERE bp.workspace_id = $1::uuid
+                    AND bp.target_schema = 'silver'
+                    AND bp.target_table = 'reports'
+                    AND bp.target_id IN (
+                        SELECT r.report_id FROM silver.reports r WHERE r.project_id = $2::uuid
+                    )
+              )
         ),
         processed AS (
             SELECT COUNT(DISTINCT bp.target_id)::int AS n
@@ -3571,9 +3808,24 @@ async def query_coverage_gap(
             JOIN silver.reports r ON r.report_id = bp.target_id::uuid
             WHERE bp.workspace_id = $1::uuid
               AND r.workspace_id = $1::uuid
+              AND r.project_id = $2::uuid
+        ),
+        live AS (
+            -- The live upload pipeline: silver.ingest_progress holds one row
+            -- per run, and the latest attempt of a file is that file's state.
+            SELECT COUNT(*)::int AS indexed_n,
+                   (COUNT(*) FILTER (WHERE latest.status = 'completed'))::int AS done_n
+            FROM (
+                SELECT DISTINCT ON (ip.minio_key) ip.status
+                FROM silver.ingest_progress ip
+                WHERE ip.workspace_id = $1::uuid
+                  AND ip.project_id = $2::uuid
+                ORDER BY ip.minio_key, ip.attempt_number DESC, ip.started_at DESC
+            ) latest
         )
-        SELECT indexed.n AS indexed_n, processed.n AS processed_n
-        FROM indexed, processed
+        SELECT CASE WHEN indexed.n > 0 THEN indexed.n ELSE live.indexed_n END AS indexed_n,
+               CASE WHEN indexed.n > 0 THEN processed.n ELSE live.done_n END AS processed_n
+        FROM indexed, processed, live
     """
 
     # ── Per-attribute coverage ──
@@ -3670,19 +3922,27 @@ async def query_coverage_gap(
         async with deps.pg_pool.acquire() as conn:
             # Ingest stage
             try:
-                ingest_row = await conn.fetchrow(ingest_sql, workspace_id)
+                ingest_row = await conn.fetchrow(ingest_sql, workspace_id, project_id)
             except Exception:
                 logger.exception(
-                    "query_coverage_gap: ingest stage query failed workspace=%s",
+                    "query_coverage_gap: ingest stage query failed workspace=%s "
+                    "project=%s",
                     workspace_id,
+                    project_id,
                 )
                 ingest_row = None
 
             if ingest_row is not None:
                 indexed = int(ingest_row["indexed_n"] or 0)
                 processed = int(ingest_row["processed_n"] or 0)
+                # Clamped: the archive path's two counts are different
+                # populations (manifest rows in the project's sections vs its
+                # reports with provenance), so processed can exceed indexed,
+                # and a negative "gap" means nothing.
                 gap_pct = (
-                    100.0 * (indexed - processed) / indexed if indexed > 0 else 0.0
+                    min(100.0, max(0.0, 100.0 * (indexed - processed) / indexed))
+                    if indexed > 0
+                    else 0.0
                 )
                 ingest_gap = IngestGapStats(
                     indexed=indexed, processed=processed, gap_pct=round(gap_pct, 2)
@@ -3791,6 +4051,7 @@ async def query_coverage_gap(
         project_id,
         sorted(selected_dims) if selected_dims else "(all)",
     )
+    failure: str | None = None
     try:
         ingest_gap, attribute_coverage, findings, gap_geojson = await asyncio.wait_for(
             _run(), timeout=settings.TIMEOUT_POSTGIS_S
@@ -3805,6 +4066,7 @@ async def query_coverage_gap(
         attribute_coverage = []
         findings = []
         gap_geojson = None
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_coverage_gap failed workspace=%s project=%s",
@@ -3815,6 +4077,7 @@ async def query_coverage_gap(
         attribute_coverage = []
         findings = []
         gap_geojson = None
+        failure = "error"
 
     total_count = (
         (1 if ingest_gap.indexed > 0 else 0)
@@ -3830,6 +4093,7 @@ async def query_coverage_gap(
         workspace_id=workspace_id,
         count=total_count,
         gap_geojson=gap_geojson,
+        retrieval_failure=failure,
     )
 
 
@@ -3879,6 +4143,10 @@ class StereonetResult:
     data_source: str = (
         "PostGIS gold.structure_measurements_visual + mplstereonet server-render"
     )
+    #: Measurements on record that have no orientation (a NULL dip or dip
+    #: direction, so no stereonet x/y) and are therefore NOT plotted. They used
+    #: to be plotted at the centre of the net, i.e. as horizontal beds.
+    unoriented_count: int = 0
 
 
 # Cap render size so a project with thousands of measurements doesn't
@@ -4091,14 +4359,28 @@ async def query_stereonet(
         )
         raw_rows = []
 
-    sampled = _downsample_stereonet_points(raw_rows)
+    # promote_silver_to_gold writes stereonet_x/_y exactly when it writes a dip
+    # and a dip direction, and NULL otherwise: a NULL pair means the
+    # measurement has no orientation. It used to be coerced to 0.0 - the centre
+    # of the net, where the pole of a HORIZONTAL bed plots - which invented a
+    # population of flat-lying structures (GIS audit 2026-10). Never substitute
+    # 0: leave the row out and count it. Done before the downsample so the cap
+    # is not spent on rows that cannot be drawn.
+    oriented = [
+        r for r in raw_rows
+        if r.get("stereonet_x") is not None and r.get("stereonet_y") is not None
+    ]
+    unoriented = len(raw_rows) - len(oriented)
+    if unoriented:
+        logger.info(
+            "query_stereonet: %d of %d measurement(s) have no orientation and "
+            "are not plotted project=%s",
+            unoriented, len(raw_rows), project_id,
+        )
+    sampled = _downsample_stereonet_points(oriented)
 
     points: list[StereonetPoint] = []
     for r in sampled:
-        # Defensive: stereonet_x/_y are mandatory in the gold table for
-        # planar measurements but lineation-only rows may carry NULLs.
-        # Fall back to 0/0 so the dataclass shape is preserved; the
-        # renderer uses strike/dip or trend/plunge directly anyway.
         points.append(StereonetPoint(
             depth=r.get("depth"),
             structure_type=r.get("structure_type") or "other",
@@ -4107,8 +4389,8 @@ async def query_stereonet(
             dip_direction_deg=r.get("dip_direction_deg"),
             plunge_deg=r.get("plunge_deg"),
             trend_deg=r.get("trend_deg"),
-            stereonet_x=float(r.get("stereonet_x") or 0.0),
-            stereonet_y=float(r.get("stereonet_y") or 0.0),
+            stereonet_x=float(r["stereonet_x"]),
+            stereonet_y=float(r["stereonet_y"]),
             source_row_id=str(r.get("source_row_id") or ""),
         ))
 
@@ -4129,6 +4411,7 @@ async def query_stereonet(
         project_id=project_id,
         workspace_id=workspace_id,
         count=len(points),
+        unoriented_count=unoriented,
     )
 
 
@@ -4155,12 +4438,21 @@ class DrillTraceCollar:
     total_depth: float | None
     hole_type: str
     status: str
-    azimuth: float
-    dip: float
+    #: The collar row's own azimuth / dip, as stored - None when the row
+    #: records none. They were COALESCEd to 0 / -90 (due north, vertical)
+    #: in SQL until the GIS audit 2026-10, which made "not recorded" read as
+    #: a recorded vertical hole.
+    azimuth: float | None
+    dip: float | None
     # 2 points (collar + toe) for straight-line traces; N points along
     # the LINESTRINGZ for surveyed deviation. Each carries depth_m so
     # the React layer can interpolate interval colouring along the trace.
     trace_points: list[dict]
+    #: Where the drawn path's direction comes from: "surveyed" (the stored
+    #: desurveyed trace) or "unknown" (no stored trace - the path is a
+    #: vertical placeholder whose toe is flagged ``extrapolated`` + ``assumed``,
+    #: drawn from nothing but the collar position and total depth).
+    orientation: str = "unknown"
 
 
 @dataclass
@@ -4318,8 +4610,8 @@ async def query_drill_traces_3d(
             c.status                                            AS status,
             COALESCE({EFFECTIVE_ELEVATION_SQL}, 0.0)::float AS elevation,
             c.total_depth::float                                AS total_depth,
-            COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
-            COALESCE(c.dip, -90.0)::float                       AS dip,
+            c.azimuth::float                                    AS azimuth,
+            c.dip::float                                        AS dip,
             ST_X(c.geom_4326)::float                            AS longitude,
             ST_Y(c.geom_4326)::float                            AS latitude,
             ST_AsText(t.geom)                                   AS trace_wkt
@@ -4376,9 +4668,9 @@ async def query_drill_traces_3d(
         if not cid:
             continue
         # GIS-8/GIS-21: position from geom_4326, and a collar without one is
-        # skipped — `or 0.0` drew it on Null Island. `is None`, not `or`,
-        # for the attitude too: `dip or -90.0` turned a horizontal hole
-        # (dip 0.0) into a vertical one.
+        # skipped — `or 0.0` drew it on Null Island. The attitude is kept as
+        # stored, `is None` and never `or`: `dip or -90.0` turned a horizontal
+        # hole (dip 0.0) into a vertical one.
         if r.get("longitude") is None or r.get("latitude") is None:
             continue
         lon = float(r["longitude"])
@@ -4388,8 +4680,10 @@ async def query_drill_traces_3d(
         # stored trace (if any) is drawn as-is, and the placeholder below
         # collapses to the collar point rather than inventing a length.
         td = float(r["total_depth"]) if r.get("total_depth") is not None else None
-        az = float(r["azimuth"]) if r.get("azimuth") is not None else 0.0
-        dip = float(r["dip"]) if r.get("dip") is not None else -90.0
+        # As stored: None means the collar row records no orientation. It is
+        # NOT 0 (due north) / -90 (vertical) - that was the old COALESCE.
+        az = float(r["azimuth"]) if r.get("azimuth") is not None else None
+        dip = float(r["dip"]) if r.get("dip") is not None else None
 
         wkt_points = _parse_linestring_z_points(r.get("trace_wkt") or "")
         if wkt_points:
@@ -4398,18 +4692,34 @@ async def query_drill_traces_3d(
             # INDEX, which misplaced every interval on unevenly spaced surveys.
             from app.agent.trace_depth import trace_points_with_depth  # noqa: PLC0415
 
+            # `collar=` is the backstop for traces built before the collar
+            # vertex was written: depth is measured from vertex 0, so vertex 0
+            # has to be the collar (GIS audit 2026-10).
             trace_points = trace_points_with_depth(
                 wkt_points, td, max_points=_DRILL_TRACE_MAX_POINTS_PER_TRACE,
+                collar=(lon, lat, elev),
             )
+            orientation = "surveyed"
         else:
             # Fallback when silver.drill_traces has no row for this
             # collar (e.g. unusable orientation). Emit a 2-point vertical
             # placeholder so the card still renders the hole position.
+            #
+            # The placeholder is NOT a measurement and must not read as one:
+            # nothing says the hole is vertical, or that it is placeholder_td
+            # long when td is None (it then collapses to the collar point).
+            # Its toe is flagged `extrapolated` - the card already draws
+            # those dashed - and `assumed`, and the collar says its
+            # orientation is "unknown" (GIS audit 2026-10).
             placeholder_td = td or 0.0
             trace_points = [
-                {"x": lon, "y": lat, "z": elev, "depth_m": 0.0},
-                {"x": lon, "y": lat, "z": elev - placeholder_td, "depth_m": placeholder_td},
+                {"x": lon, "y": lat, "z": elev, "depth_m": 0.0, "extrapolated": False},
+                {
+                    "x": lon, "y": lat, "z": elev - placeholder_td,
+                    "depth_m": placeholder_td, "extrapolated": True, "assumed": True,
+                },
             ]
+            orientation = "unknown"
 
         collars.append(DrillTraceCollar(
             hole_id=str(r.get("hole_id") or ""),
@@ -4423,6 +4733,7 @@ async def query_drill_traces_3d(
             azimuth=az,
             dip=dip,
             trace_points=trace_points,
+            orientation=orientation,
         ))
         collar_ids.append(cid)
 

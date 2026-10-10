@@ -39,6 +39,12 @@ export interface StereonetMeta {
     image_base64: string;
     projection: string;
     structure_count: number;
+    /**
+     * Measurements on record with no orientation (a missing dip or dip
+     * direction): not plotted, because the centre of the net is where a
+     * horizontal bed's pole belongs, not where "unknown" does.
+     */
+    unoriented_count?: number;
     points: StereonetPoint[];
 }
 
@@ -100,6 +106,11 @@ export default function StereonetCard({ meta, onPointClick }: StereonetCardProps
             >
                 <Chip>{projection}</Chip>
                 <Chip>{structureCount} pts</Chip>
+                {(meta.unoriented_count ?? 0) > 0 && (
+                    <span data-testid="stereonet-unoriented">
+                        <Chip>{meta.unoriented_count} without orientation, not plotted</Chip>
+                    </span>
+                )}
             </div>
 
             <div className="flex-1 flex items-center justify-center p-3 min-h-0">

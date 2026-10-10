@@ -44,7 +44,8 @@ class CollarControllerTest extends TestCase
         Survey::getModel()->setTable('surveys');
 
         $this->user = User::factory()->create();
-        $this->project = Project::factory()->create();
+        // A stated coordinate system: store() refuses a collar it cannot place.
+        $this->project = Project::factory()->create(['crs_epsg' => 32613]);
 
         // Attach the user to the project so the hasProjectAccess gate (A2-02 fix)
         // passes for all tests that operate against $this->project.
@@ -201,6 +202,45 @@ class CollarControllerTest extends TestCase
         )
             ->assertStatus(422)
             ->assertJsonValidationErrors('hole_id');
+    }
+
+    public function test_show_sends_the_well_log_curves_the_strip_log_draws(): void
+    {
+        $collar = Collar::factory()->create(['project_id' => $this->project->project_id]);
+        $workspaceId = DB::table('silver.projects')->where('project_id', $this->project->project_id)->value('workspace_id');
+        $insert = function (string $name, ?string $unit, array $depths) use ($collar, $workspaceId): void {
+            DB::table('silver.well_log_curves')->insert([
+                'curve_id' => (string) Str::uuid(),
+                'collar_id' => $collar->collar_id,
+                'workspace_id' => $workspaceId,
+                'curve_name' => $name,
+                'curve_unit' => 'GAPI',
+                'min_depth' => min($depths),
+                'max_depth' => max($depths),
+                'step' => 0.1,
+                'sample_count' => count($depths),
+                'las_version' => '2.0',
+                'depths' => '{'.implode(',', $depths).'}',
+                'values' => '{'.implode(',', array_map(fn ($d) => $d * 2, $depths)).'}',
+                'depth_unit' => $unit,
+            ]);
+        };
+        // 2,500 samples (0.1 m over 250 m): thinned to at most 1,000.
+        $insert('GR', 'm', array_map(fn (int $i): float => $i / 10, range(0, 2499)));
+        // A legacy row in an unrecorded unit cannot be placed on the metre axis.
+        $insert('OLD', null, [0.0, 1.0, 2.0]);
+
+        $response = $this->actingAs($this->user)
+            ->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}")
+            ->assertOk();
+
+        $curves = $response->json('data.well_log_curves');
+        $this->assertSame(['GR'], array_column($curves, 'curve_name'));
+        $this->assertSame(2500, $curves[0]['sample_count']);
+        $this->assertLessThanOrEqual(1000, count($curves[0]['depths']));
+        $this->assertSame(count($curves[0]['depths']), count($curves[0]['values']));
+        $this->assertEquals(0.0, $curves[0]['depths'][0]);
+        $this->assertEquals(0.0, $curves[0]['values'][0]);
     }
 
     public function test_index_returns_404_for_nonexistent_project(): void
@@ -396,6 +436,71 @@ class CollarControllerTest extends TestCase
         $response->assertUnprocessable()->assertJsonValidationErrors(['total_depth']);
     }
 
+    public function test_store_places_the_collar_in_its_workspace(): void
+    {
+        // geom_4326 is the only thing that puts a collar on the map, in the
+        // traces and in the agent's spatial tools, and no trigger derives it.
+        // workspace_id is NOT NULL once the raw RLS block has run.
+        $response = $this->postJson("/api/v1/projects/{$this->project->project_id}/collars", [
+            'hole_id' => 'GEO-01',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'Diamond',
+        ])->assertCreated();
+
+        $row = DB::selectOne(
+            'SELECT workspace_id::text AS workspace_id, georef_method, status,
+                    ST_X(geom_4326) AS lon, ST_Y(geom_4326) AS lat
+               FROM silver.collars WHERE collar_id = ?::uuid',
+            [$response->json('data.collar_id')],
+        );
+
+        $this->assertSame((string) $this->project->workspace_id, $row->workspace_id);
+        $this->assertSame('manual', $row->georef_method);
+        $this->assertSame('unknown', $row->status);
+        $this->assertEqualsWithDelta(-106.397176, (float) $row->lon, 1e-5);
+        $this->assertEqualsWithDelta(61.237111, (float) $row->lat, 1e-5);
+    }
+
+    public function test_store_refuses_a_collar_with_no_coordinate_system(): void
+    {
+        $project = Project::factory()->create(['crs_epsg' => null]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->postJson("/api/v1/projects/{$project->project_id}/collars", [
+            'hole_id' => 'NOCRS-01',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'Diamond',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['crs_epsg']);
+
+        $this->postJson("/api/v1/projects/{$project->project_id}/collars", [
+            'hole_id' => 'NOCRS-01',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'Diamond',
+            'crs_epsg' => 32613,
+        ])->assertCreated();
+    }
+
+    public function test_store_answers_a_non_member_404_before_checking_the_hole_id(): void
+    {
+        // Validation used to run first: "This hole ID already exists" (422)
+        // for another tenant's hole and 404 otherwise told a non-member
+        // which hole ids a project they could name had drilled.
+        $other = Project::factory()->create(['crs_epsg' => 32613]);
+        Collar::factory()->create(['project_id' => $other->project_id, 'hole_id' => 'SECRET-01']);
+
+        foreach (['SECRET-01', 'NOPE-01'] as $holeId) {
+            $this->postJson("/api/v1/projects/{$other->project_id}/collars", [
+                'hole_id' => $holeId,
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
+                'hole_type' => 'Diamond',
+            ])->assertNotFound()->assertExactJson(['message' => 'Project not found.']);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // show
     // -------------------------------------------------------------------------
@@ -468,6 +573,107 @@ class CollarControllerTest extends TestCase
         $methods = array_column($response->json('data.surveys'), 'survey_method');
         sort($methods);
         $this->assertSame(['desurveyed_trace', 'unknown'], $methods);
+    }
+
+    public function test_index_and_show_survive_a_hole_type_and_status_outside_the_vocabulary(): void
+    {
+        // THE BUG THIS PINS. hole_type and status are free text capped at
+        // varchar(20), and the ingestion stores whatever the collar file said
+        // ("DDH", "Core", "Closed", "completed" — silver_row_guard.py). Cast
+        // straight to the HoleType / CollarStatus enums, reading such a row
+        // threw a ValueError, the controller's catch-all turned it into a 500,
+        // and it did so for EVERY page of the list containing the row and for
+        // GET .../collars/{id}.
+        //
+        // Inserted raw because that is how it happens: the ingestion writes to
+        // Postgres from Python and never passes through Eloquent, so the `set`
+        // cast that refuses this value is not in the path. The factory would
+        // test the guard instead of the bug.
+        $ingested = (string) Str::uuid();
+        DB::table(Collar::getModel()->getTable())->insert([
+            'collar_id' => $ingested,
+            'hole_id' => 'LEB 23/001',
+            'project_id' => $this->project->project_id,
+            'workspace_id' => $this->project->workspace_id,
+            'easting' => 500000.0,
+            'northing' => 4500000.0,
+            'hole_type' => 'DDH',
+            'status' => 'Closed',
+        ]);
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_type' => 'RC',
+            'status' => 'Active',
+        ]);
+
+        $index = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars");
+
+        $index->assertOk();
+        $this->assertCount(2, $index->json('data'));
+        $row = collect($index->json('data'))->firstWhere('collar_id', $ingested);
+        // The stored words come back, not a blank: nothing is lost by degrading.
+        $this->assertSame('DDH', $row['hole_type']);
+        $this->assertSame('Closed', $row['status']);
+
+        $show = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$ingested}");
+
+        $show->assertOk()
+            ->assertJsonPath('data.hole_type', 'DDH')
+            ->assertJsonPath('data.status', 'Closed');
+    }
+
+    public function test_in_vocabulary_values_serialise_exactly_as_they_did(): void
+    {
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_type' => 'Diamond',
+            'status' => 'Completed',
+        ]);
+
+        $row = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars")
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertSame('Diamond', $row['hole_type']);
+        $this->assertSame('Completed', $row['status']);
+    }
+
+    public function test_show_projects_the_geochemistry_columns_the_table_has(): void
+    {
+        // The resource emitted element / value / unit / method, which are
+        // silver.assays_v2's columns, not silver.geochemistry's — so all four
+        // were null on every row and the real results never reached the API.
+        $collar = Collar::factory()->create(['project_id' => $this->project->project_id]);
+        $geochemId = (string) Str::uuid();
+        DB::table('geochemistry')->insert([
+            'geochem_id' => $geochemId,
+            'collar_id' => $collar->collar_id,
+            'project_id' => $this->project->project_id,
+            'workspace_id' => $this->project->workspace_id,
+            'geom' => DB::raw('ST_SetSRID(ST_MakePoint(-105.5, 57.2), 4326)'),
+            'from_depth' => 10.0,
+            'to_depth' => 11.0,
+            'sample_id' => 'G-0001',
+            'sample_type' => 'drillhole_pulp',
+            'sio2_wt_pct' => 62.5,
+            'mgo_wt_pct' => 3.1,
+            'mg_number' => 0.55,
+            'assay_values_ppm' => json_encode(['Cu' => 1200.5, 'Au' => 0.4]),
+        ]);
+
+        $row = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}")
+            ->assertOk()
+            ->json('data.geochemistry.0');
+
+        $this->assertSame($geochemId, $row['geochem_id']);
+        $this->assertSame('G-0001', $row['sample_id']);
+        $this->assertSame('drillhole_pulp', $row['sample_type']);
+        $this->assertEquals(62.5, $row['sio2_wt_pct']);
+        $this->assertEquals(0.55, $row['mg_number']);
+        $this->assertEquals(['Cu' => 1200.5, 'Au' => 0.4], $row['assay_values_ppm']);
+        foreach (['element', 'value', 'unit', 'method'] as $notAColumn) {
+            $this->assertArrayNotHasKey($notAColumn, $row);
+        }
     }
 
     public function test_show_returns_404_for_collar_in_wrong_project(): void

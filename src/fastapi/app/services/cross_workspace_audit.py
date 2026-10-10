@@ -17,6 +17,7 @@ operators can ack it. The hash-chain trigger covers integrity.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from uuid import UUID
@@ -35,6 +36,26 @@ _REDIS_KEY_PREFIX = "georag:xworkspace_audit"
 
 def _idempotency_key(actor_id: int | None, target_workspace_id: UUID) -> str:
     return f"{_REDIS_KEY_PREFIX}:{actor_id or 0}:{target_workspace_id}"
+
+
+async def _release_claim(redis_client: Any, key: str) -> None:
+    """Give the dedupe window back after an alert that was never written.
+
+    The window is claimed BEFORE the audit row is written (SET NX is what keeps
+    two concurrent requests from both writing one). If the write then fails and
+    the claim stays, the next hour of the same attempt is de-duplicated against a
+    row that does not exist: the alert is suppressed with nothing recorded.
+    Best-effort — a Redis that cannot delete leaves the old behaviour, no worse.
+    """
+    try:
+        await redis_client.delete(key)
+    except Exception:
+        logger.warning(
+            "cross_workspace_audit: could not release the idempotency key %s "
+            "after a failed emit; the alert stays suppressed until it expires",
+            key,
+            exc_info=True,
+        )
 
 
 async def emit_cross_workspace_alert(
@@ -58,6 +79,7 @@ async def emit_cross_workspace_alert(
     shouldn't have the alert emission turn a 403 into a 500.
     """
     # Idempotency check (best-effort — fail open if Redis is down).
+    claimed_key: str | None = None  # the window we hold, to give back on failure
     if redis_client is not None:
         key = _idempotency_key(actor_user_id, target_workspace_id)
         try:
@@ -71,6 +93,7 @@ async def emit_cross_workspace_alert(
                     window_s, actor_user_id, target_workspace_id,
                 )
                 return False
+            claimed_key = key
         except Exception:
             logger.warning(
                 "cross_workspace_audit: Redis idempotency check failed; "
@@ -108,7 +131,14 @@ async def emit_cross_workspace_alert(
             "cross_workspace_audit: emit_audit failed actor=%s target=%s",
             actor_user_id, target_workspace_id,
         )
+        if claimed_key is not None:
+            await _release_claim(redis_client, claimed_key)
         return False
+    except asyncio.CancelledError:
+        # The request was torn down mid-write: no row, so no claim either.
+        if claimed_key is not None:
+            await _release_claim(redis_client, claimed_key)
+        raise
 
 
 __all__ = [

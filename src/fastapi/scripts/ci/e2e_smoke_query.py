@@ -12,8 +12,26 @@ tests/test_jwt_auth.py::_mint for the pattern this mirrors), calls
 POST /internal/queries, reads the SSE stream, and asserts:
 
   1. A `completed` event arrives (not `failed`/`timeout`).
-  2. Its GeoRAGResponse has >= 1 citation.
-  3. That citation has a non-empty `source_chunk_id`.
+  2. It is NOT a refusal: `refusal_payload` is unset. A Layer 1 retrieval-
+     quality refusal is a perfectly well-formed `completed` frame, so
+     "a completed event arrived" proves nothing about retrieval.
+  3. At least one citation carries a REAL `source_chunk_id`.
+     `GeoRAGResponse` requires >= 1 citation (`min_length=1`), so the
+     assembler fills the slot with a sentinel when nothing was retrieved
+     (`no-tool-call`, `georag_reports:empty`, ...). Those are
+     `app.agent.response_assembler.EMPTY_SOURCE_SENTINELS`, imported rather
+     than copied so this gate cannot drift from the producer.
+  4. That citation is a chunk of the report the ingest leg wrote
+     (`georag_reports:<report_id>:section=..:chunk=..`), so retrieval is
+     shown to have found the ingested document and not just any row.
+
+Why 2-4 exist: this script used to check only that `citations` was non-empty
+and the first `source_chunk_id` was truthy. A change that broke query-time
+retrieval (workspace filter, embedding dimension, score floor) turned every
+query into a Layer 1 refusal carrying a `no-tool-call` sentinel, and the job
+printed "OK". The decision logic lives in `judge_completed`, which
+tests/test_e2e_smoke_query_oracle.py drives with frames built by the real
+assembler.
 
 Query phrasing note
 --------------------
@@ -37,9 +55,18 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
+from typing import Any
 
 import httpx
 import jwt
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # -> src/fastapi
+
+# The producer's own sentinel set. Importing it (instead of mirroring the
+# literals) is the point: when the assembler grows a new placeholder id this
+# gate picks it up the same day. The ingest leg imports `app.*` the same way.
+from app.agent.response_assembler import EMPTY_SOURCE_SENTINELS  # noqa: E402
 
 
 def _mint_jwt(*, secret: str, project_id: str, workspace_id: str) -> str:
@@ -57,11 +84,63 @@ def _mint_jwt(*, secret: str, project_id: str, workspace_id: str) -> str:
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
+def judge_completed(completed: dict[str, Any], *, report_id: str) -> list[str]:
+    """Why this `completed` frame is NOT a grounded, cited answer.
+
+    Returns one human-readable reason per failed check; an empty list means
+    the frame passes. Pure (no I/O) so tests/test_e2e_smoke_query_oracle.py can
+    feed it frames built by the real assembler and prove each failure mode is
+    actually caught.
+    """
+    problems: list[str] = []
+
+    refusal = completed.get("refusal_payload")
+    if refusal:
+        reason = refusal.get("reason_code") if isinstance(refusal, dict) else refusal
+        problems.append(
+            f"completed frame is a REFUSAL (refusal_payload.reason_code={reason!r}) -- "
+            "retrieval returned nothing usable, so the money path is broken"
+        )
+
+    citations = completed.get("citations") or []
+    if not citations:
+        problems.append("completed event has ZERO citations -- money path broken")
+        return problems
+
+    chunk_ids = [str(c.get("source_chunk_id") or "") for c in citations]
+    real = [cid for cid in chunk_ids if cid and cid not in EMPTY_SOURCE_SENTINELS]
+    if not real:
+        problems.append(
+            "every citation is an empty-source sentinel, i.e. nothing was actually "
+            f"retrieved to cite: {chunk_ids}"
+        )
+        return problems
+
+    # source_chunk_id is `georag_reports:<report_id>:section=..:chunk=..`
+    # (response_assembler._source_chunk_id_for_doc_chunk). Anything else -- a
+    # structured-tool id, a public-geoscience id -- is real evidence but not
+    # evidence that THIS ingest leg's document was found.
+    prefix = f"georag_reports:{report_id.lower()}:"
+    if not any(cid.lower().startswith(prefix) for cid in real):
+        problems.append(
+            f"no citation is a chunk of the ingested report {report_id!r} "
+            f"(expected a source_chunk_id starting {prefix!r}); got {real}"
+        )
+
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--workspace-id", required=True)
+    # Required, not optional: a gate that quietly falls back to a weaker check
+    # when its input is missing is how the sentinel hole stayed open.
+    parser.add_argument(
+        "--report-id", required=True,
+        help="silver.reports.report_id the ingest leg wrote (its `report_id` output)",
+    )
     parser.add_argument(
         "--query", default="What does the report say about hole PLS-22-08?",
     )
@@ -122,17 +201,16 @@ def main() -> int:
     print(f"query: completed. text_first_160={completed.get('text', '')[:160]!r}")
     print(f"query: citations={len(citations)}")
 
-    if not citations:
-        print("query: completed event has ZERO citations -- money path broken", file=sys.stderr)
+    problems = judge_completed(completed, report_id=args.report_id)
+    if problems:
+        for problem in problems:
+            print(f"query: {problem}", file=sys.stderr)
         return 1
 
-    first = citations[0]
-    chunk_id = first.get("source_chunk_id")
-    if not chunk_id:
-        print(f"query: first citation missing source_chunk_id: {first}", file=sys.stderr)
-        return 1
-
-    print(f"query: OK -- citation[0].source_chunk_id={chunk_id!r}")
+    print(
+        "query: OK -- cited answer grounded in the ingested report "
+        f"{args.report_id}; citation[0].source_chunk_id={citations[0].get('source_chunk_id')!r}"
+    )
     return 0
 
 

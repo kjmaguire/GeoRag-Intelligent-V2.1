@@ -92,6 +92,11 @@ class _RecordingConn:
     async def execute(self, sql: str, *args):
         return "SET"
 
+    async def fetch(self, sql: str, *args):
+        # The stored-curve read (las_curve_conflicts.fetch_stored_curves):
+        # this hole holds no curves yet.
+        return []
+
     async def fetchval(self, sql: str, *args):
         return self.existing_project or _NEW_PJ
 

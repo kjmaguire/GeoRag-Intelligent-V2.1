@@ -71,7 +71,7 @@ assert() {
   local ok=1
   if [ "$expect" = "ok" ] && [ "$rc" -ne 0 ]; then ok=0; fi
   if [ "$expect" = "fail" ] && [ "$rc" -eq 0 ]; then ok=0; fi
-  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -qF "$needle"; then ok=0; fi
+  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -qF -- "$needle"; then ok=0; fi
 
   if [ "$ok" -eq 1 ]; then
     PASS=$((PASS + 1))
@@ -125,6 +125,27 @@ d="$(fixture)"
 mutate "$d" "${K8S}" 's|mountPath: /data|mountPath: /var/lib/nothing|'
 assert "k8s: appendonly yes after losing the volume is rejected" fail \
   "cost without durability" "$d"
+
+# --- the --save "" half of the Azure port ------------------------------
+# AOF on and --save omitted is not "AOF only": Redis's built-in save points
+# stay active and fork to snapshot the same dataset. The check used to look for
+# a missing --save only when AOF was OFF, so the Helm chart and all three k8s
+# renders shipped AOF with default RDB and passed. Removing the flag from any
+# of them has to fail now.
+d="$(fixture)"
+mutate "$d" "${HELM_TPL}" '/--save "" \\$/d'
+assert "helm: appendonly yes with no --save is rejected" fail \
+  "--appendonly yes but --save is absent" "$d"
+
+d="$(fixture)"
+mutate "$d" "${K8S}" '/--save "" \\$/d'
+assert "k8s: appendonly yes with no --save is rejected" fail \
+  "--appendonly yes but --save is absent" "$d"
+
+d="$(fixture)"
+mutate "$d" "${TF}" '/"--save '"''"'",/d'
+assert "terraform: appendonly yes with no --save is rejected" fail \
+  "runs --appendonly yes with no --save" "$d"
 
 # --- rule 2, both directions -----------------------------------------
 # The live drift: maxmemory equal to the container limit. Redis's guard

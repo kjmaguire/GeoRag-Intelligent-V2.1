@@ -87,18 +87,16 @@ resource "aws_ecs_task_definition" "app_key_rotation" {
     # NOT kept current by CD. cd.yml re-registers the ten services and
     # georag-migrate with each new :<short-sha>; grep it for "rotation" and
     # there are no matches. So this task definition carries whatever
-    # var.image_tag was at the last `terraform apply`, which on a fresh
-    # account is the literal string `bootstrap` until the operator does the
-    # phase-3 re-apply the README describes.
+    # var.image_tag was at the last `terraform apply` — the literal string
+    # `bootstrap` on a fresh account — and the ECR lifecycle policy (main.tf)
+    # keeps only the newest 30 images, so that tag is eventually expired.
     #
-    # Two consequences, neither urgent and both worth knowing before you are
-    # halfway through a rotation runbook with the platform already down:
-    # skip that re-apply and this task cannot pull an image at all; do it and
-    # then let CD deploy for six months, and this runs a laravel image six
-    # months older than the one in service. It only has to run artisan
-    # key:rotate against the database, so an older image is usually fine —
-    # but "usually" is doing work in that sentence, and the failure lands at
-    # the worst moment.
+    # rotate-app-key.sh therefore does not run this revision. Before it
+    # touches anything it registers a fresh one on the image laravel-octane is
+    # running (the move cd.yml makes for georag-migrate), so a stale pin here
+    # cannot strand a rotation with the platform already down. This tag only
+    # matters to someone who starts the family by hand, which the default
+    # command below exists to discourage.
     image      = "${aws_ecr_repository.this["laravel"].repository_url}:${var.image_tag}"
     entryPoint = ["/bin/sh", "-c"]
 

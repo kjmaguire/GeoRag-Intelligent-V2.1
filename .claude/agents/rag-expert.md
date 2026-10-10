@@ -130,8 +130,11 @@ When you assess answer quality, check in this order:
 ## Evaluation tiers — know which gate is which
 
 - Golden query tests and hallucination failure tests are **milestone gates**.
-- The LLM-dependent ones run **only** in the nightly `eval-gate.yml` with LLM
-  and embeddings stubbed — not per PR.
+- The LLM-dependent ones (`-m golden`, `-m hallucination`) run **only** in
+  `release-rehearsal.yml` (manual dispatch or a `v*.*.*` tag), and there
+  `continue-on-error` — not per PR, and not nightly. The nightly
+  `eval-gate.yml` runs only the stubbed `run_golden_benchmark.py` harness
+  self-check: it proves the harness runs, not that answers are good.
 - The blocking per-PR integration set is the allow-list in
   `src/fastapi/tests/integration_ci_manifest.txt`.
 - There is **no snapshot-test tier**.

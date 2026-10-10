@@ -179,6 +179,50 @@ class CitationControllerPgeoTest extends TestCase
             ]);
     }
 
+    // ── pg_drillhole_collar resolver — no entity ──────────────────────────────
+
+    public function test_pg_drillhole_collar_resolver_survives_a_row_that_has_left_the_source(): void
+    {
+        // Public sources refresh, so a citation can outlive its row. The
+        // summary text read `$entity->total_length_m` straight off the null.
+        $this->mockPgeoResolverCall(
+            entityTable: 'public_geo.pg_drillhole_collar',
+            entityRow: [],
+            canonicalType: 'drillhole_collar',
+            entityExists: false,
+        );
+
+        $chunkId = 'pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id='.self::PG_ID;
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
+            ->assertOk()
+            ->assertJsonPath('canonical_type', 'drillhole_collar')
+            ->assertJsonPath('entity', null)
+            ->assertJsonPath('title', 'Drillhole Unknown drillhole')
+            ->assertJsonPath('text', 'Drillhole Unknown drillhole (type unknown) at unspecified project by unknown operator, drilled date unknown. Total depth: — m. Targets: not listed. Core: unknown.');
+    }
+
+    public function test_pg_drillhole_collar_resolver_survives_a_malformed_pg_id(): void
+    {
+        // The id is dropped before it can reach a uuid column (a Postgres
+        // 22P02 and a 500), which leaves the same null entity to render.
+        $this->mockPgeoResolverCall(
+            entityTable: 'public_geo.pg_drillhole_collar',
+            entityRow: [],
+            canonicalType: 'drillhole_collar',
+            entityExists: false,
+            expectEntityQuery: false,
+        );
+
+        $chunkId = 'pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id=not-a-uuid';
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
+            ->assertOk()
+            ->assertJsonPath('entity', null);
+    }
+
     // ── pg_resource_potential_zone resolver ───────────────────────────────────
 
     public function test_pg_resource_potential_zone_resolver_returns_pgeo_envelope(): void
@@ -270,11 +314,23 @@ class CitationControllerPgeoTest extends TestCase
 
     public function test_references_summary_count_reflects_active_links(): void
     {
+        // The links are the caller's own reports, so the caller needs a
+        // project to be scoped to. Created before DB is mocked.
+        $project = Project::create([
+            'project_name' => 'Pgeo links scope '.uniqid(),
+            'orientation_reference' => 'BOH',
+        ]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+        DB::table('silver.projects')
+            ->where('project_id', $project->project_id)
+            ->update(['workspace_id' => 'a0000000-0000-0000-0000-000000000001']);
+
         $this->mockPgeoResolverCall(
             entityTable: 'public_geo.pg_mine',
             entityRow: $this->fakeMineRow(),
             canonicalType: 'mine',
             linkCount: 3,
+            expectedProjectIds: [(string) $project->project_id],
         );
 
         $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
@@ -283,6 +339,30 @@ class CitationControllerPgeoTest extends TestCase
             ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('references_summary.count', 3);
+    }
+
+    public function test_references_summary_never_lists_documents_for_a_caller_with_no_projects(): void
+    {
+        // public_geo.document_entity_links has no workspace column and no
+        // RLS. A signed-in user with no membership used to get every tenant's
+        // linked document ids, filenames and the unscoped count for any public
+        // entity id they could see on the map. Now the link table is not even
+        // queried for them.
+        $this->mockPgeoResolverCall(
+            entityTable: 'public_geo.pg_mine',
+            entityRow: $this->fakeMineRow(),
+            canonicalType: 'mine',
+            linkCount: 3,
+            expectLinkQuery: false,
+        );
+
+        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
+            ->assertOk()
+            ->assertJsonPath('references_summary.count', 0)
+            ->assertJsonPath('references_summary.documents', []);
     }
 
     // ── resolveReport — references_to_entities zero-fill ─────────────────────
@@ -392,7 +472,9 @@ class CitationControllerPgeoTest extends TestCase
      * The controller calls queries in this order:
      *   1. DB::table($entityTable)->where()->first()          — entity row
      *   2. DB::table('public_geo.sources as s')->...->first()  — source/jurisdiction
-     *   3. DB::table('public_geo.document_entity_links')->...->count() — link count
+     *   3. DB::table('public_geo.document_entity_links as l')->join(reports)
+     *      ->whereIn(caller's projects)->...->count() — link count (skipped
+     *      entirely for a caller with no projects)
      *   4. (when linkCount > 0) links detail query
      *
      * We return separate Mockery builder mocks per table so `first()` calls
@@ -424,6 +506,10 @@ class CitationControllerPgeoTest extends TestCase
         string $canonicalType,
         ?string $lastRefreshedAt = null,
         int $linkCount = 0,
+        ?array $expectedProjectIds = null,
+        bool $expectLinkQuery = true,
+        bool $entityExists = true,
+        bool $expectEntityQuery = true,
     ): void {
         $this->mockWorkspaceRlsPassthrough();
 
@@ -442,38 +528,51 @@ class CitationControllerPgeoTest extends TestCase
 
         $entityObj = (object) $entityRow;
 
-        // Mockery mock names must be valid PHP class-name strings (no dots/slashes).
-        $entityBuilder = \Mockery::mock('entity_query_builder');
-        $entityBuilder->shouldReceive('where')->withAnyArgs()->andReturn($entityBuilder);
-        $entityBuilder->shouldReceive('first')->once()->andReturn($entityObj);
-
         $sourceBuilder = \Mockery::mock('source_query_builder');
         $sourceBuilder->shouldReceive('join')->withAnyArgs()->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('where')->withAnyArgs()->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('select')->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('first')->once()->andReturn($sourceObj);
 
-        $linksCountBuilder = \Mockery::mock('links_count_query_builder');
-        $linksCountBuilder->shouldReceive('where')->withAnyArgs()->andReturn($linksCountBuilder);
-        $linksCountBuilder->shouldReceive('whereNull')->andReturn($linksCountBuilder);
-        $linksCountBuilder->shouldReceive('count')->andReturn($linkCount);
+        if ($expectEntityQuery) {
+            // Mockery mock names must be valid PHP class-name strings (no dots/slashes).
+            // `$entityExists = false` is a row that has left the source since the
+            // citation was minted: first() answers null.
+            $entityBuilder = \Mockery::mock('entity_query_builder');
+            $entityBuilder->shouldReceive('where')->withAnyArgs()->andReturn($entityBuilder);
+            $entityBuilder->shouldReceive('first')->once()->andReturn($entityExists ? $entityObj : null);
 
-        DB::shouldReceive('table')->with($entityTable)->once()->andReturn($entityBuilder);
-        DB::shouldReceive('table')->with('public_geo.sources as s')->once()->andReturn($sourceBuilder);
-        DB::shouldReceive('table')->with('public_geo.document_entity_links')->andReturn($linksCountBuilder);
-
-        if ($linkCount > 0) {
-            $linksDetailBuilder = \Mockery::mock('links_detail_query_builder');
-            $linksDetailBuilder->shouldReceive('leftJoin')->withAnyArgs()->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('where')->withAnyArgs()->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('whereNull')->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('orderByDesc')->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('limit')->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('get')->andReturn(collect([]));
-
-            DB::shouldReceive('table')
-                ->with('public_geo.document_entity_links as l')
-                ->andReturn($linksDetailBuilder);
+            DB::shouldReceive('table')->with($entityTable)->once()->andReturn($entityBuilder);
+        } else {
+            // A malformed pg_id never reaches the uuid column.
+            DB::shouldReceive('table')->with($entityTable)->never();
         }
+        DB::shouldReceive('table')->with('public_geo.sources as s')->once()->andReturn($sourceBuilder);
+
+        if (! $expectLinkQuery) {
+            DB::shouldReceive('table')->with('public_geo.document_entity_links as l')->never();
+
+            return;
+        }
+
+        // Count and detail share one scoped query: an INNER join to the
+        // caller's own reports, never the bare link table.
+        $linksBuilder = \Mockery::mock('links_query_builder');
+        $linksBuilder->shouldReceive('join')
+            ->with('silver.reports as r', 'r.report_id', '=', 'l.document_id')
+            ->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('whereIn')
+            ->with('r.project_id', $expectedProjectIds ?? \Mockery::any())
+            ->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('where')->withAnyArgs()->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('whereNull')->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('count')->andReturn($linkCount);
+        $linksBuilder->shouldReceive('orderByDesc')->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('limit')->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('get')->andReturn(collect([]));
+
+        DB::shouldReceive('table')
+            ->with('public_geo.document_entity_links as l')
+            ->andReturn($linksBuilder);
     }
 }

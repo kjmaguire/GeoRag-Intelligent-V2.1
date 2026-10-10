@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """A CI path filter must not skip a document CI reads as DATA.
 
-Two workflows carry `paths-ignore` so a documentation-only push costs
-nothing: ci.yml and docker-build.yml. That is worth real money —
+Two workflows carry a docs-only path filter so a documentation-only push
+costs nothing: ci.yml and docker-build.yml. That is worth real money —
 ci.yml alone bills 28 minutes per push on a private repository, and three of
 eight pushes on 2026-09-15 were documentation only and ran all 24 checks.
 
-The trap it opens is specific and silent. Two "documents" in this repository
+The trap it opens is specific and silent. Four "documents" in this repository
 are not prose, they are INPUT:
 
     deploy/aws/README.md        scripts/check-ecs-secret-keys.py parses its
@@ -17,12 +17,23 @@ are not prose, they are INPUT:
     georag-architecture.html    tests/Unit/ArchitectureDocSchemaParityTest.php
                                 fails when the doc names a `schema.table` no
                                 migration creates.
+    docs/architecture/manual/07-orchestration.md
+                                src/fastapi/tests/test_cron_doc_parity.py
+                                fails when its cron tables drift from the
+                                workflows' `on_crons`.
+    docs/adr/0014-workspace-lookup-and-pivot.md
+                                src/fastapi/tests/test_lookup_and_rescope.py
+                                fails when the ADR loses its option markers.
 
-A filter that ignored either would let a real breakage through with a green
-PR and nothing to look at — the same absence-as-success shape this repository
-keeps finding. `*.md` is deliberately root-level only (GitHub path globs do
-not cross `/`), and the architecture doc is `.html`, so neither is matched
-today. This asserts that stays true.
+A filter that ignored any of them would let a real breakage through with a
+green PR and nothing to look at — the same absence-as-success shape this
+repository keeps finding. The first two sit outside `docs/**` (`*.md` is
+root-level only, GitHub path globs do not cross `/`, and the architecture doc
+is `.html`). The last two sit INSIDE it, and `paths-ignore` has no negation,
+so the workflows use a `paths` filter instead: `!` patterns ignore, and a
+later plain pattern puts a file back. Both forms are read here, with GitHub's
+semantics: `paths-ignore` skips a file any pattern matches; `paths` runs on a
+file unless the last pattern that matches it is a `!` one (or none does).
 
 It is NOT a general "is this file important" checker. It holds one list,
 maintained by hand, of documents something in CI reads. Adding a new one
@@ -57,14 +68,25 @@ MACHINE_READ_DOCS = {
     "georag-architecture.html": (
         "tests/Unit/ArchitectureDocSchemaParityTest.php (schema.table parity)"
     ),
+    "docs/architecture/manual/07-orchestration.md": (
+        "src/fastapi/tests/test_cron_doc_parity.py (cron tables vs on_crons)"
+    ),
+    "docs/adr/0014-workspace-lookup-and-pivot.md": (
+        "src/fastapi/tests/test_lookup_and_rescope.py (ADR-0014 option markers)"
+    ),
 }
 
-_PATHS_IGNORE = re.compile(r"^\s*paths-ignore:.*$", re.MULTILINE)
+#: The line that opens a filter. `paths-ignore` skips a push whose files ALL
+#: match a pattern; `paths` runs on a push if ANY file survives its patterns.
+_BLOCK = re.compile(r"^\s*(paths-ignore|paths):\s*(?:#.*)?$")
 _ENTRY = re.compile(r"^\s*-\s*'([^']+)'\s*$")
 
 
-def ignore_patterns(workflow: Path) -> list[str]:
-    """Every glob under every `paths-ignore:` block in one workflow.
+def filter_blocks(workflow: Path) -> list[tuple[str, list[str]]]:
+    """Every `paths-ignore:` / `paths:` block in one workflow, as (kind, globs).
+
+    One entry per block, NOT merged: a `paths` filter is evaluated in order,
+    and ci.yml's `push` and `pull_request` filters are separate decisions.
 
     Parsed line-by-line rather than with a YAML loader on purpose: PyYAML
     turns the `on:` key into the boolean True, and a checker that silently
@@ -72,19 +94,26 @@ def ignore_patterns(workflow: Path) -> list[str]:
     which is the failure mode this file exists to prevent, in itself.
     """
     lines = workflow.read_text(encoding="utf-8").splitlines()
+    blocks: list[tuple[str, list[str]]] = []
+    kind: str | None = None
     patterns: list[str] = []
-    inside = False
     for line in lines:
-        if _PATHS_IGNORE.match(line):
-            inside = True
+        header = _BLOCK.match(line)
+        if header:
+            if kind:
+                blocks.append((kind, patterns))
+            kind, patterns = header.group(1), []
             continue
-        if inside:
+        if kind:
             match = _ENTRY.match(line)
             if match:
                 patterns.append(match.group(1))
             elif line.strip() and not line.strip().startswith("#"):
-                inside = False
-    return patterns
+                blocks.append((kind, patterns))
+                kind = None
+    if kind:
+        blocks.append((kind, patterns))
+    return [(k, p) for k, p in blocks if p]
 
 
 def matches(pattern: str, path: str) -> bool:
@@ -103,6 +132,28 @@ def matches(pattern: str, path: str) -> bool:
     return "/" not in path and fnmatch.fnmatch(path, pattern)
 
 
+def skipped_by(kind: str, patterns: list[str], path: str) -> str | None:
+    """The pattern responsible when this filter skips `path`, else None.
+
+    `paths-ignore`: skipped if any pattern matches. `paths`: GitHub walks the
+    patterns in order — a matching plain pattern includes the file, a matching
+    `!` pattern removes it again — so the LAST match decides, and a file no
+    pattern includes is not run on.
+    """
+    if kind == "paths-ignore":
+        return next((p for p in patterns if matches(p, path)), None)
+    included, excluder = False, None
+    for pattern in patterns:
+        if pattern.startswith("!"):
+            if matches(pattern[1:], path):
+                included, excluder = False, pattern
+        elif matches(pattern, path):
+            included, excluder = True, None
+    if included:
+        return None
+    return excluder or "(no pattern includes it)"
+
+
 def main() -> int:
     failures: list[str] = []
     checked = 0
@@ -112,26 +163,27 @@ def main() -> int:
         if not workflow.is_file():
             failures.append(f"{name} does not exist")
             continue
-        patterns = ignore_patterns(workflow)
-        if not patterns:
+        blocks = filter_blocks(workflow)
+        if not blocks:
             # Not an error. A workflow may legitimately carry no filter — but
             # say so, because "found nothing" and "checked nothing" read the
             # same in a green build otherwise.
-            print(f"note  {name} has no paths-ignore block", file=sys.stderr)
+            print(f"note  {name} has no paths-ignore or paths block", file=sys.stderr)
             continue
         checked += 1
-        for doc, reader in MACHINE_READ_DOCS.items():
-            for pattern in patterns:
-                if matches(pattern, doc):
+        for kind, patterns in blocks:
+            for doc, reader in MACHINE_READ_DOCS.items():
+                why = skipped_by(kind, patterns, doc)
+                if why:
                     failures.append(
-                        f"{name} ignores {doc!r} via {pattern!r} — but it is read by "
+                        f"{name} ({kind}) ignores {doc!r} via {why!r} — but it is read by "
                         f"{reader}. A change that breaks that would pass with a green PR."
                     )
 
     # A run that matched no workflow verifies nothing; say so rather than pass.
     if not checked:
         print(
-            "FAIL  no workflow carried a paths-ignore block. Either the filters "
+            "FAIL  no workflow carried a paths-ignore or paths block. Either the filters "
             "were removed (then remove this check too) or the parser stopped "
             "finding them (then this check has been passing by accident).",
             file=sys.stderr,

@@ -6,10 +6,13 @@ namespace Tests\Feature\Api\V1;
 
 use App\Models\Project;
 use App\Models\User;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Psr7\Request as PsrRequest;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request as HttpRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Tests\TestCase;
 
 /**
@@ -28,6 +31,8 @@ final class WorkflowTriggerControllerTest extends TestCase
 
     private const BASE = 'http://fastapi.test/internal/v1/workflows/';
 
+    private const EXPORTS_BUCKET = 'georag-exports-123456789012';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -35,6 +40,8 @@ final class WorkflowTriggerControllerTest extends TestCase
         config([
             'services.fastapi.service_key' => 'test-service-key-must-be-at-least-32-bytes-long',
             'services.fastapi.internal_url' => 'http://fastapi.test',
+            // What deploy/aws/terraform/config.tf sets as AWS_BUCKET_EXPORTS.
+            'filesystems.disks.s3-exports.bucket' => self::EXPORTS_BUCKET,
         ]);
     }
 
@@ -254,6 +261,122 @@ final class WorkflowTriggerControllerTest extends TestCase
         $this->assertStringNotContainsString('georag.internal', (string) $response->getContent());
     }
 
+    // ── Finding 8: what a transport failure means ───────────────────────
+
+    private function transportFailure(int $errno): ConnectionException
+    {
+        $guzzle = new ConnectException(
+            "cURL error {$errno}: simulated",
+            new PsrRequest('POST', self::BASE.'generate_report/trigger'),
+            null,
+            ['errno' => $errno],
+        );
+
+        return new ConnectionException($guzzle->getMessage(), 0, $guzzle);
+    }
+
+    public function test_a_connect_failure_is_retried_and_a_final_one_releases_the_cooldown(): void
+    {
+        Sleep::fake();
+        $attempts = 0;
+        Http::fake(function () use (&$attempts) {
+            $attempts++;
+
+            throw $this->transportFailure(7);
+        });
+        [$user, $project] = $this->member();
+        $url = "/api/v1/projects/{$project->project_id}/workflows/generate_report";
+
+        $this->actingAs($user)->postJson($url, ['report_type' => 'ingestion_quality'])
+            ->assertStatus(502)
+            ->assertJsonPath('error', 'trigger_failed')
+            ->assertJsonPath('message', 'The generate_report workflow could not be started right now. Please try again shortly.');
+        $this->assertSame(2, $attempts, 'a refused connection never reached FastAPI, so it is worth a second try');
+
+        // Nothing was dispatched, so the user's own retry is not a double click.
+        $this->actingAs($user)->postJson($url, ['report_type' => 'ingestion_quality'])->assertStatus(502);
+        $this->assertSame(4, $attempts);
+    }
+
+    public function test_a_read_timeout_is_not_retried_and_keeps_the_cooldown(): void
+    {
+        Sleep::fake();
+        $attempts = 0;
+        Http::fake(function () use (&$attempts) {
+            $attempts++;
+
+            throw $this->transportFailure(28);
+        });
+        [$user, $project] = $this->member();
+        $url = "/api/v1/projects/{$project->project_id}/workflows/generate_report";
+
+        // The request may have started a run whose reply was lost: post it once.
+        $this->actingAs($user)->postJson($url, ['report_type' => 'ingestion_quality'])
+            ->assertStatus(502)
+            ->assertJsonPath('error', 'trigger_failed')
+            ->assertJsonPath('message', 'The generate_report request was sent but no answer came back, so it may have started. Check its status before trying again.');
+        $this->assertSame(1, $attempts);
+
+        // ...and do not invite the second click that starts it twice. (Each click
+        // mints a new request id, so FastAPI cannot tell the two apart.)
+        $this->actingAs($user)->postJson($url, ['report_type' => 'ingestion_quality'])
+            ->assertStatus(429)
+            ->assertJsonPath('error', 'workflow_recently_triggered');
+        $this->assertSame(1, $attempts, 'the second click must not reach FastAPI');
+    }
+
+    public function test_a_connect_failure_that_recovers_dispatches_once(): void
+    {
+        Sleep::fake();
+        $attempts = 0;
+        Http::fake(function (HttpRequest $request) use (&$attempts) {
+            $attempts++;
+            if ($attempts === 1) {
+                throw $this->transportFailure(6);
+            }
+
+            return Http::response([
+                'workflow' => 'generate_report', 'workflow_run_id' => 'run-second-try',
+                'workspace_id' => $request['workspace_id'],
+            ], 202);
+        });
+        [$user, $project] = $this->member();
+
+        $this->actingAs($user)
+            ->postJson("/api/v1/projects/{$project->project_id}/workflows/generate_report", [
+                'report_type' => 'ingestion_quality',
+            ])
+            ->assertStatus(202)
+            ->assertJsonPath('workflow_run_id', 'run-second-try');
+        $this->assertSame(2, $attempts);
+    }
+
+    public function test_the_retry_posts_the_same_request_id(): void
+    {
+        // FastAPI dedupes on this id, so a retry must carry the one the first
+        // attempt did, not a fresh one.
+        Sleep::fake();
+        $ids = [];
+        Http::fake(function (HttpRequest $request) use (&$ids) {
+            $ids[] = $request['input']['export_request_id'];
+            if (count($ids) === 1) {
+                throw $this->transportFailure(7);
+            }
+
+            return Http::response(['workflow' => 'generate_report', 'workflow_run_id' => 'run-x', 'workspace_id' => null], 202);
+        });
+        [$user, $project] = $this->member();
+
+        $this->actingAs($user)
+            ->postJson("/api/v1/projects/{$project->project_id}/workflows/generate_report", [
+                'report_type' => 'ingestion_quality',
+            ])
+            ->assertStatus(202);
+
+        $this->assertCount(2, $ids);
+        $this->assertSame($ids[0], $ids[1]);
+    }
+
     // ── Workspace-scoped admin workflows ────────────────────────────────
 
     public function test_workspace_trigger_requires_admin(): void
@@ -305,15 +428,28 @@ final class WorkflowTriggerControllerTest extends TestCase
         [$admin, $project] = $this->member(admin: true);
         $workspace = (string) $project->workspace_id;
         $url = "/api/v1/admin/workspaces/{$workspace}/workflows/restore_workspace";
-        $own = "s3://workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz";
+        $bucket = self::EXPORTS_BUCKET;
+        $own = "s3://{$bucket}/workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz";
 
         $this->actingAs($admin)->postJson($url, [
-            'snapshot_manifest_uri' => 's3://workspace-exports/a0000000-0000-0000-0000-00000000dead/x.jsonl.gz',
+            'snapshot_manifest_uri' => "s3://{$bucket}/workspace-exports/a0000000-0000-0000-0000-00000000dead/x.jsonl.gz",
         ])->assertUnprocessable()->assertJsonValidationErrors('snapshot_manifest_uri');
 
         $this->actingAs($admin)->postJson($url, [
-            'snapshot_manifest_uri' => "s3://workspace-exports/{$workspace}/../other/x.jsonl.gz",
+            'snapshot_manifest_uri' => "s3://{$bucket}/workspace-exports/{$workspace}/../other/x.jsonl.gz",
         ])->assertUnprocessable()->assertJsonValidationErrors('snapshot_manifest_uri');
+
+        // The layouts that are no longer an export of this deployment: a bucket
+        // of its own named workspace-exports (Terraform never creates it), the
+        // exports bucket without the key prefix, and some other bucket.
+        foreach ([
+            "s3://workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz",
+            "s3://{$bucket}/{$workspace}/2026-09-29T000000-r.jsonl.gz",
+            "s3://georag-backups-123456789012/workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz",
+        ] as $refused) {
+            $this->actingAs($admin)->postJson($url, ['snapshot_manifest_uri' => $refused])
+                ->assertUnprocessable()->assertJsonValidationErrors('snapshot_manifest_uri');
+        }
 
         $this->actingAs($admin)->postJson($url, ['snapshot_manifest_uri' => $own, 'dry_run' => false])
             ->assertUnprocessable()

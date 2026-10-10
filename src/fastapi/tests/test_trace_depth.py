@@ -55,3 +55,65 @@ def test_decimation_keeps_depths_of_the_full_trace() -> None:
 
 def test_empty_trace() -> None:
     assert trace_points_with_depth([], 100.0, max_points=50) == []
+
+
+# ---------------------------------------------------------------------------
+# GIS audit 2026-10 (finding 1): traces stored before the collar vertex existed
+# ---------------------------------------------------------------------------
+_COLLAR = (_LON0, _LAT0, 480.0)
+
+
+def test_legacy_trace_starting_below_the_collar_is_anchored_at_it() -> None:
+    """Stations 30/100/200 and no collar vertex: vertex 0 was md 30."""
+    legacy = _vertical([30, 100, 200])
+    pts = trace_points_with_depth(legacy, 200.0, max_points=50, collar=_COLLAR)
+
+    assert [p["depth_m"] for p in pts] == pytest.approx([0.0, 30.0, 100.0, 200.0])
+    assert pts[0]["z"] == pytest.approx(480.0)
+    assert not any(p["extrapolated"] for p in pts), "no phantom tail"
+
+
+def test_without_the_collar_the_legacy_trace_is_still_shifted() -> None:
+    """The default is unchanged: callers that do not pass a collar get what they had."""
+    pts = trace_points_with_depth(_vertical([30, 100, 200]), 200.0, max_points=50)
+    assert pts[0]["depth_m"] == 0.0 and pts[0]["z"] == pytest.approx(450.0)
+    assert pts[-1]["extrapolated"] is True
+
+
+def test_legacy_inclined_trace_is_anchored_by_its_plan_offset_too() -> None:
+    # Due north at -45: md 30 is 21.2 m north and 21.2 m down.
+    d = 30.0 / (2 ** 0.5)
+    legacy = [
+        (_LON0, _LAT0 + d / _M_PER_DEG_LAT, 480.0 - d),
+        (_LON0, _LAT0 + 3 * d / _M_PER_DEG_LAT, 480.0 - 3 * d),
+    ]
+    pts = trace_points_with_depth(legacy, 90.0, max_points=50, collar=_COLLAR)
+
+    assert [p["depth_m"] for p in pts] == pytest.approx([0.0, 30.0, 90.0], rel=1e-6)
+    assert (pts[0]["x"], pts[0]["y"]) == (_LON0, _LAT0)
+    assert pts[-1]["extrapolated"] is False
+
+
+def test_a_trace_that_already_starts_at_the_collar_is_left_alone() -> None:
+    current = _vertical([0, 30, 100, 200])
+    with_collar = trace_points_with_depth(current, 200.0, max_points=50, collar=_COLLAR)
+    without = trace_points_with_depth(current, 200.0, max_points=50)
+    assert with_collar == without
+
+
+def test_a_millimetre_of_float_noise_is_not_a_missing_collar() -> None:
+    noisy = [(_LON0 + 1e-9, _LAT0 - 1e-9, 480.0 + 1e-4), (_LON0, _LAT0, 380.0)]
+    pts = trace_points_with_depth(noisy, 100.0, max_points=50, collar=_COLLAR)
+    assert len(pts) == 2 and pts[0]["depth_m"] == 0.0
+
+
+def test_a_first_vertex_deeper_than_the_hole_is_not_a_first_station() -> None:
+    """A stale trace against a moved collar must not get a km-long leg glued on."""
+    far = [(_LON0 + 0.5, _LAT0, 480.0), (_LON0 + 0.5, _LAT0, 380.0)]  # ~30 km away
+    pts = trace_points_with_depth(far, 100.0, max_points=50, collar=_COLLAR)
+    assert len(pts) == 2 and pts[0]["depth_m"] == 0.0
+
+
+def test_an_unknown_total_depth_leaves_the_trace_alone() -> None:
+    pts = trace_points_with_depth(_vertical([30, 100]), None, max_points=50, collar=_COLLAR)
+    assert len(pts) == 2 and pts[0]["z"] == pytest.approx(450.0)

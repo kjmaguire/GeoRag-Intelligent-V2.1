@@ -109,8 +109,16 @@ class AuthController extends Controller
         );
 
         if ($status !== PasswordBroker::PASSWORD_RESET) {
+            // An unknown address answers exactly like a bad token. The
+            // framework's own message for it ("We can't find a user with that
+            // email address") tells anyone who asks whether an account exists,
+            // which is the question forgotPassword() is written never to answer.
+            $reported = $status === PasswordBroker::INVALID_USER
+                ? PasswordBroker::INVALID_TOKEN
+                : $status;
+
             return response()->json([
-                'message' => __($status),
+                'message' => __($reported),
             ], 422);
         }
 

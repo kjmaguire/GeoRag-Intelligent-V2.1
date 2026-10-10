@@ -155,6 +155,36 @@ final class StreamQueryFailClosedTest extends TestCase
         Event::assertDispatched(QueryStreamEvent::class, fn (QueryStreamEvent $e): bool => $e->eventType === 'completed');
     }
 
+    public function test_the_conversation_is_sent_as_the_session_id(): void
+    {
+        // answer_runs.session_id was always NULL: the job held the thread id
+        // and never forwarded it.
+        Event::fake([QueryStreamEvent::class]);
+        $conversationId = '6f1c0b9e-2a1d-4c4e-9a51-0c6a0d1f2e3b';
+        $job = new TestableStreamQueryFromFastApi(
+            $this->queryId,
+            'ffffffff-0000-0000-0000-000000000000',
+            'Show me the drill traces',
+            'query.'.$this->queryId,
+            conversationId: $conversationId,
+        );
+        $job->fakeSseBody = "event: completed\ndata: {\"text\":\"ok\",\"citations\":[],\"confidence\":0.8}\n\n";
+
+        $job->handle();
+
+        $this->assertSame($conversationId, $job->sentPayload['session_id'] ?? null);
+    }
+
+    public function test_a_single_shot_query_sends_no_session_id(): void
+    {
+        Event::fake([QueryStreamEvent::class]);
+        $job = $this->job();
+
+        $job->handle();
+
+        $this->assertArrayNotHasKey('session_id', $job->sentPayload);
+    }
+
     public function test_deltas_stop_after_five_consecutive_broadcast_failures_but_the_terminal_still_goes_out(): void
     {
         $deltaAttempts = 0;

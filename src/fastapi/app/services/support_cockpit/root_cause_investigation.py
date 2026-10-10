@@ -42,8 +42,9 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.audit import emit_audit
-from app.db import BareConnectionError, lookup_and_rescope
+from app.db import BareConnectionError
 from app.db.dsn import build_dsn
+from app.services.support_cockpit._scope import ticket_connection
 
 log = logging.getLogger("georag.support_cockpit.root_cause_investigation")
 
@@ -220,6 +221,8 @@ async def investigate_ticket(
     actor_user_id: int,
     lookback_hours: int = 168,
     pool: asyncpg.Pool | None = None,
+    workspace_id: UUID | str | None = None,
+    dry_run: bool = False,
 ) -> InvestigationResult:
     """Run a synthetic root-cause investigation against the ticket.
 
@@ -230,6 +233,12 @@ async def investigate_ticket(
             `support_ticket_traces.added_by_user_id` FK.
         lookback_hours: how far back to scan audit/decision data.
         pool: optional asyncpg pool to reuse.
+        workspace_id: the workspace the caller has already authorised the
+            ticket for; scopes the connection directly instead of discovering
+            it under the default tenant (see ``_scope``).
+        dry_run: run the scan and return the findings (with a would-be
+            trace_id) without linking a trace row or emitting the audit
+            anchor (READ ONLY transaction).
 
     Returns:
         InvestigationResult with top_cause_summary, top_causes,
@@ -247,17 +256,19 @@ async def investigate_ticket(
     try:
         # ADR-0014 lookup_and_rescope — see customer_response_drafting.py
         # for the reference migration.
-        async with lookup_and_rescope(
+        async with ticket_connection(
             pool,
+            ticket_id=ticket_str,
             lookup_sql="""
                 SELECT ticket_id, workspace_id::text AS workspace_id,
                        description, severity, category, status
                   FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
                 """,
-            lookup_args=(ticket_str,),
             site="support_cockpit.root_cause_investigation",
             bootstrap_reason="support_cockpit.elevated_lookup",
+            workspace_id=workspace_id,
+            read_only=dry_run,
         ) as (conn, ticket):
             # 2. Scan recent audit + decision signal.
             patterns = CATEGORY_AUDIT_PATTERNS.get(ticket["category"], [])
@@ -283,49 +294,57 @@ async def investigate_ticket(
             relevant_audit_ids = [r["id"] for r in audit_rows]
             relevant_decision_ids = [r["id"] for r in decision_rows]
 
-            # 5. Link the investigation via support_ticket_traces.
-            #    Use INSERT ... ON CONFLICT DO NOTHING for idempotency
-            #    on the unique (ticket_id, trace_id) — re-runs against
-            #    the same trace_id are no-ops.
-            await conn.execute(
-                """
-                INSERT INTO ops.support_ticket_traces (
-                    ticket_id, trace_id, trace_summary, added_by_user_id
+            if not dry_run:
+                # 5. Link the investigation via support_ticket_traces.
+                #    Use INSERT ... ON CONFLICT DO NOTHING for idempotency
+                #    on the unique (ticket_id, trace_id) — re-runs against
+                #    the same trace_id are no-ops. workspace_id is written
+                #    explicitly: the raw RLS layer
+                #    (98-rls-tenant-isolation-block3.sql) makes the column
+                #    NOT NULL with a strict policy, and the INSERT used to
+                #    leave it out.
+                await conn.execute(
+                    """
+                    INSERT INTO ops.support_ticket_traces (
+                        ticket_id, trace_id, trace_summary, added_by_user_id,
+                        workspace_id
+                    )
+                    VALUES ($1::uuid, $2, $3, $4, $5::uuid)
+                    ON CONFLICT (ticket_id, trace_id) DO NOTHING
+                    """,
+                    ticket_str, trace_id, top_summary[:500], actor_user_id,
+                    ticket["workspace_id"],
                 )
-                VALUES ($1::uuid, $2, $3, $4)
-                ON CONFLICT (ticket_id, trace_id) DO NOTHING
-                """,
-                ticket_str, trace_id, top_summary[:500], actor_user_id,
-            )
 
-            # 6. Audit anchor with full structured payload.
-            await emit_audit(
-                conn,
-                action_type="support.ticket.investigated",
-                workspace_id=ticket["workspace_id"],
-                actor_id=actor_user_id,
-                actor_kind="agent",
-                target_schema="ops",
-                target_table="support_tickets",
-                target_id=ticket_str,
-                payload={
-                    "evaluator": "synthetic_stub",
-                    "doc_phase": 139,
-                    "category": ticket["category"],
-                    "severity": ticket["severity"],
-                    "trace_id": trace_id,
-                    "lookback_hours": lookback_hours,
-                    "top_causes_count": len(top_causes),
-                    "top_cause_summary": top_summary[:500],
-                    "relevant_audit_ids_count": len(relevant_audit_ids),
-                    "relevant_decision_ids_count": len(relevant_decision_ids),
-                },
-                trace_id=trace_id,
-            )
+                # 6. Audit anchor with full structured payload.
+                await emit_audit(
+                    conn,
+                    action_type="support.ticket.investigated",
+                    workspace_id=ticket["workspace_id"],
+                    actor_id=actor_user_id,
+                    actor_kind="agent",
+                    target_schema="ops",
+                    target_table="support_tickets",
+                    target_id=ticket_str,
+                    payload={
+                        "evaluator": "synthetic_stub",
+                        "doc_phase": 139,
+                        "category": ticket["category"],
+                        "severity": ticket["severity"],
+                        "trace_id": trace_id,
+                        "lookback_hours": lookback_hours,
+                        "top_causes_count": len(top_causes),
+                        "top_cause_summary": top_summary[:500],
+                        "relevant_audit_ids_count": len(relevant_audit_ids),
+                        "relevant_decision_ids_count": len(relevant_decision_ids),
+                    },
+                    trace_id=trace_id,
+                )
 
             log.info(
-                "root_cause_investigation.completed ticket=%s trace=%s "
+                "root_cause_investigation.%s ticket=%s trace=%s "
                 "audits_scanned=%d decisions_scanned=%d causes=%d",
+                "dry_run_nothing_written" if dry_run else "completed",
                 ticket_str, trace_id, len(audit_rows), len(decision_rows),
                 len(top_causes),
             )

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, usePage, router } from '@inertiajs/react';
+import { Link, usePage } from '@inertiajs/react';
 import ProjectSelector from '../Components/ProjectSelector';
 import CommandPalette from '../Components/Foundry/CommandPalette';
 import { ToastProvider, useToast } from '../Components/Foundry/ToastHost';
 import type { PageProps } from '@/types';
 import { listenPrivate } from '@/lib/echoChannel';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * FoundryShell — the app's persistent chrome.
@@ -116,28 +117,50 @@ function UserMenu() {
     const { auth } = usePage<PageProps>().props;
     const user = auth?.user ?? null;
     const [open, setOpen] = useState(false);
+    const { pushToast } = useToast();
 
     // FE-20: the logout request is AWAITED before navigating. It used to be
     // fire-and-forget with router.visit('/login') racing it: if the GET
     // /login loaded the session before invalidate() and saved it after, or
     // its Set-Cookie landed last, the old authenticated session came back.
+    //
+    // The outcome is checked too. The request used to read a CSRF token from
+    // the page's <meta> tag, which is dead after an earlier SPA sign-out/in,
+    // so the second "Sign out" in a tab 419'd — and the handler ignored the
+    // status and navigated to /login anyway, leaving the session signed in on
+    // a shared workstation while the screen said otherwise. Now it only
+    // leaves once the server has ended the session (a 401 means there was
+    // none to end), and says so when it could not.
     async function handleLogout() {
-        const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+        let signedOut = false;
         try {
-            await fetch('/api/v1/auth/logout', {
+            const res = await fetch('/api/v1/auth/logout', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { Accept: 'application/json', ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}) },
+                headers: { Accept: 'application/json', ...csrfHeaders() },
             });
+            signedOut = res.ok || res.status === 401;
         } catch {
-            // Network failure: still leave; the session expires server-side.
+            // Network failure: the session is still live, so fall through to the notice.
+        }
+        if (!signedOut) {
+            pushToast({
+                title: 'Could not sign out',
+                detail: 'You are still signed in. Check your connection and try again.',
+                tone: 'warn',
+            });
+            return;
         }
         try {
             localStorage.removeItem('georag_user');
         } catch {
             /* */
         }
-        router.visit('/login');
+        // A full navigation, not router.visit: an Inertia visit is an XHR, so
+        // the blade layout never re-renders and the page keeps the previous
+        // session's <meta csrf-token>, Echo connection and in-memory state
+        // into the next sign-in.
+        window.location.assign('/login');
     }
 
     if (!user) {

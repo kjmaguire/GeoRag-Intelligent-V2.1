@@ -56,6 +56,20 @@ is nearly always an omission rather than an intent. Where it IS intent —
 laravel-reverb runs `reverb:start` and dispatches nothing — it goes in
 PER_SERVICE_ALLOWED with the reason, which is the same bargain the rest of
 this file makes: a decision recorded beats a decision absent.
+
+THE THIRD RULE, added 2026-10-10: all of the above applies to the Helm chart
+as well. The chart was the same bug a second time, in all of its forms at once:
+FASTAPI_INTERNAL_URL was missing on Horizon, MARTIN_INTERNAL_URL on Octane,
+and LARAVEL_INTERNAL_URL on both FastAPI and the Hatchet worker, so on-prem the
+queued chat job, the tile proxy and every progress callback fell back to
+compose hostnames (`http://fastapi:8000`, `http://martin:3000`,
+`http://laravel.test`) that do not resolve in a cluster, with every pod
+healthy. The chart is read through its committed renders
+(kubernetes/manifests/<flavor>.yaml, written from charts/georag/ by
+scripts/regenerate_k8s_manifests.sh) with regular expressions, because CI's job
+has neither a helm binary nor a YAML library. Which means a chart edit that is
+not re-rendered is not seen here; the render is what an operator applies, and
+what tests/Unit/HelmTenantIsolationManifestTest.php reads.
 """
 
 from __future__ import annotations
@@ -92,6 +106,24 @@ ALLOWED = {
 IMAGE_GROUPS = {
     "laravel": ("laravel-octane", "laravel-horizon", "laravel-reverb"),
     "fastapi": ("fastapi", "hatchet-worker", "sparse"),
+}
+
+#: The Helm chart renders committed under kubernetes/manifests/.
+CHART_FLAVORS = ("k3s", "vanilla", "airgap")
+
+#: ALLOWED for the chart. The AWS reasons above do not carry over: on-prem runs
+#: the self-hosted backends, so the chart DOES set EMBEDDING_SERVICE_URL,
+#: RERANKER_SERVICE_URL and SPARSE_SERVICE_URL (each pointing at its sidecar).
+CHART_ALLOWED = {
+    "PDF_VL_BACKEND_URL": ALLOWED["PDF_VL_BACKEND_URL"],
+}
+
+#: The chart's image groups. The embedding, reranker and sparse sidecars run
+#: the fastapi image too, but each serves one uvicorn app that calls nothing, so
+#: they are not callers in the sense this rule is about.
+CHART_IMAGE_GROUPS = {
+    "laravel": ("laravel-octane", "laravel-horizon", "laravel-reverb"),
+    "fastapi": ("fastapi", "hatchet-worker"),
 }
 
 #: Asymmetries that are deliberate. `<VAR> on <service>` -> the reason.
@@ -208,15 +240,87 @@ def per_service_sets() -> dict[str, set[str]]:
     return out
 
 
-def asymmetries() -> list[str]:
-    """Variables set on some members of an image group but not all of them."""
-    try:
-        env = per_service_sets()
-    except (ValueError, OSError):
-        return []  # structure moved; the flat rule above still applies
+def chart_env(flavor: str) -> dict[str, set[str]]:
+    """Variable names each chart workload receives, by component label.
 
+    Read off the committed render one YAML document at a time. Only Deployments
+    and StatefulSets: the install Jobs have their own, different, environment.
+    """
+    text = (ROOT / "kubernetes" / "manifests" / f"{flavor}.yaml").read_text()
+    out: dict[str, set[str]] = {}
+    for doc in re.split(r"^---\s*$", text, flags=re.M):
+        if not re.search(r"^kind:\s*(?:Deployment|StatefulSet)\s*$", doc, re.M):
+            continue
+        comp = re.search(r"^\s+app\.kubernetes\.io/component:\s*(\S+)\s*$", doc, re.M)
+        if comp:
+            out.setdefault(comp.group(1), set()).update(
+                re.findall(r"^\s+- name: ([A-Z][A-Z0-9_]{2,})\s*$", doc, re.M)
+            )
+    return out
+
+
+def chart_sets() -> set[str]:
+    """Every variable any chart workload sets in any flavor."""
+    names: set[str] = set()
+    for flavor in CHART_FLAVORS:
+        for got in chart_env(flavor).values():
+            names |= got
+    return names
+
+
+def chart_literal_values(flavor: str) -> list[tuple[str, str, str]]:
+    """(component, variable, value) for every literal `value:` a workload sets."""
+    text = (ROOT / "kubernetes" / "manifests" / f"{flavor}.yaml").read_text()
+    out: list[tuple[str, str, str]] = []
+    for doc in re.split(r"^---\s*$", text, flags=re.M):
+        if not re.search(r"^kind:\s*(?:Deployment|StatefulSet)\s*$", doc, re.M):
+            continue
+        comp = re.search(r"^\s+app\.kubernetes\.io/component:\s*(\S+)\s*$", doc, re.M)
+        if not comp:
+            continue
+        for var, value in re.findall(
+            r'^\s+- name: ([A-Z][A-Z0-9_]{2,})\s*\n\s+value: "?([^"\n]*)"?\s*$', doc, re.M
+        ):
+            out.append((comp.group(1), var, value))
+    return out
+
+
+def chart_compose_hosts() -> list[str]:
+    """Internal-URL variables the chart sets to a compose hostname.
+
+    Setting the variable is not enough: `http://fastapi:8000` is exactly what
+    docker-compose.yml has, and in a cluster the Service is `<release>-fastapi`,
+    so a value copied across resolves nowhere. Same bug as the unset variable,
+    one step later, and equally silent.
+    """
+    by_message: dict[str, list[str]] = {}
+    for flavor in CHART_FLAVORS:
+        try:
+            values = chart_literal_values(flavor)
+        except OSError:
+            continue
+        for comp, var, value in values:
+            if var in INTERNAL_URL_VARS and URLISH.match(value) and _host(value) in COMPOSE_HOSTS:
+                msg = (
+                    f"{var} = {value!r} on {comp} names a compose host\n"
+                    f"      -> a Service in this chart is `<release>-{_host(value)}`, "
+                    f"not `{_host(value)}`; use http://{{{{ .Release.Name }}}}-<service>:<port> "
+                    f"in charts/georag/templates/ and re-render."
+                )
+                by_message.setdefault(msg, []).append(flavor)
+    out = []
+    for msg, flavors in by_message.items():
+        head, _, rest = msg.partition("\n")
+        out.append(f"[Helm chart: {', '.join(flavors)}] {head}\n{rest}")
+    return out
+
+
+def _group_asymmetries(
+    env: dict[str, set[str]], groups: dict[str, tuple[str, ...]], fix: str
+) -> list[str]:
+    """Variables set on some members of an image group but not all of them."""
     out: list[str] = []
-    for image, members in IMAGE_GROUPS.items():
+    for image, members in groups.items():
         present = [m for m in members if m in env]
         if len(present) < 2:
             continue
@@ -234,32 +338,79 @@ def asymmetries() -> list[str]:
                 out.append(
                     f"{var} is set on {', '.join(has)} but NOT on {svc}\n"
                     f"      -> all of these run the `{image}` image, so they run the "
-                    f"same code and read the same variables. Set it there too, or add "
+                    f"same code and read the same variables. Set it there too{fix}, or add "
                     f'"{var} on {svc}" to PER_SERVICE_ALLOWED in this script with the '
                     f"reason it is deliberate."
                 )
     return out
 
 
-def findings() -> list[str]:
-    provided = terraform_sets()
+def asymmetries() -> list[str]:
+    """Image-group parity, for Terraform and then for each chart flavor."""
     out: list[str] = []
-    seen: set[str] = set()
+    try:
+        out += _group_asymmetries(per_service_sets(), IMAGE_GROUPS, "")
+    except (ValueError, OSError):
+        pass  # structure moved; the flat rule still applies
+
+    # The same finding in three flavors is one finding: merge them, and say
+    # which flavors have it.
+    by_message: dict[str, list[str]] = {}
+    for flavor in CHART_FLAVORS:
+        try:
+            env = chart_env(flavor)
+        except OSError:
+            continue
+        for msg in _group_asymmetries(
+            env, CHART_IMAGE_GROUPS,
+            " (charts/georag/templates/, then scripts/regenerate_k8s_manifests.sh)",
+        ):
+            by_message.setdefault(msg, []).append(flavor)
+    for msg, flavors in by_message.items():
+        head, _, rest = msg.partition("\n")
+        out.append(f"[Helm chart: {', '.join(flavors)}] {head}\n{rest}")
+    return out
+
+
+def findings() -> list[str]:
+    # Each deployment target must set the variable on its own: Terraform setting
+    # it says nothing about the chart. (name, names it sets, allowed, fix, why)
+    targets = [
+        (
+            "Terraform", terraform_sets(), ALLOWED,
+            "set it in deploy/aws/terraform/config.tf to "
+            "http://<service>.${...namespace.name}:<port>, or add it to ALLOWED "
+            "in this script with the reason it stays unset.",
+            "that fallback cannot resolve inside the VPC. Set the variable in "
+            "deploy/aws/terraform/config.tf.",
+        ),
+        (
+            "the Helm chart", chart_sets(), CHART_ALLOWED,
+            "set it in charts/georag/templates/ to "
+            "http://{{ .Release.Name }}-<service>:<port>, re-render with "
+            "scripts/regenerate_k8s_manifests.sh, or add it to CHART_ALLOWED in "
+            "this script with the reason it stays unset.",
+            "that fallback cannot resolve in the cluster. Set the variable in "
+            "charts/georag/templates/ and re-render with "
+            "scripts/regenerate_k8s_manifests.sh.",
+        ),
+    ]
+    out: list[str] = []
+    seen: set[tuple[str, str]] = set()
 
     def consider(var: str, default: str, where: str) -> None:
-        if URLISH.match(default) and _host(default) in COMPOSE_HOSTS:
-            INTERNAL_URL_VARS.add(var)
-        if var in seen or var in ALLOWED or var in provided:
-            return
         if not URLISH.match(default) or _host(default) not in COMPOSE_HOSTS:
             return
-        seen.add(var)
-        out.append(
-            f"{var} (default {default!r}, {where})\n"
-            f"      -> set it in deploy/aws/terraform/config.tf to "
-            f"http://<service>.${{...namespace.name}}:<port>, or add it to ALLOWED "
-            f"in this script with the reason it stays unset."
-        )
+        INTERNAL_URL_VARS.add(var)
+        for name, provided, allowed, fix, _why in targets:
+            if var in allowed or var in provided or (name, var) in seen:
+                continue
+            seen.add((name, var))
+            where_note = "" if name == "Terraform" else f" is not set in {name}"
+            out.append(
+                f"{var} (default {default!r}, {where}){where_note}\n"
+                f"      -> {fix}"
+            )
 
     for php in sorted((ROOT / "config").glob("*.php")):
         for n, line in enumerate(php.read_text().splitlines(), 1):
@@ -282,30 +433,42 @@ def findings() -> list[str]:
             # instead take every env var this file reads without a default and
             # require at least one of them to be wired. The constant itself is
             # legitimate — it is what keeps local Herd development working — so
-            # this reports only when nothing in the file is set on AWS.
+            # this reports only when nothing in the file is set on the target.
             if not URLISH.match(m.group(2)) or _host(m.group(2)) not in COMPOSE_HOSTS:
                 continue
             bare = set(re.findall(
                 r"""(?:os\.environ\.get|os\.getenv)\(\s*["']([A-Z][A-Z0-9_]{2,})["']\s*\)""",
                 text,
             ))
-            if not bare or bare & provided or bare & set(ALLOWED):
-                continue
+            # The constant is a URL fallback, so the variable that must be wired
+            # is a *_URL one. Counting every bare variable lets an unrelated one
+            # vouch for it: laravel_bridge.py also reads FASTAPI_SERVICE_KEY,
+            # which any target that runs FastAPI sets, so dropping
+            # LARAVEL_INTERNAL_URL everywhere used to go unreported. (Falls back
+            # to every bare variable when none is URL-shaped.)
+            bare = {b for b in bare if b.endswith("_URL")} or bare
+            # Those URL variables are internal-URL variables too, so the parity
+            # rule covers them: set on FastAPI but forgotten on the worker is
+            # the same bug as everywhere else.
+            INTERNAL_URL_VARS.update(b for b in bare if b.endswith("_URL"))
             name = f"_DEFAULT_{m.group(1)}"
-            if name in seen:
-                continue
-            seen.add(name)
-            out.append(
-                f"{name} = {m.group(2)!r} ({rel}) backs "
-                f"{', '.join(sorted(bare))}, none of which Terraform sets\n"
-                f"      -> that fallback cannot resolve inside the VPC. Set the "
-                f"variable in deploy/aws/terraform/config.tf."
-            )
+            for target, provided, allowed, _fix, why in targets:
+                if not bare or bare & provided or bare & set(allowed):
+                    continue
+                if (target, name) in seen:
+                    continue
+                seen.add((target, name))
+                out.append(
+                    f"{name} = {m.group(2)!r} ({rel}) backs "
+                    f"{', '.join(sorted(bare))}, none of which {target} sets\n"
+                    f"      -> {why}"
+                )
     return out
 
 
 def main() -> int:
-    bad = findings()  # also populates INTERNAL_URL_VARS, which asymmetries() reads
+    bad = findings()  # also populates INTERNAL_URL_VARS, which the rest read
+    bad += chart_compose_hosts()
     uneven = asymmetries()
     if bad:
         print(f"\n{len(bad)} internal URL(s) fall back to a compose host:", file=sys.stderr)
@@ -321,13 +484,14 @@ def main() -> int:
     if bad or uneven:
         return 1
     print(
-        f"Internal URLs: every service-to-service address is set in Terraform or "
-        f"deliberately allowed ({len(ALLOWED)} documented exceptions)."
+        f"Internal URLs: every service-to-service address is set in Terraform and in "
+        f"the Helm chart, or deliberately allowed ({len(ALLOWED)} documented "
+        f"exceptions for Terraform, {len(CHART_ALLOWED)} for the chart)."
     )
     print(
         f"Per-service parity: no internal-URL variable is set on some members of an "
-        f"image group and missed on others ({len(PER_SERVICE_ALLOWED)} documented "
-        f"exceptions)."
+        f"image group and missed on others, in Terraform or in any chart flavor "
+        f"({len(PER_SERVICE_ALLOWED)} documented exceptions)."
     )
     return 0
 

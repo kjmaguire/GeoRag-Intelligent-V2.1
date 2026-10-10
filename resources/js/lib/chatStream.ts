@@ -35,13 +35,84 @@ export function normaliseValidationState(raw: unknown): ValidationState {
 }
 
 /**
- * CHAT-16 — a completed, non-refused answer with zero citations is an
- * upstream defect (every RAG claim must carry a source_chunk_id). It must
- * not render like a normal, checked answer.
+ * `failed`-frame codes for a project whose lifecycle state refuses queries
+ * (FastAPI hibernated / archived / past-due; Laravel re-broadcasts them as a
+ * `failed` frame with the code in `code`). The refusal is about the PROJECT,
+ * not the question, so asking again fails the same way until its state changes.
+ * Lower-cased, matched case-insensitively.
+ */
+const PROJECT_LIFECYCLE_CODES: ReadonlySet<string> = new Set([
+    'project_hibernated',
+    'project_archived',
+    'project_past_due',
+]);
+
+/**
+ * Whether a failed turn is worth offering "Retry" on. Everything is, except a
+ * project-lifecycle refusal (see above): a Retry there is a button that cannot
+ * work. Unknown and missing codes stay retryable - a network drop or a stalled
+ * stream carries none, and those are exactly what Retry is for.
+ */
+export function isRetryableFailure(code: string | null | undefined): boolean {
+    return !PROJECT_LIFECYCLE_CODES.has((code ?? '').trim().toLowerCase());
+}
+
+/**
+ * `source_chunk_id`s that carry NO evidence: placeholders the assembler adds
+ * because GeoRAGResponse requires at least one citation (`min_length=1`), and
+ * the ids it mints for a tool that returned zero rows.
+ *
+ * Mirrors `EMPTY_SOURCE_SENTINELS`, `_EMPTY_SOURCE_SUFFIXES` and
+ * `_EMPTY_SOURCE_MARKERS` in src/fastapi/app/agent/response_assembler.py and
+ * the predicate `is_empty_source_id` over them. They are copied, not shared,
+ * so src/fastapi/tests/test_sse_vocabulary_contract.py fails when one side
+ * grows an id the other does not know.
+ */
+export const EMPTY_SOURCE_SENTINELS = [
+    'no-tool-call',
+    'georag_reports:empty',
+    'pg_public_geoscience:empty',
+    'silver.collars:miss',
+    'citation-rejected',
+    'provenance-rejected',
+] as const;
+export const EMPTY_SOURCE_SUFFIXES = [
+    ':count=0',
+    ':rows=0:first_row=none',
+    // Coverage-gap card with no ingest gap and no attribute rows.
+    ':indexed=0:processed=0:attrs=0',
+] as const;
+export const EMPTY_SOURCE_MARKERS = [':holes=0:', ':curves=0:reports=0'] as const;
+
+/** True when this id points at nothing: a sentinel, a zero-row result, or no id at all. */
+export function isEmptySourceId(sourceChunkId: unknown): boolean {
+    if (typeof sourceChunkId !== 'string' || sourceChunkId === '') return true;
+    if ((EMPTY_SOURCE_SENTINELS as readonly string[]).includes(sourceChunkId)) return true;
+    if (EMPTY_SOURCE_SUFFIXES.some((suffix) => sourceChunkId.endsWith(suffix))) return true;
+    if (EMPTY_SOURCE_MARKERS.some((marker) => sourceChunkId.includes(marker))) return true;
+    // A hole with a collar but no logged intervals is NON-empty (the collar
+    // metadata answers "tell me about hole X"); only the collar-less form is.
+    return sourceChunkId.endsWith(':intervals=0') && !sourceChunkId.includes(':collar=');
+}
+
+/**
+ * CHAT-16 — a completed, non-refused answer with no citation that points at
+ * evidence is an upstream defect (every RAG claim must carry a
+ * source_chunk_id). It must not render like a normal, checked answer.
+ *
+ * "No citation that points at evidence", not "no citation object": the
+ * producer cannot send `citations: []` (GeoRAGResponse.citations has
+ * min_length=1), so an answer built from nothing arrives with ONE placeholder
+ * citation (`source_chunk_id: "no-tool-call"`), and an array-length test never
+ * fired. Counting only citations whose id is not a sentinel makes the warning
+ * reachable.
  */
 export function isUncitedAnswer(citations: unknown, refusalPayload: unknown): boolean {
     if (refusalPayload) return false;
-    return !Array.isArray(citations) || citations.length === 0;
+    if (!Array.isArray(citations)) return true;
+    return !citations.some(
+        (citation) => !isEmptySourceId((citation as { source_chunk_id?: unknown } | null)?.source_chunk_id),
+    );
 }
 
 /** CHAT-6 — FastAPI's keep-alive rides `status` with heartbeat=true. */

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\User;
+use GuzzleHttp\Exception\ConnectException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Throwable;
@@ -67,9 +68,11 @@ final class HatchetWorkflowTrigger
             'input' => $input,
         ];
 
-        // Retry only when the request never reached FastAPI: a POST that
-        // dispatched a run and then timed out on the response must not
-        // dispatch a second one.
+        // Retry only when the request provably never reached FastAPI: a POST
+        // that dispatched a run and then timed out on the response must not
+        // dispatch a second one. Laravel raises ConnectionException for EVERY
+        // transport failure, a read timeout included, so the type alone proves
+        // nothing; see neverReachedFastApi().
         try {
             $response = Http::withHeaders([
                 'X-Service-Key' => $serviceKey,
@@ -78,11 +81,16 @@ final class HatchetWorkflowTrigger
             ])->timeout(15)->retry(
                 2,
                 250,
-                fn (Throwable $exc): bool => $exc instanceof ConnectionException,
+                fn (Throwable $exc): bool => self::neverReachedFastApi($exc),
                 throw: false,
             )->post($url, $payload);
         } catch (ConnectionException $exc) {
-            throw new HatchetWorkflowTriggerException('FastAPI unreachable: '.$exc->getMessage(), 502, $exc);
+            throw new HatchetWorkflowTriggerException(
+                'FastAPI unreachable: '.$exc->getMessage(),
+                502,
+                $exc,
+                maybeDispatched: ! self::neverReachedFastApi($exc),
+            );
         }
 
         if (! $response->successful()) {
@@ -106,5 +114,36 @@ final class HatchetWorkflowTrigger
             'workflow_run_id' => $runId,
             'workspace_id' => $workspaceId,
         ];
+    }
+
+    /**
+     * cURL errors that can only happen before a single byte of the request is
+     * written: CURLE_COULDNT_RESOLVE_HOST (6) and CURLE_COULDNT_CONNECT (7).
+     * Not 28 (a timeout can fire after the request was sent), not 52 (empty
+     * reply) or 56 (receive failure): those arrive after FastAPI had it.
+     */
+    private const CONNECT_PHASE_ERRNOS = [6, 7];
+
+    /**
+     * True only when the failure proves FastAPI never received the request.
+     *
+     * Laravel wraps every Guzzle transport failure in ConnectionException,
+     * including a cURL "operation timed out" after the request was written,
+     * so a retry keyed on the exception type re-posts requests that did
+     * dispatch. The cURL errno is on the Guzzle ConnectException that
+     * Laravel keeps as the previous exception.
+     */
+    public static function neverReachedFastApi(Throwable $exc): bool
+    {
+        if (! $exc instanceof ConnectionException) {
+            return false;
+        }
+
+        $previous = $exc->getPrevious();
+        if (! $previous instanceof ConnectException) {
+            return false;
+        }
+
+        return in_array($previous->getHandlerContext()['errno'] ?? null, self::CONNECT_PHASE_ERRNOS, true);
     }
 }

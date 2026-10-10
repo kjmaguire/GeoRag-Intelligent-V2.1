@@ -327,7 +327,17 @@ class ReportParseResult:
     # and a report whose table of contents yielded 17 headings while 300
     # pages OCR'd to nothing scores 1.0. Both numbers travel together now
     # so the second cannot be read as the first.
+    #
+    # Over the document's REAL page count (``_pdf_page_count``): the
+    # extractors only record a page that produced text, so the ratio used to
+    # be taken over those pages alone and read 100% for a scan of which most
+    # pages came back blank.
     text_page_coverage_pct: float = 0.0
+    # The exact page numbers that produced text (``pages_read_as_text``), or
+    # None when the producer did not compute it. IMAGE_EMBED_PAGE_SCOPE=figures
+    # reads it to pick the pages with no text; inferring that from a chunk's
+    # page span marks every page of a multi-page chunk as text.
+    text_pages: list[int] | None = None
     parser_used: str = "unknown"
     skipped_elements: int = 0
     warnings: list = field(default_factory=list)
@@ -4525,22 +4535,97 @@ def _attempt_ocr(path: str) -> OcrAttemptResult:
 
 
 
+def _pdf_page_count(path: str) -> int | None:
+    """The PDF's real page count, or None when it cannot be read.
+
+    ``per_page_text`` is not a page count: the extractors only append a page
+    that produced text, so ``len(per_page_text)`` is "pages that produced
+    text" and any ratio taken over it is 100% by construction (audit finding
+    13). Opened by pypdfium2, the engine the text pass itself uses.
+    """
+    try:
+        import pypdfium2 as pdfium  # noqa: PLC0415
+
+        pdf = pdfium.PdfDocument(path)
+        try:
+            return len(pdf)
+        finally:
+            with contextlib.suppress(Exception):
+                pdf.close()
+    except Exception:  # noqa: BLE001 - an unreadable count falls back to the old denominator
+        logger.debug("pdf_report: could not count pages of %s", path, exc_info=True)
+        return None
+
+
+#: ``per_page_method`` labels of a page read from the PDF's own text layer.
+_NATIVE_PAGE_METHODS = frozenset({"fitz_native", "pdfplumber_native"})
+#: ... and of a page read by an OCR engine.
+_OCR_PAGE_METHODS = frozenset({"cohere_parse", "tesseract"})
+
+
+def pages_read_as_text(
+    per_page_text: Sequence[tuple[int, str]] | None,
+    per_page_method: dict[int, str],
+    engine_text_pages: set[int] | frozenset[int] = frozenset(),
+) -> list[int]:
+    """The EXACT page numbers that produced text, sorted (audit finding 14).
+
+    What ``IMAGE_EMBED_PAGE_SCOPE=figures`` needs to tell a text page from a
+    figure. It used to be inferred from the sections' page SPANS
+    (``page_image.text_pages_from_sections``), and a chunk window that spans
+    pages 3-5 marked all three as text, so an image-only page 4 in the middle
+    of a text run never got an image passage. Here each page is judged on its
+    own text:
+
+    * a page read from the text layer (``fitz_native`` / ``pdfplumber_native``)
+      with any text is a text page;
+    * a page an OCR engine read is a text page when that engine returned at
+      least ``PER_PAGE_MIN_CHARS`` for it - a near-empty OCR page is the map or
+      plate whose meaning is the picture - or when it is one of
+      ``engine_text_pages`` (PDF_PARSE_MODE=all: the engine re-read a page that
+      already had a text layer).
+    """
+    pages: set[int] = set()
+    ocr_chars: dict[int, int] = {}
+    for page, text in per_page_text or []:
+        stripped = (text or "").strip()
+        if not stripped:
+            continue
+        method = per_page_method.get(page) or "fitz_native"
+        if method in _NATIVE_PAGE_METHODS or page in engine_text_pages:
+            pages.add(page)
+        elif method in _OCR_PAGE_METHODS:
+            ocr_chars[page] = ocr_chars.get(page, 0) + len(stripped)
+    pages.update(p for p, n in ocr_chars.items() if n >= PER_PAGE_MIN_CHARS)
+    return sorted(pages)
+
+
 def _text_page_coverage(
     per_page_text: list[tuple[int, str]] | None,
+    total_pages: int | None = None,
 ) -> tuple[int, int, float]:
-    """(pages, pages that produced text, fraction) for a parsed document.
+    """(pages, distinct pages that produced text, fraction) for a parsed document.
 
     Split out so both return paths of parse_pdf_report can report it --
     the empty-text early return is precisely the case where "0% of pages
     produced text" is the whole story, and it used to return a result
     carrying only parse_quality_pct=0.0, which reads as "not a technical
     report" rather than "we got nothing".
+
+    ``total_pages`` is the document's REAL page count (``_pdf_page_count``).
+    Without it the denominator was ``len(per_page_text)``, and the extractors
+    only append a page that produced text - so a 300-page report of which 3
+    pages had any text reported 100%, and the blank pages this number exists
+    to expose could never lower it. Without a page count (the PDF would not
+    open) the old denominator is kept, over distinct pages.
     """
-    total = len(per_page_text) if per_page_text else 0
-    with_text = sum(
-        1 for _page, text in (per_page_text or []) if text and text.strip()
+    entries = per_page_text or []
+    with_text = {page for page, text in entries if text and text.strip()}
+    total = (
+        max(int(total_pages), len(with_text)) if total_pages
+        else len({page for page, _text in entries})
     )
-    return total, with_text, (round(with_text / total, 4) if total else 0.0)
+    return total, len(with_text), (round(len(with_text) / total, 4) if total else 0.0)
 
 
 def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParseResult:
@@ -4821,6 +4906,12 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
             else:
                 _span.set_attribute("ocr.recovered", False)
 
+    # The document's real page count, the denominator of text_page_coverage_pct
+    # (audit finding 13): per_page_text holds only the pages that produced
+    # text. When the PDF will not open for a count, len(page_languages) is the
+    # next best (one entry per page on the extraction paths).
+    _real_page_count = _pdf_page_count(path) or len(page_languages) or None
+
     if not full_text.strip():
         logger.warning("pdf_report: extracted text is empty for '%s'", path)
         _budget_warning = _ocr_budget_warning(path)
@@ -4838,7 +4929,13 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
             region=None,
             sections=[],
             parse_quality_pct=0.0,
-            text_page_coverage_pct=_text_page_coverage(per_page_text)[2],
+            text_page_coverage_pct=_text_page_coverage(
+                per_page_text, _real_page_count,
+            )[2],
+            text_pages=pages_read_as_text(
+                per_page_text, per_page_method,
+                _summary_pages(extraction_warnings, "engine_text_pages"),
+            ),
             parser_used=parser_used,
             skipped_elements=skipped_elements,
             warnings=extraction_warnings,
@@ -4916,7 +5013,7 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         # with the honest number stored beside it, much less urgent.
         # per_page_text is list[tuple[page_number, text]], not list[str].
         _pages_total, _pages_with_text, text_page_coverage = _text_page_coverage(
-            per_page_text
+            per_page_text, _real_page_count,
         )
         _span.set_attribute("pdf.pages_total", _pages_total)
         _span.set_attribute("pdf.pages_with_text", _pages_with_text)
@@ -5150,6 +5247,10 @@ def parse_pdf_report(path: str, progress_file: str | None = None) -> ReportParse
         sections=sections,
         parse_quality_pct=parse_quality_pct,
         text_page_coverage_pct=text_page_coverage,
+        text_pages=pages_read_as_text(
+            per_page_text, per_page_method,
+            _summary_pages(extraction_warnings, "engine_text_pages"),
+        ),
         parser_used=parser_used,
         skipped_elements=skipped_elements,
         warnings=extraction_warnings,

@@ -27,6 +27,27 @@ use Illuminate\Support\Facades\Log;
  */
 final class AuthorizationAuditLogger
 {
+    public const REASON_NO_PIVOT_ROW = 'no_pivot_row';
+
+    public const REASON_NOT_PROJECT_OWNER = 'not_project_owner';
+
+    /**
+     * Every `reason` the application writes to the authz_audit channel.
+     *
+     * The Prometheus export (`laravel_authz_deny_total{reason=...}`) emits one
+     * series per entry, because a counter has to be read by name. It carried a
+     * hand-kept list that missed `not_project_owner` and named four reasons
+     * nothing emits, so owner-only denials were counted and never exported.
+     * A new call site needs its reason added here;
+     * AuthorizationAuditLoggerReasonsTest fails the build when one is not.
+     *
+     * @var list<string>
+     */
+    public const REASONS = [
+        self::REASON_NO_PIVOT_ROW,
+        self::REASON_NOT_PROJECT_OWNER,
+    ];
+
     /**
      * Log an authorization-denied event.
      *

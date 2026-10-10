@@ -8,7 +8,7 @@
  *   FE-18 the hole's coordinates are labelled with the project CRS
  *   FE-25 quick prompts follow the project commodity
  */
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
@@ -208,6 +208,58 @@ describe('Foundry/Workspace', () => {
         expect(screen.getByRole('button', { name: /show a regional reference column/i })).toBeInTheDocument();
     });
 
+    describe('LOGS depth axis', () => {
+        const num = (el: Element, attr: string) => Number(el.getAttribute(attr));
+        const curve = {
+            curve: 'GAMMA',
+            group: 'gamma',
+            unit: 'cps',
+            label: 'GAMMA (cps)',
+            color: '#fff',
+            min: 0,
+            max: 10,
+            points: [
+                { depth: 0, value: 1 },
+                { depth: 180, value: 5 },
+            ],
+        };
+
+        it('gives the curve tracks and the geology column ONE axis, deeper than either alone', () => {
+            window.history.replaceState({}, '', '/projects/red-star/workspace?mode=logs');
+            const { container } = renderPage(
+                props({
+                    log_tracks: [curve],
+                    log_depth_max: 180,
+                    // The geology runs deeper than the curves.
+                    log_lithology_intervals: [
+                        { from: 0, to: 100, code: 'GRN', label: 'Granite', color: '#999' },
+                        { from: 100, to: 260, code: 'SST', label: 'Sandstone', color: '#c90' },
+                    ],
+                }),
+            );
+            const [curves, strip] = Array.from(container.querySelectorAll('svg')).filter(
+                (svg) => svg.getAttribute('role') === 'img' || svg.querySelector('text')?.textContent === 'DEPTH (m)',
+            );
+            // 260 m of geology -> a 300 m axis for BOTH tracks (the curve track
+            // used to end at its own 180 m, the column at its own 260).
+            expect(curves.textContent).toContain('300');
+            expect(curves.getAttribute('height')).toBe(strip.getAttribute('height'));
+            const sst = screen.getByLabelText('SST 100-260 m');
+            const plot = num(curves.querySelector('rect')!, 'height');
+            expect(num(sst, 'y') + num(sst, 'height')).toBeCloseTo(16 + (260 / 300) * plot, 5);
+        });
+
+        it("does not let the API's 600 m placeholder stretch a geology-only hole", () => {
+            window.history.replaceState({}, '', '/projects/red-star/workspace?mode=logs');
+            renderPage(props({ log_tracks: [], log_depth_max: 600 }));
+            // 10 m of granite fits a 25 m axis (the hole's own data, rounded up), not the
+            // placeholder's 600 m: 40% of the plot, not 1.7% of it.
+            const grn = screen.getByLabelText('GRN 0-10 m');
+            const plot = num(grn.closest('svg')!, 'height') - 16 - 4; // the SVG less its top and bottom room
+            expect(num(grn, 'height') / plot).toBeCloseTo(10 / 25, 5);
+        });
+    });
+
     it('derives quick prompts from the commodity (FE-25)', () => {
         renderPage(props());
         expect(screen.getByText('Which holes have the best Gold intervals?')).toBeInTheDocument();
@@ -243,5 +295,47 @@ describe('Foundry/Workspace', () => {
             expect(screen.getByText(copy)).toBeInTheDocument();
             expect(container.textContent ?? '').not.toMatch(internal);
         }
+    });
+
+    // KEEP THIS TEST LAST. It is the one test here that waits (waitFor, up to 1 s), and
+    // when it fails it waits the whole second: long enough for the lazily imported
+    // Plotly chunk to finish loading and put its stylesheet into the document. Any
+    // test that mounts a 3D view AFTER that then spins in jsdom's getComputedStyle
+    // (nested style-rule resolution, effectively forever), so a regression here
+    // would hang the run instead of failing it. Last, it can only fail.
+    it("labels COMPARE's coordinate rows with the project CRS, not a fixed UTM zone (FE-18)", async () => {
+        window.history.replaceState({}, '', '/projects/red-star/workspace?mode=compare');
+        const first = (props().collars as Array<Record<string, unknown>>)[0];
+        const second = { ...first, collar_id: 'c-2', hole_id: 'RS-2', hole_id_canonical: 'RS-2' };
+        vi.spyOn(globalThis, 'fetch').mockImplementation(
+            async (input) =>
+                new Response(
+                    JSON.stringify({
+                        hole_id: String(input).includes('/RS-2/') ? 'RS-2' : 'RS-1',
+                        collar_id: 'c-1',
+                        total_depth: 200,
+                        easting: 500000,
+                        northing: 6000000,
+                        lat: null,
+                        lng: null,
+                        log_tracks: [],
+                        log_depth_max: 600,
+                        lithology_intervals: [],
+                        alteration_intervals: [],
+                        mineralization_intervals: [],
+                        ore_bands: 0,
+                        ore_thickness_m: 0,
+                        mean_u3o8_pct: null,
+                    }),
+                ),
+        );
+        renderPage(props({ collars: [first, second] }));
+
+        fireEvent.click(screen.getByRole('button', { name: /use first two/i }));
+
+        // Asserted on the text, not through findByText: on a miss, testing-library
+        // would pretty-print this whole page, which is slow enough to look like a hang.
+        await waitFor(() => expect(document.body.textContent).toContain('Easting (EPSG:26912)'));
+        expect(document.body.textContent).not.toContain('UTM 13N');
     });
 });

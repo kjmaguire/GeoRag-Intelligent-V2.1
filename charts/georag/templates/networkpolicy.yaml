@@ -18,16 +18,21 @@ Traffic map (→ = egress from the row's component):
                        seaweedfs:s3, internet:443
   laravel-reverb     → postgresql (direct), redis
   fastapi            → pgbouncer, postgresql (direct), redis, qdrant,
-                       seaweedfs:s3, hatchet, laravel-octane (service-key
-                       callbacks), internet:443
+                       seaweedfs:s3, hatchet, the model sidecars,
+                       laravel-octane (service-key callbacks), internet:443
   hatchet-worker     → hatchet, pgbouncer, postgresql (direct), redis,
-                       qdrant, seaweedfs:s3, fastapi, internet:443
+                       qdrant, seaweedfs:s3, fastapi, the model sidecars,
+                       internet:443
                        (one merged Deployment — WORKER_POOL selects the
                        registered workflow set, not a separate pod)
-  hatchet-engine     → (embedded queue; DNS only)
+  hatchet-engine     → postgresql (its own database and its message queue)
+  embedding,         ← fastapi, hatchet-worker.  → internet:443 for the
+  reranker             first-start model download (embedding, reranker)
+  sparse             ← fastapi, hatchet-worker.  → nothing (weights baked in)
   martin             → postgresql
   pgbouncer          → postgresql
-  pg-init / audit    → postgresql
+  pg-init            → postgresql
+  schema             → postgresql, redis
   datastores         → nothing (DNS only)
 */}}
 {{- if .Values.networkPolicy.enabled }}
@@ -84,18 +89,23 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
 */}}
 {{- $hatchetWorkers := list "hatchet-worker" }}
 {{- $appTier := list "fastapi" "laravel-octane" "laravel-horizon" "laravel-reverb" }}
+{{- /* A rule toward a sidecar that is switched off selects no pod: harmless. */}}
+{{- $modelHosts := list
+  (dict "to" "embedding" "ports" (list "http"))
+  (dict "to" "sparse" "ports" (list "http"))
+  (dict "to" "reranker" "ports" (list "http")) }}
 {{- $components := list
   (dict "name" "fastapi" "enabled" .Values.fastapi.enabled
         "ingressFrom" (concat (list "laravel-octane" "laravel-horizon") $hatchetWorkers)
         "fromIngressController" false "ingressPorts" (list "http")
-        "egress" (list
+        "egress" (concat (list
           (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
           (dict "to" "postgresql" "ports" (list "postgres"))
           (dict "to" "redis" "ports" (list "redis"))
           (dict "to" "qdrant" "ports" (list "http" "grpc"))
           (dict "to" "seaweedfs" "ports" (list "s3"))
           (dict "to" "hatchet-engine" "ports" (list "grpc" "api"))
-          (dict "to" "laravel-octane" "ports" (list "http")))
+          (dict "to" "laravel-octane" "ports" (list "http"))) $modelHosts)
         "external" true)
   (dict "name" "laravel-octane" "enabled" .Values.laravelOctane.enabled
         "ingressFrom" (list "fastapi")
@@ -124,17 +134,29 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
           (dict "to" "redis" "ports" (list "redis"))))
   (dict "name" "hatchet-engine" "enabled" .Values.hatchet.enabled
         "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
-        "ingressPorts" (list "grpc" "api"))
+        "ingressPorts" (list "grpc" "api")
+        "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
   (dict "name" "hatchet-worker" "enabled" (and .Values.hatchet.enabled .Values.hatchet.worker.enabled)
-        "egress" (list
+        "egress" (concat (list
           (dict "to" "hatchet-engine" "ports" (list "grpc" "api"))
           (dict "to" "pgbouncer" "ports" (list "pgbouncer"))
           (dict "to" "postgresql" "ports" (list "postgres"))
           (dict "to" "redis" "ports" (list "redis"))
           (dict "to" "qdrant" "ports" (list "http" "grpc"))
           (dict "to" "seaweedfs" "ports" (list "s3"))
-          (dict "to" "fastapi" "ports" (list "http")))
+          (dict "to" "fastapi" "ports" (list "http"))) $modelHosts)
         "external" true)
+  (dict "name" "embedding" "enabled" .Values.modelSidecars.embedding.enabled
+        "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
+        "ingressPorts" (list "http")
+        "external" true)
+  (dict "name" "reranker" "enabled" .Values.modelSidecars.reranker.enabled
+        "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
+        "ingressPorts" (list "http")
+        "external" true)
+  (dict "name" "sparse" "enabled" .Values.modelSidecars.sparse.enabled
+        "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
+        "ingressPorts" (list "http"))
   (dict "name" "martin" "enabled" .Values.martin.enabled
         "ingressFrom" (list "laravel-octane")
         "fromIngressController" false "ingressPorts" (list "http")
@@ -144,21 +166,23 @@ internet-on-443 rule and `networkPolicy.extraEgress`.
         "ingressPorts" (list "pgbouncer")
         "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
   (dict "name" "postgresql" "enabled" .Values.postgresql.enabled
-        "ingressFrom" (concat (list "pgbouncer" "fastapi" "martin" "pg-init" "audit-chain-verify" "laravel-octane" "laravel-horizon" "laravel-reverb") $hatchetWorkers)
+        "ingressFrom" (concat (list "pgbouncer" "fastapi" "martin" "pg-init" "schema" "hatchet-engine" "laravel-octane" "laravel-horizon" "laravel-reverb") $hatchetWorkers)
         "ingressPorts" (list "postgres"))
   (dict "name" "qdrant" "enabled" .Values.qdrant.enabled
         "ingressFrom" (concat (list "fastapi") $hatchetWorkers)
         "ingressPorts" (list "http" "grpc"))
   (dict "name" "redis" "enabled" .Values.redis.enabled
-        "ingressFrom" (concat $appTier $hatchetWorkers)
+        "ingressFrom" (concat $appTier (list "schema") $hatchetWorkers)
         "ingressPorts" (list "redis"))
   (dict "name" "seaweedfs" "enabled" .Values.seaweedfs.enabled
         "ingressFrom" (concat (list "fastapi" "laravel-octane" "laravel-horizon") $hatchetWorkers)
         "ingressPorts" (list "s3"))
   (dict "name" "pg-init" "enabled" .Values.jobs.pgInit.enabled
         "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
-  (dict "name" "audit-chain-verify" "enabled" .Values.jobs.auditChainVerify.enabled
-        "egress" (list (dict "to" "postgresql" "ports" (list "postgres"))))
+  (dict "name" "schema" "enabled" .Values.jobs.schema.enabled
+        "egress" (list
+          (dict "to" "postgresql" "ports" (list "postgres"))
+          (dict "to" "redis" "ports" (list "redis"))))
 }}
 {{- range $c := $components }}
 {{- if $c.enabled }}

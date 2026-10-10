@@ -1,5 +1,6 @@
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
+import { csrfHeaders } from './lib/csrf';
 
 declare global {
     interface Window {
@@ -24,12 +25,22 @@ declare global {
 // Skip conditions:
 //   - the response is for the /sanctum or /login endpoints themselves
 //     (otherwise we'd infinite-loop during sign-in)
+//   - the response is for the crash-telemetry POST. The ErrorBoundary sends it
+//     while it is showing "Something went wrong"; a 401/419 there (an expired
+//     session, a stale token) must not navigate away and replace that panel
+//     with the sign-in page — the report is best-effort and its failure says
+//     nothing the reader needs to act on
 //   - we're already ON /login (no sense redirecting to where we are)
 //   - the page is pre-hydration (window/location not available)
 //   - the request is cross-origin (a 401 from another host is not our session)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AUTH_PATHS = ['/sanctum/csrf-cookie', '/api/v1/auth/login', '/api/v1/auth/spa-login'];
+const NO_BOUNCE_PATHS = [
+    '/sanctum/csrf-cookie',
+    '/api/v1/auth/login',
+    '/api/v1/auth/spa-login',
+    '/api/v1/client-errors',
+];
 
 function shouldBounceOnAuthFailure(requestUrl: string | URL | Request): boolean {
     if (typeof window === 'undefined') return false;
@@ -53,7 +64,7 @@ function shouldBounceOnAuthFailure(requestUrl: string | URL | Request): boolean 
     }
     if (parsed.origin !== window.location.origin) return false;
 
-    for (const path of AUTH_PATHS) {
+    for (const path of NO_BOUNCE_PATHS) {
         if (parsed.pathname.includes(path)) return false;
     }
     return true;
@@ -116,4 +127,18 @@ window.Echo = new Echo({
     // blocks it as mixed content. https page -> wss (forceTLS true).
     forceTLS: reverbScheme === 'https',
     enabledTransports: ['ws', 'wss'],
+    // Private-channel auth (POST /broadcasting/auth). Left to itself, Echo
+    // reads <meta name="csrf-token"> ONCE, here, at construction and freezes it
+    // into auth.headers['X-CSRF-TOKEN']. After a sign-out/sign-in (this tab or
+    // another) that token is dead, Laravel prefers it over the valid XSRF
+    // cookie, and every channel authorisation 419s — chat could not subscribe,
+    // ingest toasts stopped — until a full reload. pusher-js ignores the legacy
+    // `auth` block entirely when `channelAuthorization` is given, so the stale
+    // header is never sent, and `headersProvider` is evaluated on EACH auth
+    // request, so the cookie's current token is.
+    channelAuthorization: {
+        transport: 'ajax',
+        endpoint: '/broadcasting/auth',
+        headersProvider: () => csrfHeaders(),
+    },
 });

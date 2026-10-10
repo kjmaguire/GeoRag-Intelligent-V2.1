@@ -75,6 +75,35 @@ describe('StripLogViewer — auth surface', () => {
         expect(container.textContent).not.toContain('m TD');
     });
 
+    it('a hole with only well-log curves draws its curve track instead of the empty state', async () => {
+        const curveOnly = {
+            ...collarPayload,
+            total_depth: null,
+            well_log_curves: [
+                {
+                    curve_id: 'c1',
+                    curve_name: 'GR',
+                    curve_unit: 'GAPI',
+                    null_value: -999.25,
+                    sample_count: 3,
+                    depths: [0, 50, 100],
+                    values: [10, 80, 30],
+                },
+            ],
+        };
+        fetchSpy.mockImplementation(
+            async (url: RequestInfo | URL) =>
+                new Response(JSON.stringify({ data: String(url).includes('/collars?') ? [curveOnly] : curveOnly }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+        );
+
+        const { container } = render(<StripLogViewer holeId="DH-001" projectId="proj-abc" />);
+
+        await waitFor(() => expect(container.querySelector('polyline[aria-label="GR curve"]')).not.toBeNull());
+    });
+
     it('collar fetch uses same-origin credentials', async () => {
         render(<StripLogViewer holeId="DH-001" projectId="proj-abc" />);
         await waitFor(() => expect(fetchSpy).toHaveBeenCalled());

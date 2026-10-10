@@ -39,6 +39,14 @@ Not here, on purpose:
   makes no LLM call, and accepts an empty input.
 * ``nl_summaries``. Manual by design; see its module docstring.
 
+Idempotent on the request id Laravel mints for each click (``export_request_id``,
+``score_request_id``, ``restore_request_id``, ``replay_request_id``; see
+``REQUEST_ID_FIELDS``). The id is claimed in Redis with ``SET NX`` (1 h) before
+the run is dispatched, so a repeated POST answers with the first run's id
+instead of starting a second run, and of two concurrent copies exactly one
+dispatches. With Redis unavailable the trigger still dispatches (the Laravel
+cooldown remains) and the outage is logged.
+
 Auth: ``X-Service-Key`` through the shared ``verify_service_key``, like every
 other ``/internal`` route.
 """
@@ -70,7 +78,9 @@ from app.hatchet_workflows.restore_workspace import (
 from app.hatchet_workflows.score_targets import ScoreTargetsInput, score_targets
 from app.hatchet_workflows.support_replay import SupportReplayInput, support_replay
 from app.hatchet_workflows.workspace_export import (
+    EXPORT_KEY_PREFIX,
     WorkspaceExportInput,
+    exports_bucket,
     workspace_export,
 )
 from app.services.auth import verify_service_key
@@ -78,10 +88,6 @@ from app.services.auth import verify_service_key
 log = logging.getLogger("georag.workflow_trigger")
 
 router = APIRouter(prefix="/internal/v1/workflows", tags=["workflows"])
-
-#: The only bucket workspace_export may write to, and so the only bucket a
-#: restore manifest may come from. Matches WorkspaceExportInput's default.
-EXPORT_BUCKET = "workspace-exports"
 
 #: Starlette renamed HTTP_422_UNPROCESSABLE_ENTITY and deprecated the old
 #: name; the number is the contract, so use it.
@@ -194,12 +200,17 @@ async def _check_project(conn: asyncpg.Connection, validated: Any, scope: str) -
 
 def _prepare_export(validated: WorkspaceExportInput, scope: str | None) -> WorkspaceExportInput:
     _same_workspace(validated.workspace_id, scope)
-    if validated.bucket != EXPORT_BUCKET:
+    # The only bucket workspace_export may write to through this route, and so
+    # the only one a restore manifest may come from: the configured EXPORTS
+    # bucket. (It used to be a bare "workspace-exports", which Terraform never
+    # creates; see workspace_export.EXPORT_KEY_PREFIX.)
+    bucket = exports_bucket()
+    if validated.bucket not in (None, bucket):
         raise TriggerRefused(
             _UNPROCESSABLE,
-            f"workspace exports are written to {EXPORT_BUCKET!r} only",
+            f"workspace exports are written to {bucket!r} only",
         )
-    return validated
+    return validated.model_copy(update={"bucket": bucket})
 
 
 async def _check_workspace(conn: asyncpg.Connection, validated: Any, scope: str) -> None:
@@ -215,7 +226,7 @@ def _prepare_restore(validated: RestoreWorkspaceInput, scope: str | None) -> Res
     # Only a workspace_export object for THIS workspace. A file:// URI would
     # read the worker's own filesystem, and another workspace's key prefix
     # would restore that tenant's rows into this one.
-    prefix = f"s3://{EXPORT_BUCKET}/{scope}/"
+    prefix = f"s3://{exports_bucket()}/{EXPORT_KEY_PREFIX}/{scope}/"
     uri = validated.snapshot_manifest_uri
     if not uri.startswith(prefix) or ".." in uri or len(uri) <= len(prefix):
         raise TriggerRefused(
@@ -236,7 +247,14 @@ def _prepare_replay(validated: SupportReplayInput, scope: str | None) -> Support
             _UNPROCESSABLE,
             "support_replay is dispatched with dry_run=true only",
         )
-    return validated
+    if validated.workspace_id is not None:
+        _same_workspace(validated.workspace_id, scope)
+    # Hand the workflow the workspace that was authorised here. Without it the
+    # support agents look the ticket up under the default tenant to discover the
+    # workspace, which the NOBYPASSRLS worker role can do only for a ticket in
+    # the default tenant (ops.support_* is STRICT RLS) -- so a replay for any
+    # other workspace was accepted at this route and then died in the worker.
+    return validated.model_copy(update={"workspace_id": UUID(scope)})
 
 
 async def _check_ticket(conn: asyncpg.Connection, validated: SupportReplayInput, scope: str) -> None:
@@ -393,7 +411,23 @@ async def trigger_workflow(
         )
         raise HTTPException(status_code=refused.status_code, detail=refused.detail) from refused
 
+    redis = getattr(request.app.state, "redis_client", None)
+    claim = await _claim_request_id(redis, workflow_name, scope, validated)
+    if isinstance(claim, _AlreadyDispatched):
+        log.info(
+            "workflow_trigger duplicate: workflow=%s run=%s workspace=%s requested_by=%s",
+            workflow_name, claim.run_id, scope, body.requested_by,
+        )
+        return WorkflowTriggerResponse(
+            workflow=workflow_name, workflow_run_id=claim.run_id, workspace_id=scope,
+        )
+
+    # If this raises, the claim is left in place until it expires. Whether the
+    # engine started the run is unknown (a deadline can expire after it did), and
+    # a second run is the one thing the claim exists to prevent. Nobody retries
+    # with this id: Laravel mints a new one per click.
     ref = await spec.workflow.aio_run_no_wait(validated)
+    await _remember_request_id(redis, claim, ref.workflow_run_id)
     log.info(
         "workflow_trigger dispatched: workflow=%s run=%s workspace=%s requested_by=%s",
         workflow_name, ref.workflow_run_id, scope, body.requested_by,
@@ -403,3 +437,99 @@ async def trigger_workflow(
         workflow_run_id=ref.workflow_run_id,
         workspace_id=scope,
     )
+
+
+# =============================================================================
+# Request-id dedupe
+# =============================================================================
+#: The input field in which Laravel mints a request id for each click, by
+#: workflow. Workflows not listed mint none; the Laravel cooldown is their only
+#: guard against a double dispatch.
+REQUEST_ID_FIELDS: dict[str, str] = {
+    "generate_report": "export_request_id",
+    "score_targets": "score_request_id",
+    "restore_workspace": "restore_request_id",
+    "support_replay": "replay_request_id",
+}
+
+#: How long a request id is remembered. Well past any retry of one POST; short
+#: enough that the keyspace stays small.
+DEDUPE_TTL_SECONDS = 3600
+
+#: Value of a claimed key until its dispatch returns a run id.
+_IN_PROGRESS = "in_progress"
+
+
+@dataclass(frozen=True)
+class _AlreadyDispatched:
+    run_id: str
+
+
+def _dedupe_key(workflow_name: str, scope: str | None, validated: Any) -> str | None:
+    field = REQUEST_ID_FIELDS.get(workflow_name)
+    request_id = getattr(validated, field, None) if field else None
+    if request_id is None:
+        return None
+    # The workspace is part of the key: a request id minted for one workspace
+    # must never answer with a run reference from another.
+    return f"workflow_trigger:{workflow_name}:{scope or '-'}:{str(request_id).lower()}"
+
+
+def _text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+async def _claim_request_id(
+    redis: Any, workflow_name: str, scope: str | None, validated: Any,
+) -> str | _AlreadyDispatched | None:
+    """Claim the request id before dispatching; the key to settle it, or the answer.
+
+    A POST whose id was already claimed must not start a second run: Laravel
+    retries a dispatch it could not confirm, and the same click can arrive twice.
+    ``SET NX`` makes the claim atomic, so of two concurrent copies exactly one
+    dispatches. Returns
+
+    * the Redis key when this request owns the dispatch (settle it with
+      ``_remember_request_id``),
+    * ``_AlreadyDispatched`` with the first run's id when an earlier request
+      already started one (the caller answers with that run, as the first did),
+    * ``None`` when there is nothing to dedupe on, or Redis cannot be used. The
+      dedupe is a safety net under the Laravel cooldown, not a gate: with Redis
+      down a trigger still dispatches, and the failure is logged.
+
+    409 while the first request is still dispatching.
+    """
+    key = _dedupe_key(workflow_name, scope, validated) if redis is not None else None
+    if key is None:
+        return None
+    try:
+        if await redis.set(key, _IN_PROGRESS, ex=DEDUPE_TTL_SECONDS, nx=True):
+            return key
+        previous = _text(await redis.get(key))
+    except Exception:  # noqa: BLE001 — a dedupe outage must not stop the trigger
+        log.warning(
+            "workflow_trigger: request-id dedupe unavailable, dispatching without it: "
+            "workflow=%s workspace=%s", workflow_name, scope, exc_info=True,
+        )
+        return None
+    if previous is None:
+        # Expired between the two calls: nothing to answer with, nothing to settle.
+        return None
+    if previous == _IN_PROGRESS:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="a trigger with this request id was already received and has no run yet",
+        )
+    return _AlreadyDispatched(previous)
+
+
+async def _remember_request_id(redis: Any, claim: str | None, run_id: str) -> None:
+    """Replace the claim with the run it produced, so a repeat gets that run back."""
+    if claim is None:
+        return
+    try:
+        await redis.set(claim, run_id, ex=DEDUPE_TTL_SECONDS)
+    except Exception:  # noqa: BLE001 — the run exists; do not fail the response over its bookkeeping
+        log.warning("workflow_trigger: could not record run %s under %s", run_id, claim, exc_info=True)

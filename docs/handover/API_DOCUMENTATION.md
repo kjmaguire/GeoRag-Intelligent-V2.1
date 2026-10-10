@@ -604,8 +604,8 @@ FastAPI mirror: `ContextEnvelope` typed model with same enums and defaults (`DEF
 - `export_type` — required, in 10 formats: `csv_collars`, `csv_samples`, `csv_assays`, `csv_lithology`, `csv_geochem`, `csa_bundle`, `shapefile`, `geopackage`, `dxf`, `las_bundle`. Lockstep with `App\Jobs\GenerateExportJob::generate`.
 - `filters` — optional array:
   - `hole_id` — nullable string `max:64`.
-  - `hole_type` — nullable in `Diamond,RC,RAB,Rotary,Percussion`.
-  - `status` — nullable in `Active,Completed,Abandoned`.
+  - `hole_type` — nullable, any case of a `HoleType` value (`Diamond,RC,RAB,Rotary,Percussion,Auger,exploration,unknown`). Read off the enum; the collar exporters compare case-insensitively.
+  - `status` — nullable, any case of a `CollarStatus` value (`Active,Completed,Abandoned,active,In Progress,Planned,unknown`). Same.
 
 **`POST /api/v1/charts/render`** — `chart_kind` enum: `long_section`, `harker_diagram`, `spider_diagram`, `ree_pattern`, `ternary_diagram`, `grade_tonnage`, `anomaly_map`, `target_heatmap` (`ChartsGalleryController::KNOWN_CHARTS`). Backend renders via FastAPI `POST /v1/viz/chart`.
 

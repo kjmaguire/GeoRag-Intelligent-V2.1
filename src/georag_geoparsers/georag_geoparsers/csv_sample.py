@@ -32,7 +32,6 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any, Union
 
@@ -41,13 +40,15 @@ import polars as pl
 from georag_geoparsers._assay_columns import AssaySpec, parse_assay_header
 from georag_geoparsers._csv_io import (
     SAMPLE_NULL_VALUES,
+    RaggedRows,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
 from georag_geoparsers._depth_units import convert_feet_columns
 from georag_geoparsers._drill_schema import SAMPLE_ALIASES, SAMPLE_REQUIRED
-from georag_geoparsers._encoding import is_utf8_compatible
+from georag_geoparsers._encoding import decode_warnings, is_utf8_compatible
 from georag_geoparsers._header_match import build_column_map
 from georag_geoparsers._hole_id import canonicalize, suggest_collisions
 from georag_geoparsers._optional_enum import BlankedValues, canonical_choice
@@ -475,7 +476,19 @@ def _pivot_long_to_wide(
         n_samples,
     )
 
-    wide_df = pl.DataFrame(list(group_records.values()))
+    # Built column by column from the full column list, NOT from the list of
+    # row dicts: pl.DataFrame(list_of_dicts) infers its columns from the first
+    # 100 dicts, so an element first seen in the 101st sample group
+    # ("Au" for 100 samples, then the first "Mo") had its whole column dropped
+    # with no warning (audit finding 8).
+    wide_columns = [*group_key_cols, *assay_col_names]
+    wide_df = pl.DataFrame({
+        column: [record.get(column) for record in group_records.values()]
+        for column in wide_columns
+    })
+    lost = [column for column in assay_col_names if column not in wide_df.columns]
+    if lost:  # unreachable by construction; a silent drop is the failure to prevent
+        raise RuntimeError(f"long-format pivot lost assay column(s): {lost}")
     # Align flags list with wide_df row order (dict preserves insertion order).
     pivoted_flags = list(group_flags.values())
     pivoted_unit_ambiguity = list(group_unit_ambiguity.values())
@@ -1037,13 +1050,8 @@ def parse_csv_samples(
         stream, detected_encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         raw_content = stream.getvalue()
 
+        global_warnings.extend(decode_warnings(detected_encoding, raw_content))
         if not is_utf8_compatible(detected_encoding):
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_ENCODING_NON_UTF8,
-                "message": f"detected encoding '{detected_encoding}' (not UTF-8) — decoded with replacement",
-                "context": {"encoding": detected_encoding},
-            })
             logger.info("csv_sample: detected encoding '%s'", detected_encoding)
 
         # 2026-05-23 — delimiter auto-detection (CSV audit gap #1).
@@ -1060,21 +1068,22 @@ def parse_csv_samples(
             })
             logger.info("csv_sample: detected delimiter %r", detected_delim)
 
-        df = pl.read_csv(
-            StringIO(raw_content),
-            separator=detected_delim,
-            infer_schema=False,
-            null_values=all_nulls,
-            truncate_ragged_lines=True,
+        df, ragged = read_csv_checked(
+            raw_content, separator=detected_delim, null_values=all_nulls,
         )
+        global_warnings.extend(ragged.warnings())
 
         # 2026-05-23 — column-aware decimal-comma transform (CSV audit gap #2).
-        # Note: for sample CSVs, columns with mixed BDL tokens ("<0.01",
-        # "BDL", etc.) will fail the all-match gate and NOT be transformed.
-        # That's intentional v1 behaviour: depth columns (from/to) get
-        # transformed cleanly; assay columns with BDL keep their raw
-        # strings for downstream _parse_assay_value to handle.
+        # An assay column in decimal commas that also holds censored cells
+        # ("<0,005", "> 10,5", "BDL", "NS") IS transformed, cell by cell
+        # (audit finding 10): this used to disqualify the column, leaving every
+        # "0,52" as text that _parse_assay_value cannot read. A column that
+        # mixes a point and a comma (a "<0.01" beside a "0,52") still fails
+        # the gate and keeps its raw strings, and one whose every comma group
+        # is three digits ("1,250") is left alone and warned about
+        # (decimal_comma_ambiguous).
         df, transformed_cols = transform_decimal_comma(df)
+        global_warnings.extend(transformed_cols.ambiguity_warnings())
         if transformed_cols:
             global_warnings.append({
                 "row": None,
@@ -1112,6 +1121,12 @@ def parse_csv_samples(
     is_long_format = _detect_long_format(csv_columns)
     pivoted_flags: list[dict] = []  # empty for wide-format; populated for long-format
     pivoted_unit_ambiguity: list[list[str]] = []  # CC-01 Item 1 Slice 2
+    #: Rows wider than the header (audit finding 9). In a wide file they are
+    #: skipped where they sit; in a long file they were emptied before the
+    #: pivot (so they joined no group) and are reported up front, because the
+    #: validation loop below walks pivoted groups, not file rows.
+    ragged_in_loop = ragged
+    ragged_skips: list[dict] = []
 
     if is_long_format:
         logger.info("csv_sample: long format detected — pivoting to wide")
@@ -1172,7 +1187,9 @@ def parse_csv_samples(
             csv_columns, aliases=effective_aliases,
         )
         assay_cols = pivoted_assay_cols
-        total_rows = len(df)
+        ragged_skips = [entry.skip_entry() for _row, entry in sorted(ragged.rows.items())]
+        ragged_in_loop = RaggedRows()
+        total_rows = len(df) + len(ragged_skips)
 
     # Log assay and unmapped columns after long-format pivot (if any) is complete
     if assay_cols:
@@ -1298,7 +1315,7 @@ def parse_csv_samples(
         global_warnings.append(unit_warning)
 
     records: list = []
-    skipped: list = []
+    skipped: list = list(ragged_skips)
     # CC-01 Item 1 Slice 2 — track the source pivot_idx for each kept
     # record so long-format unit-ambiguity flags can be re-aligned after
     # validation drops invalid rows.
@@ -1308,6 +1325,8 @@ def parse_csv_samples(
     rows_as_dicts = df_trimmed.to_dicts()
     for pivot_idx, raw in enumerate(rows_as_dicts):
         i = pivot_idx + 2  # 1-based CSV line (header is line 1)
+        if ragged_in_loop.skip(i, skipped):
+            continue
         row_warnings: list = []
         record, skip_entry = _validate_row(
             i, raw, column_map, assay_cols, qaqc_col_present, row_warnings,

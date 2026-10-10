@@ -44,23 +44,26 @@ def parse_export_jsonl_gz(body: bytes) -> tuple[
       - ``sections`` is ``{section: [row, ...]}`` — the §11.3-v2 extra
         store lines (which carry a ``"section"`` key)
     """
-    with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as gz:
-        text = gz.read().decode("utf-8")
-
-    lines = [l for l in text.split("\n") if l.strip()]  # noqa: E741
-    if not lines:
-        raise ValueError("export body is empty")
-
-    manifest = json.loads(lines[0])
+    # Line by line off the gzip stream: the old form inflated the archive to
+    # one string, split it into a list of lines, and only then parsed them --
+    # the whole export held three times over before the first row was read.
+    manifest: dict[str, Any] | None = None
     pg_tables: dict[str, list[dict[str, Any]]] = {}
     sections: dict[str, list[dict[str, Any]]] = {}
-    for raw in lines[1:]:
-        obj = json.loads(raw)
-        if "table" in obj:
-            pg_tables.setdefault(obj["table"], []).append(obj["row"])
-        elif "section" in obj:
-            sections.setdefault(obj["section"], []).append(obj["row"])
+    with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as gz:
+        for raw in gz:
+            if not raw.strip():
+                continue
+            obj = json.loads(raw)
+            if manifest is None:
+                manifest = obj
+            elif "table" in obj:
+                pg_tables.setdefault(obj["table"], []).append(obj["row"])
+            elif "section" in obj:
+                sections.setdefault(obj["section"], []).append(obj["row"])
 
+    if manifest is None:
+        raise ValueError("export body is empty")
     return manifest, pg_tables, sections
 
 

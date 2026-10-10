@@ -265,6 +265,25 @@ def test_drill_trace_3d_meta_carries_collars_intervals_structures():
     assert meta["project_id"] == "proj-1"
 
 
+def test_drill_trace_3d_card_carries_orientation_and_a_null_orientation_stays_null():
+    """GIS audit 2026-10: "not recorded" must not reach the card as 0 / -90."""
+    result = _drill_trace_3d()
+    result.collars[0].azimuth = None
+    result.collars[0].dip = None
+    result.collars[0].orientation = "unknown"
+    result.collars[0].trace_points = [
+        {"x": -105.5, "y": 44.5, "z": 300.0, "depth_m": 0.0, "extrapolated": False},
+        {"x": -105.5, "y": 44.5, "z": -50.0, "depth_m": 350.0, "extrapolated": True, "assumed": True},
+    ]
+    _, viz = _build_chat_card_payloads(
+        intent="factual_lookup", tool_results=[("query_drill_traces_3d", result)],
+    )
+    collar = viz.plotly_layout["meta"]["collars"][0]
+    assert collar["azimuth"] is None and collar["dip"] is None
+    assert collar["orientation"] == "unknown"
+    assert collar["trace_points"][-1]["assumed"] is True
+
+
 def test_drill_trace_3d_count_zero_falls_through():
     """count==0 means no collars found — must NOT emit the card."""
     _, viz = _build_chat_card_payloads(
@@ -353,6 +372,18 @@ def test_stereonet_meta_carries_image_base64_and_points():
     assert meta["structure_count"] == 3
     assert len(meta["points"]) == 3
     assert meta["projection"] == "Schmidt"
+
+
+def test_stereonet_meta_reports_measurements_left_off_for_want_of_an_orientation():
+    """GIS audit 2026-10: the card says how many were not plotted."""
+    result = _stereonet(count=3)
+    result.unoriented_count = 4
+    _, viz = _build_chat_card_payloads(
+        intent="synthesis", tool_results=[("query_stereonet", result)],
+    )
+    meta = viz.plotly_layout["meta"]
+    assert meta["unoriented_count"] == 4
+    assert meta["structure_count"] == 3, "the count is of what is plotted"
 
 
 def test_stereonet_count_zero_falls_through():

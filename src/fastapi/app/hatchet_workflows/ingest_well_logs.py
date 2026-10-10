@@ -37,6 +37,13 @@ destroyed the first file's curves, and a file whose curves were all below
 ``_MIN_SAMPLES`` wiped the hole and wrote nothing back. The unique
 constraint is on ``(collar_id, curve_name)``, so curves from different files
 were always meant to coexist.
+
+Coexist means different NAMES, though. Two runs of one tool string both carry
+GAMMA, and one hole holds one GAMMA: the second used to replace the first with
+nothing saying so. ``las_curve_conflicts`` now judges each same-named curve
+stored from another file - replaced with a ``curve_replaced_from_other_file``
+warning when the depth ranges overlap, refused when they do not (complementary
+runs; there is no merge convention to apply).
 """
 
 from __future__ import annotations
@@ -57,6 +64,11 @@ from app.db import bind_workspace_scope
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import _progress, hatchet
 from app.hatchet_workflows.ingest_tabular import _collar_index, _resolve_collar
+from app.services.ingest.las_curve_conflicts import (
+    decide,
+    fetch_stored_curves,
+    replacement_warnings,
+)
 
 log = logging.getLogger("georag.hatchet.ingest_well_logs")
 
@@ -338,16 +350,48 @@ async def run_ingest_well_logs(
                     #
                     # Re-ingesting the same file is still idempotent: its own
                     # curve names are exactly the ones removed first.
+                    #
+                    # A same-NAMED curve stored from a DIFFERENT file is not
+                    # the same thing (audit finding 5): two tool runs down
+                    # one hole routinely both carry GAMMA, and the unique key
+                    # is (collar_id, curve_name). It is judged first
+                    # (las_curve_conflicts.decide): replaced with a
+                    # curve_replaced_from_other_file warning when the depth
+                    # ranges overlap, refused (the stored curve kept) when
+                    # they do not.
                     curve_names = [c.name for c in usable]
 
                     async with conn.transaction():
+                        stored_curves = await fetch_stored_curves(
+                            conn, collar_id, curve_names,
+                        )
+                        ranges = {
+                            c.name: (float(c.min_depth), float(c.max_depth))
+                            for c in usable
+                        }
+                        decisions = {
+                            c.name: decide(
+                                c.name, stored_curves.get(c.name),
+                                new_file=filename, new_min=ranges[c.name][0],
+                                new_max=ranges[c.name][1],
+                            )
+                            for c in usable
+                        }
+                        warnings.extend(replacement_warnings(
+                            decisions, ranges, new_file=filename,
+                        ))
+                        refused = {
+                            n for n, d in decisions.items() if d.action == "refuse"
+                        }
+                        skipped += len(refused)
+                        usable = [c for c in usable if c.name not in refused]
                         replaced = int(
                             await conn.fetchval(
                                 "WITH d AS (DELETE FROM silver.well_log_curves "
                                 "WHERE collar_id = $1::uuid "
                                 "  AND curve_name = ANY($2::text[]) RETURNING 1) "
                                 "SELECT count(*) FROM d",
-                                collar_id, curve_names,
+                                collar_id, [c.name for c in usable],
                             ) or 0
                         )
                         for c in usable:
@@ -398,7 +442,11 @@ async def run_ingest_well_logs(
                 )
 
     except Exception as exc:
-        if run_id:
+        # Close the row HERE only when Hatchet will not run this task again
+        # (see _progress.is_final_attempt): a row marked 'failed' on the first
+        # attempt is terminal, so a retry that succeeds could neither complete
+        # it nor fire the completion broadcast.
+        if run_id and _progress.is_final_attempt(ctx, exc):
             # The kwarg is `error`, not `error_text`. Passing the wrong
             # name raised TypeError *inside* the handler, so the real
             # failure was replaced by the TypeError and the progress row

@@ -142,7 +142,7 @@ jobs:
             exit 1
           fi
           if [ "$STATE" != "available" ]; then
-            echo "::error::$DB_IDENTIFIER is '$STATE'. The nightly sweep stops it at 23:00 and starts it at 06:00 America/Los_Angeles. Re-run when it is 'available'."
+            echo "::error::$DB_IDENTIFIER is '$STATE'. The nightly sweep stops it at 17:00 and starts it at 08:30 America/Vancouver. Re-run when it is 'available'."
             exit 1
           fi
 

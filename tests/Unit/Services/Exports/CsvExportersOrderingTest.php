@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\Services\Exports;
 
 use App\Services\Exports\CsvAssaysExporter;
+use App\Services\Exports\CsvGeochemistryExporter;
 use App\Services\Exports\CsvLithologyExporter;
 use App\Services\Exports\CsvSamplesExporter;
 use Illuminate\Support\Facades\DB;
@@ -66,5 +67,18 @@ final class CsvExportersOrderingTest extends TestCase
 
         $this->assertNotEmpty($clauses);
         $this->assertStringEndsWith('a.element asc, a.id asc', $clauses[0]);
+    }
+
+    public function test_geochemistry_export_orders_by_primary_key_last(): void
+    {
+        // sample_id is nullable, so (hole_id, from_depth, sample_id) still ties
+        // for every surface row without one; the primary key ends the order.
+        $clauses = $this->orderByClauses(function (): void {
+            $r = (new CsvGeochemistryExporter)->export('00000000-0000-0000-0000-000000000001');
+            @unlink($r['path']);
+        });
+
+        $this->assertNotEmpty($clauses);
+        $this->assertStringEndsWith('g.sample_id asc, g.geochem_id asc', $clauses[0]);
     }
 }

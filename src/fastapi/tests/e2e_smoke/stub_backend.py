@@ -51,9 +51,14 @@ Chat completions
 The single required call on the smoke test's happy path is the final
 answer-synthesis call (app/agent/agentic_retrieval/nodes.py's assemble_node
 -> app/agent/llm_calls._call_llm), which sends plain prose back to the
-client -- GeoRAGResponse.citations is built from the deterministic Qdrant
-retrieval results, not by parsing structured JSON out of the LLM's answer,
-so this stub only needs to return *some* non-empty text. Handles both the
+client. GeoRAGResponse.citations is built from the deterministic Qdrant
+retrieval results, not parsed out of the answer, but the answer's markers
+still have to name those citations: Layer 2 removes every sentence that
+rests only on a marker with no Citation behind it, and refuses an answer
+left empty. The search_documents passages the query retrieves are cited
+[NI43-1], [NI43-2], ... (response_assembler.assign_citation_ids), so the
+canned answer cites [NI43-1]. It cited [DATA-1] until 2026-10-10, which
+names no document passage. Handles both the
 streaming (SSE) and non-streaming request shapes since queries.py always
 sets stream=true, but implementing both keeps this fixture reusable.
 The low-confidence keyword-classifier LLM fallback call (a one-word intent
@@ -116,17 +121,36 @@ def _embed_one(text: str) -> list[float]:
 _SSE_ANSWER = (
     "Based on the retrieved passages, hole PLS-22-08 returned high-grade "
     "uranium mineralisation at the Patterson Lake South property. "
-    "[DATA-1]"
+    "[NI43-1]"
 )
 
 
 
 def _rerank_logit(query: str, passage: str) -> float:
-    """A deterministic cross-encoder stand-in: token overlap as a logit in [-3, 3]."""
-    q = {t for t in re.findall(r"[a-z0-9]+", str(query).lower()) if len(t) > 2}
+    """A deterministic cross-encoder stand-in, as a logit in [-3, 3].
+
+    search_documents holds the cross_encoder backend to
+    RERANKER_SCORE_THRESHOLD (0.0) on this RAW logit; the sigmoid is applied
+    to the survivors, after the floor. So a passage has to score >= 0 here to
+    be retrieved at all.
+
+    The same controlled rig as _embed_one: a passage that shares one of
+    _MARKER_PHRASES with the query is the passage the query is about, and
+    scores +3. Anything else is scored by the share of the query's words it
+    contains, which keeps unrelated text under the floor. Until 2026-10-10
+    that share was the whole score, and the fixture's PLS-22-08 sections held
+    3 of the smoke query's 8 words ("the", "hole", "pls"; the hole id's digit
+    groups are too short to count), so they scored -0.75, every candidate was
+    dropped, and the smoke's query was a Layer 1 refusal.
+    """
+    query_text = str(query).lower()
+    passage_text = str(passage).lower()
+    if any(m in query_text and m in passage_text for m in _MARKER_PHRASES):
+        return 3.0
+    q = {t for t in re.findall(r"[a-z0-9]+", query_text) if len(t) > 2}
     if not q:
         return -3.0
-    p = set(re.findall(r"[a-z0-9]+", str(passage).lower()))
+    p = set(re.findall(r"[a-z0-9]+", passage_text))
     overlap = len(q & p) / len(q)
     return -3.0 + 6.0 * overlap
 
@@ -184,10 +208,10 @@ class StubHandler(BaseHTTPRequestHandler):
         # only passed because that failure used to degrade silently to RRF
         # order. search_documents now fails closed on a reranker outage (the
         # score floor is the retrieval-quality gate), so the smoke needs a
-        # reranker that answers. Lexical overlap as a logit: the marker
-        # passages the assertions depend on share their query's words, so
-        # they clear RERANKER_SCORE_THRESHOLD after the sigmoid; unrelated
-        # text scores below it.
+        # reranker that answers. _rerank_logit says how it scores: a passage
+        # that shares a marker phrase with the query clears
+        # RERANKER_SCORE_THRESHOLD, which is applied to the raw logit, and
+        # unrelated text scores below it.
         if self.path == "/rerank":
             body = self._body_json()
             pairs = body.get("pairs") or []

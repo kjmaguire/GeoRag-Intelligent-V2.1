@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { usePage } from '@inertiajs/react';
 import * as maplibregl from 'maplibre-gl';
 import { configureMaplibreWorker } from '@/lib/maplibreWorker';
+import { mapStartFailure } from '@/lib/mapInit';
+import MapStartFailure from '@/Components/MapStartFailure';
 import type {
     Map as MapLibreMap,
     Marker,
@@ -459,6 +461,8 @@ export default function MapView({
 
     const [collars, setCollars] = useState<CollarRow[]>([]);
     const [loading, setLoading] = useState(false);
+    // Set when the map itself could not start (no WebGL 2); the page stays.
+    const [mapError, setMapError] = useState<string | null>(null);
     const [mapStyle, setMapStyle] = useState('default');
     // Config-driven basemap URL registry (per CLAUDE.md hard rule #8).
     const mapStyles = useMapStyles();
@@ -644,28 +648,36 @@ export default function MapView({
         if (!mapContainer.current) return;
 
         configureMaplibreWorker(maplibregl);
-        const map = new maplibregl.Map({
-            container: mapContainer.current,
-            style: mapStyles.default.url,
-            center: [-107, 55], // Default: central Canada (exploration country)
-            zoom: 5,
-            pitch: 0,
-            maxPitch: 85,
-            // attributionControl defaults to enabled; do not pass true (invalid type — only false | options)
+        let map: maplibregl.Map;
+        try {
+            map = new maplibregl.Map({
+                container: mapContainer.current,
+                style: mapStyles.default.url,
+                center: [-107, 55], // Default: central Canada (exploration country)
+                zoom: 5,
+                pitch: 0,
+                maxPitch: 85,
+                // attributionControl defaults to enabled; do not pass true (invalid type — only false | options)
 
-            // ── Performance tuning ──────────────────────────────────────
-            maxTileCacheSize: 150, // cap memory for tile cache (default unbounded)
-            fadeDuration: 0, // instant vector tile appearance (no fade)
-            trackResize: true, // auto-resize on container changes
-            collectResourceTiming: false, // disable resource timing API (saves GC pressure)
-            // ── Request tuning ──────────────────────────────────────────
-            // /tiles/* routes sit under auth:sanctum in web.php. MapLibre
-            // sends same-origin requests with cookies by default (no explicit
-            // credentials option needed). The Sanctum session cookie is the
-            // canonical credential — no bearer token from localStorage
-            // (XSS-exfiltration target; types.ts:11-12). Accept-Encoding is a
-            // forbidden request header the browser sets itself, so none is set here.
-        });
+                // ── Performance tuning ──────────────────────────────────────
+                maxTileCacheSize: 150, // cap memory for tile cache (default unbounded)
+                fadeDuration: 0, // instant vector tile appearance (no fade)
+                trackResize: true, // auto-resize on container changes
+                collectResourceTiming: false, // disable resource timing API (saves GC pressure)
+                // ── Request tuning ──────────────────────────────────────────
+                // /tiles/* routes sit under auth:sanctum in web.php. MapLibre
+                // sends same-origin requests with cookies by default (no explicit
+                // credentials option needed). The Sanctum session cookie is the
+                // canonical credential — no bearer token from localStorage
+                // (XSS-exfiltration target; types.ts:11-12). Accept-Encoding is a
+                // forbidden request header the browser sets itself, so none is set here.
+            });
+        } catch (startError) {
+            // Thrown into the root error boundary, this took the whole page.
+            console.error('MapView: the map could not start', startError);
+            setMapError(mapStartFailure(startError));
+            return;
+        }
 
         // Navigation with pitch visualization for 3D terrain
         map.addControl(
@@ -1942,6 +1954,7 @@ export default function MapView({
     // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="relative w-full h-full bg-gray-900 flex flex-col">
+            {mapError && <MapStartFailure message={mapError} />}
             {/* Loading overlay */}
             {loading && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-gray-950/60 pointer-events-none">

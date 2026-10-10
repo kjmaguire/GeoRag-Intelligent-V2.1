@@ -89,4 +89,32 @@ class StorageServiceTest extends TestCase
         $this->assertIsString($url);
         $this->assertNotSame('', $url);
     }
+
+    public function test_put_or_fail_writes_through_the_disk(): void
+    {
+        Storage::fake('s3');
+
+        $storage = app(StorageService::class);
+        $storage->putOrFail($storage->bronze(), 'reports/example.pdf', 'payload');
+
+        Storage::disk('s3')->assertExists('reports/example.pdf');
+    }
+
+    public function test_put_or_fail_throws_when_the_disk_refuses_the_write(): void
+    {
+        // Every disk is 'throw' => false, so a refused write (AccessDenied, a
+        // wrong bucket) is a `false` return, not an exception. Callers relied
+        // on an exception that never came and reported the upload as stored.
+        $refusingDisk = new class
+        {
+            public function put(string $path, mixed $contents, mixed $options = []): bool
+            {
+                return false;
+            }
+        };
+
+        $this->expectException(\RuntimeException::class);
+
+        app(StorageService::class)->putOrFail($refusingDisk, 'reports/example.pdf', 'payload');
+    }
 }

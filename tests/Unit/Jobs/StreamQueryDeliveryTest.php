@@ -75,6 +75,7 @@ final class StreamQueryDeliveryTest extends TestCase
             'confidence' => 0.8,
             'validation_state' => 'clean',
             'answer_run_id' => '11111111-2222-3333-4444-555555555555',
+            'degraded_sources' => ['Document ranking (temporarily unavailable)'],
             'viz_payload' => ['chart_type' => 'drill_trace_3d', 'plotly_layout' => ['meta' => ['collars' => array_fill(0, 200, ['x' => 1.23456789, 'y' => 2.3456789])]]],
             'map_payload' => null,
         ]))->handle();
@@ -86,6 +87,8 @@ final class StreamQueryDeliveryTest extends TestCase
                 && count($e->payload['citations']) === 1
                 && $e->payload['validation_state'] === 'clean'
                 && $e->payload['answer_run_id'] === '11111111-2222-3333-4444-555555555555'
+                // A partial answer must still say so after slimming.
+                && $e->payload['degraded_sources'] === ['Document ranking (temporarily unavailable)']
                 && ! array_key_exists('viz_payload', $e->payload)
                 && $e->payload['truncated_fields'] === ['viz_payload'];
         });

@@ -2,12 +2,24 @@
 -- Phase 0 — audit_ledger hash-chain trigger
 --
 -- BEFORE-INSERT trigger that:
---   1. Looks up the previous row's hash (scoped per workspace; global chain
+--   1. Takes a per-workspace advisory lock, held to end of transaction, so
+--      concurrent inserts to one chain are serialised.
+--   2. Stamps created_at := clock_timestamp() AFTER that lock (the column
+--      DEFAULT is evaluated before the trigger, i.e. before any wait for the
+--      lock, which let a later-locking writer carry an earlier timestamp and
+--      fork the (created_at, id) order the verifier walks;
+--      2026_10_10_100100).
+--   3. Looks up the previous row's hash (scoped per workspace; global chain
 --      for system-wide events with workspace_id IS NULL) -- two indexable
---      branches, not IS NOT DISTINCT FROM (2026_10_04_200000).
---   2. Locks that row FOR UPDATE (after a per-workspace advisory lock) so
---      concurrent inserts can't collide.
---   3. Computes this row's hash from previous_hash + canonical content.
+--      branches, not IS NOT DISTINCT FROM (2026_10_04_200000). No row lock:
+--      a row lock needs UPDATE privilege on the table, which the application
+--      role must not hold on an append-only ledger (2026_10_10_100200).
+--   4. Computes this row's hash from previous_hash + canonical content.
+--
+-- The matching BEFORE UPDATE OR DELETE trigger that makes the ledger
+-- append-only (audit.reject_audit_ledger_mutation) is created by
+-- 2026_10_10_100200_make_audit_ledger_append_only, not here; re-applying this
+-- file neither adds nor removes it.
 --
 -- The verification job (Step 4 — audit_ledger_verify Hatchet workflow) walks
 -- the chain by re-running this exact computation against stored fields and
@@ -38,12 +50,13 @@ DECLARE
     v_message   text;
 BEGIN
     -- Serialise concurrent inserts to the same workspace's chain.
-    -- The 2026-05-16 report-build burst proved that row-level
-    -- FOR UPDATE alone does not fence concurrent writers under
-    -- partition-parent contention. The advisory lock is keyed on
-    -- workspace_id so cross-workspace traffic stays parallel.
-    -- (Mirrors migrations 2026_05_19_180300 and 2026_10_04_200000 so a raw
-    -- apply cannot revert either.)
+    -- The 2026-05-16 report-build burst proved that row-level locking
+    -- alone does not fence concurrent writers under partition-parent
+    -- contention. The advisory lock is keyed on workspace_id so
+    -- cross-workspace traffic stays parallel, and it is held to the end of
+    -- the writer's transaction.
+    -- (Mirrors migrations 2026_05_19_180300, 2026_10_04_200000 and
+    -- 2026_10_10_100100 so a raw apply cannot revert any of them.)
     PERFORM pg_advisory_xact_lock(
         hashtextextended(
             'audit_chain_'
@@ -52,16 +65,22 @@ BEGIN
         )
     );
 
-    -- Now safe to read the latest row: any concurrent writer
-    -- in this workspace is blocked behind us on the lock above.
-    -- The FOR UPDATE here is belt-and-braces; the advisory lock
-    -- is the load-bearing serialiser.
-    --
+    -- The row's timestamp is taken HERE, after the lock, never from the
+    -- column DEFAULT (evaluated before this trigger and so before any wait
+    -- for the lock). Whoever holds the lock is the latest writer on the
+    -- chain, and this reading is later than the previous writer's because
+    -- that writer committed before releasing the lock.
+    NEW.created_at := clock_timestamp();
+
     -- Two branches rather than `workspace_id IS NOT DISTINCT FROM
     -- NEW.workspace_id`: that operator cannot use an index, and
     -- this ran as a sequential scan + sort on every insert.
     -- Each branch is an index probe on
     -- audit_ledger_workspace_id_idx (workspace_id, created_at DESC).
+    --
+    -- No row lock on the tail row: the advisory lock above is the
+    -- serialiser, and a row lock needs UPDATE privilege on the table,
+    -- which the application role must not hold on an append-only ledger.
     IF NEW.workspace_id IS NULL THEN
         -- `workspace_id` leads the ORDER BY on purpose. For an
         -- `= value` qual the planner knows the column is constant
@@ -76,15 +95,13 @@ BEGIN
         FROM audit.audit_ledger
         WHERE workspace_id IS NULL
         ORDER BY workspace_id, created_at DESC, id DESC
-        LIMIT 1
-        FOR UPDATE;
+        LIMIT 1;
     ELSE
         SELECT hash INTO v_prev_hash
         FROM audit.audit_ledger
         WHERE workspace_id = NEW.workspace_id
         ORDER BY created_at DESC, id DESC
-        LIMIT 1
-        FOR UPDATE;
+        LIMIT 1;
     END IF;
 
     NEW.previous_hash := v_prev_hash;

@@ -214,6 +214,17 @@ EXTERNAL_LLM_EGRESS_BLOCKED = Counter(
     labelnames=("reason",),
 )
 
+# Audit 2026-10 finding 4 -- a generation that stopped because it hit the output
+# cap (or errored) mid-answer. Each increment is one answer that reached the
+# user flagged "possibly incomplete". A sustained rate means the output cap is
+# too low for the context being built (cap_output_tokens shrinks it as the
+# prompt grows) or the host is erroring mid-stream.
+LLM_TRUNCATED_GENERATIONS = Counter(
+    "georag_llm_truncated_generations_total",
+    "LLM answers cut off before finishing (max_tokens / length / error / filter).",
+    labelnames=("backend", "reason"),
+)
+
 LLM_CALLS_PER_QUERY = Histogram(
     "georag_llm_calls_per_query",
     "Distribution of total LLM calls made per RAG run (excludes cache hits).",

@@ -36,11 +36,14 @@ Architecture reference: Module spec §07f addendum (event_seq / event_id).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,11 @@ class EventStamper:
     answer_run_id: UUID
     trace_id: str | None = None
     _seq: int = field(default=0, init=False, repr=False)
+    #: Set by the first failed or timed-out Redis write. From then on this
+    #: stream writes nothing: the replay buffer is a recovery aid, every frame
+    #: awaits it, and a Redis that is down must cost a stream ONE bounded stall,
+    #: not one per token.
+    _redis_failed: bool = field(default=False, init=False, repr=False)
 
     def next(self) -> tuple[int, str]:
         """Increment sequence and return (event_seq, event_id).
@@ -98,7 +106,7 @@ class EventStamper:
             event_name: SSE event name (e.g. "delta", "citation", "completed").
             enriched:   Full event payload dict including event_seq / event_id.
         """
-        if redis is None:
+        if redis is None or self._redis_failed:
             return
         key = f"{_KEY_PREFIX}:{self.answer_run_id}"
         try:
@@ -108,12 +116,19 @@ class EventStamper:
             pipe = redis.pipeline(transaction=False)
             pipe.rpush(key, serialized)
             pipe.expire(key, _TTL_S)
-            await pipe.execute()
+            # Bounded by TIMEOUT_REDIS_S (Section 06e's 500 ms) here as well as
+            # by the client's socket timeouts: those bound one socket operation,
+            # not a connect plus a command, and a client that retries multiplies
+            # them. This await sits between two SSE frames.
+            await asyncio.wait_for(pipe.execute(), timeout=settings.TIMEOUT_REDIS_S)
         except Exception:
-            # Replay store write failure must never break the SSE stream.
+            # Replay store write failure must never break the SSE stream, and
+            # must not be paid for again on the next frame.
+            self._redis_failed = True
             logger.warning(
                 "EventStamper.push_to_redis: failed to persist event "
-                "answer_run_id=%s event_name=%s event_seq=%d",
+                "answer_run_id=%s event_name=%s event_seq=%d -- replay "
+                "buffer disabled for the rest of this stream",
                 self.answer_run_id,
                 event_name,
                 enriched.get("event_seq", -1),
@@ -133,14 +148,17 @@ class EventStamper:
         Best-effort like :meth:`push_to_redis`: replay is a recovery aid and
         must never break the stream.
         """
-        if redis is None:
+        # Nothing was written once a write failed, so there is nothing to alias.
+        if redis is None or self._redis_failed:
             return
         src = f"{_KEY_PREFIX}:{self.answer_run_id}"
         dst = f"{_KEY_PREFIX}:{persisted_run_id}"
         try:
-            await redis.copy(src, dst, replace=True)
-            await redis.expire(dst, _TTL_S)
+            async with asyncio.timeout(settings.TIMEOUT_REDIS_S):
+                await redis.copy(src, dst, replace=True)
+                await redis.expire(dst, _TTL_S)
         except Exception:
+            self._redis_failed = True
             logger.warning(
                 "EventStamper.alias_to: failed to alias replay buffer "
                 "stream_id=%s answer_run_id=%s",

@@ -91,6 +91,29 @@ class Settings(BaseSettings):
         # SHA-256 output size per RFC 7518 §3.2.
         return require_min_service_key_bytes(v, "FASTAPI_SERVICE_KEY")
 
+    @field_validator("RATE_LIMIT_STORAGE_URI")
+    @classmethod
+    def _validate_rate_limit_storage_uri(cls, v: str | None) -> str | None:
+        # slowapi 0.1.x builds its storage with limits.storage.storage_from_string
+        # and counts hits through the synchronous limits strategies. For
+        # ``redis://`` that is a blocking redis-py round trip inside the
+        # async middleware, once per request, on the one thread every other
+        # request shares: a Redis stall freezes the whole worker. Hard rule 2
+        # (async-native drivers only) applies to a library's driver as much as
+        # to ours, so refuse it here, where an operator is still watching,
+        # instead of recommending it (audit 2026-10 finding 18). Nothing in
+        # compose, the Helm chart or Terraform sets this today.
+        if v is None or not v.strip() or v.strip().lower() == "memory://":
+            return v
+        raise ValueError(
+            f"RATE_LIMIT_STORAGE_URI={v!r} is not supported. slowapi's limits "
+            "storages are synchronous, so a shared (redis://, memcached://, ...) "
+            "backend would block the event loop on every rate-limited request. "
+            "Leave it unset: counters are then kept in memory per worker (N "
+            "workers allow roughly N x the configured limit). A limiter shared "
+            "across workers needs an async-native implementation first."
+        )
+
     @field_validator("FASTAPI_SERVICE_KEY_PREVIOUS")
     @classmethod
     def _validate_previous_service_key_length(cls, v: str) -> str:
@@ -137,6 +160,17 @@ class Settings(BaseSettings):
     # 1 MiB is generous for our largest legitimate body (~10 KB chat query).
     MAX_REQUEST_BODY_BYTES: int = 1_048_576  # 1 MiB
 
+    # ingest_tabular (CSV / Excel / dBASE / Access) — largest file the workflow
+    # will download and parse, in bytes. A refusal BEFORE the download, with the
+    # reason on the run. The text path decodes the whole file and the parsers
+    # hold the result alongside copies of it (measured at about 9x the file on
+    # a delimited upload), and the ingest worker has 8 GiB, so the ceiling for
+    # tabular files is well below the 512 MiB every upload is admitted under
+    # (GEORAG_MAX_UPLOAD_BYTES, which also covers rasters and Geosoft grids that
+    # do not go through here). 150 MiB is a drill-hole table of several million
+    # rows. Raise it only together with the worker's memory.
+    INGEST_TABULAR_MAX_BYTES: int = 150 * 1024 * 1024
+
     # FastAPI review #2 — global per-request timeout backstop.
     # Enforced by `_GlobalTimeout` middleware. SSE stream endpoints opt
     # out via the Accept header check (they own their own deadline via
@@ -161,12 +195,14 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = False
     RATE_LIMIT_DEFAULT: str = "60/minute"
     RATE_LIMIT_QUERIES: str = "20/minute"  # the expensive endpoint
-    # slowapi/limits storage backend. Unset/empty = per-worker in-process
-    # memory, so with N uvicorn workers a caller effectively gets N x the
-    # limit. Point it at Redis (``redis://:<pw>@host:6379/4``) to share one
-    # bucket across workers and tasks. Read by app/services/rate_limit.py;
-    # this used to be read via getattr() with no Settings field, so it could
-    # not actually be configured.
+    # slowapi/limits storage backend. Unset/empty (or ``memory://``) =
+    # per-worker in-process memory, so with N uvicorn workers a caller
+    # effectively gets N x the limit. NOTHING ELSE IS ACCEPTED: slowapi drives
+    # the SYNCHRONOUS ``limits`` storages, so a ``redis://`` URL makes a blocking
+    # redis-py call on the event loop for every request the limiter touches
+    # (hard rule 2), and `_validate_rate_limit_storage_uri` below refuses it at
+    # startup. This comment used to recommend a Redis URL for staging/prod.
+    # Read by app/services/rate_limit.py.
     RATE_LIMIT_STORAGE_URI: str | None = None
 
     # -------------------------------------------------------------------------

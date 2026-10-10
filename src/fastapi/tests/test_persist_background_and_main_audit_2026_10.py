@@ -86,8 +86,9 @@ def test_insert_resolves_the_project_in_a_subselect() -> None:
         _ANSWER_RUN_INSERT_SQL
     )
     assert "RETURNING answer_run_id, project_id" in _ANSWER_RUN_INSERT_SQL
-    # Placeholder count is unchanged: still 21 binds, $2 still the project id.
-    assert "$20" in _ANSWER_RUN_INSERT_SQL and "$21" not in _ANSWER_RUN_INSERT_SQL
+    # $2 is still the project id. The count is 22 binds: the original twenty
+    # plus user_id ($21) and trace_id ($22), appended (finding 24).
+    assert "$22" in _ANSWER_RUN_INSERT_SQL and "$23" not in _ANSWER_RUN_INSERT_SQL
 
 
 @pytest.mark.asyncio
@@ -103,6 +104,38 @@ async def test_persist_makes_no_separate_fk_lookup() -> None:
     assert update["response"].answer_run_id == run_id
     # The project id the INSERT was handed is the caller's, untouched.
     assert fetchrow.await_args.args[2] == PROJECT
+
+
+@pytest.mark.asyncio
+async def test_the_conversation_is_persisted_as_the_runs_session_id() -> None:
+    """answer_runs.session_id was always NULL: Laravel never sent the thread
+    id and the persist node never passed one to the lineage payload."""
+    session = "6f1c0b9e-2a1d-4c4e-9a51-0c6a0d1f2e3b"
+
+    async def _insert_args(session_id: str | None) -> tuple[Any, ...]:
+        fetchrow = AsyncMock(return_value={"answer_run_id": uuid4(), "project_id": PROJECT})
+        state = _state(_pool(fetchrow))
+        state.deps.session_id = session_id
+        await persist_node(state)
+        await drain_persist_background()
+        return fetchrow.await_args.args
+
+    with_thread = await _insert_args(session)
+    single_shot = await _insert_args(None)
+
+    assert session in with_thread
+    # The same parameter is NULL for a question asked outside a conversation.
+    assert single_shot[with_thread.index(session)] is None
+
+
+def test_the_request_drops_a_session_id_that_is_not_a_uuid() -> None:
+    from app.routers.queries import QueryRequest
+
+    ok = QueryRequest(query="q", project_id=PROJECT, session_id="6F1C0B9E-2A1D-4C4E-9A51-0C6A0D1F2E3B")
+    bad = QueryRequest(query="q", project_id=PROJECT, session_id="'; DROP TABLE x; --")
+
+    assert ok.session_id == "6f1c0b9e-2a1d-4c4e-9a51-0c6a0d1f2e3b"
+    assert bad.session_id is None
 
 
 @pytest.mark.asyncio

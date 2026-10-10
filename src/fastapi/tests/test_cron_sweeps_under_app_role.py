@@ -476,6 +476,157 @@ async def test_a_stale_in_flight_row_is_reclaimed(app_pool, seed, owner_conn) ->
 
 
 # ---------------------------------------------------------------------------
+# The outbox lag gauge (2026-10 Hatchet audit): every scope, not just one
+# ---------------------------------------------------------------------------
+async def _enqueued(conn, ws: str | None, store: str, age_min: int) -> str:
+    return str(await conn.fetchval(
+        "INSERT INTO outbox.pending_propagations (workspace_id, source_schema, "
+        "source_table, source_id, target_store, operation, idempotency_key, "
+        "status, enqueued_at) VALUES ($1::uuid, 'silver', 't', $2, $3, 'upsert', $2, "
+        "'pending', now() - make_interval(mins => $4)) RETURNING id",
+        ws, f"hat-{uuid.uuid4()}", store, age_min,
+    ))
+
+
+async def _delete_outbox(owner_conn, ids: list[str]) -> None:
+    async with _scoped(owner_conn, "") as c:
+        await c.execute(
+            "DELETE FROM outbox.pending_propagations WHERE id = ANY($1::uuid[])", ids,
+        )
+
+
+async def test_the_outbox_lag_gauge_sees_every_tenants_backlog(
+    app_pool, seed, owner_conn, monkeypatch,
+) -> None:
+    """georag_outbox_lag_seconds was read on an unbound connection. Once the
+    outbox tables are fail-closed (2026_10_10_100300) that read sees platform
+    rows only, so a tenant whose outbox had been stuck for hours reported no
+    lag. As the worker's role, with two tenants holding backlogs of different
+    ages in one store, the gauge must report the worse."""
+    from app.hatchet_workflows import _progress
+    from app.hatchet_workflows import reliability_metrics_publisher as pub
+    from app.metrics import OUTBOX_LAG_SECONDS
+
+    async def _pool():
+        return app_pool
+
+    monkeypatch.setattr(_progress, "get_pool", _pool)
+    monkeypatch.setattr(pub, "_published_outbox_stores", set())
+    OUTBOX_LAG_SECONDS.labels(target_store="seaweedfs").set(-1.0)
+
+    stuck_ws, other_ws = seed.workspaces
+    ids = []
+    async with _scoped(owner_conn, stuck_ws) as c:
+        ids.append(await _enqueued(c, stuck_ws, "seaweedfs", age_min=120))
+    async with _scoped(owner_conn, other_ws) as c:
+        ids.append(await _enqueued(c, other_ws, "seaweedfs", age_min=10))
+    try:
+        await pub.publish_now()
+        lag = OUTBOX_LAG_SECONDS.labels(target_store="seaweedfs")._value.get()
+        assert lag >= 120 * 60 - 5, f"the stuck tenant's two-hour backlog read as {lag}s"
+    finally:
+        await _delete_outbox(owner_conn, ids)
+
+
+async def test_the_outbox_lag_gauge_sees_platform_rows(
+    app_pool, owner_conn, monkeypatch,
+) -> None:
+    from app.hatchet_workflows import _progress
+    from app.hatchet_workflows import reliability_metrics_publisher as pub
+    from app.metrics import OUTBOX_LAG_SECONDS
+
+    async def _pool():
+        return app_pool
+
+    monkeypatch.setattr(_progress, "get_pool", _pool)
+    monkeypatch.setattr(pub, "_published_outbox_stores", set())
+    OUTBOX_LAG_SECONDS.labels(target_store="redis").set(-1.0)
+
+    async with _scoped(owner_conn, "") as c:
+        row = await _enqueued(c, None, "redis", age_min=90)
+    try:
+        async with app_pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('app.workspace_id', '', true)")
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM outbox.pending_propagations WHERE id = $1::uuid", row,
+            )
+        if not visible:
+            pytest.skip(
+                "this database's outbox policy hides platform rows from a cleared "
+                "scope (before 2026_10_10_100300), so there is nothing to measure"
+            )
+        await pub.publish_now()
+        assert OUTBOX_LAG_SECONDS.labels(target_store="redis")._value.get() >= 90 * 60 - 5
+    finally:
+        await _delete_outbox(owner_conn, [row])
+
+
+async def test_a_platform_dead_letter_is_filed_as_the_worker_role(
+    app_pool, owner_conn, monkeypatch, caplog,
+) -> None:
+    """The platform finding is best effort (a failure is logged, not raised, so
+    the dead letter itself always commits), which means only the real role can
+    show that it LANDS: store_reconciliation_findings is RLS-strict and the insert
+    has to bind the platform workspace first."""
+    import logging
+
+    from app.hatchet_workflows import outbox_dispatcher as ob
+
+    for name in list(os.environ):
+        if name.startswith("EXTERNAL_WEBHOOK_"):
+            monkeypatch.delenv(name, raising=False)
+    ob._TARGET_SEMAPHORES.clear()
+    key = f"dl-app-role:{uuid.uuid4()}"
+    async with _scoped(owner_conn, "") as c:
+        await c.execute(
+            "INSERT INTO silver.workspaces (workspace_id, name, slug) VALUES ($1::uuid, 'platform', 'platform') "
+            "ON CONFLICT (workspace_id) DO NOTHING", PLATFORM_WORKSPACE,
+        )
+        row = await c.fetchrow(
+            "INSERT INTO outbox.pending_propagations (workspace_id, source_schema, source_table, source_id, "
+            "target_store, target_collection, operation, payload, idempotency_key, status, last_attempted_at) "
+            "VALUES (NULL, 'audit', 'tenant_isolation', 'app-role', 'external_webhook', 'security_critical', "
+            "'upsert', '{}'::jsonb, $1, 'in_flight', now()) "
+            "RETURNING id, workspace_id, source_schema, source_table, source_id, target_store, "
+            "target_collection, operation, payload, idempotency_key, target_store_concurrency_hint", key,
+        )
+    try:
+        async with app_pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT set_config('app.workspace_id', '', true)")
+            visible = await conn.fetchval(
+                "SELECT count(*) FROM outbox.pending_propagations WHERE id = $1", row["id"],
+            )
+        if not visible:
+            pytest.skip(
+                "this database's outbox policy hides platform rows from a cleared scope "
+                "(before 2026_10_10_100300), so the worker could not even claim one"
+            )
+
+        with caplog.at_level(logging.ERROR, logger="georag.hatchet.outbox_dispatcher"):
+            outcome = await ob._dispatch_one(app_pool, row, dead_letter_after=3)
+
+        assert outcome == "dead_lettered"
+        status = await owner_conn.fetchval("SELECT status FROM outbox.pending_propagations WHERE id = $1", row["id"])
+        assert status == "dead_lettered"
+        finding = await owner_conn.fetchrow(
+            "SELECT workspace_id::text AS ws, severity FROM silver.store_reconciliation_findings "
+            "WHERE details->>'propagation_id' = $1", str(row["id"]),
+        )
+        assert finding is not None, "the finding insert was swallowed: RLS or the bound workspace refused it"
+        assert (finding["ws"], finding["severity"]) == (PLATFORM_WORKSPACE, "critical")
+        assert [r for r in caplog.records if ob.OUTBOX_PLATFORM_DEAD_LETTER_MARKER in r.getMessage()]
+    finally:
+        async with owner_conn.transaction():
+            await owner_conn.execute("SET LOCAL session_replication_role = replica")
+            await owner_conn.execute(
+                "DELETE FROM silver.store_reconciliation_findings WHERE details->>'propagation_id' = $1", str(row["id"]),
+            )
+            await owner_conn.execute("DELETE FROM audit.audit_ledger WHERE target_id = $1", str(row["id"]))
+            await owner_conn.execute("DELETE FROM outbox.propagation_attempts WHERE propagation_id = $1", row["id"])
+            await owner_conn.execute("DELETE FROM outbox.pending_propagations WHERE id = $1", row["id"])
+
+
+# ---------------------------------------------------------------------------
 # HAT-7: Pass 2 bumps both counters
 # ---------------------------------------------------------------------------
 async def test_pass_2_bumps_the_workspace_and_the_project(app_pool, seed, owner_conn) -> None:

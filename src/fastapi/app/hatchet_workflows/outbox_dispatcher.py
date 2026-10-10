@@ -36,6 +36,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from typing import Any
@@ -44,11 +45,25 @@ import asyncpg
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
+from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
 from app.db import affected_row_count, bind_workspace_scope, list_workspace_ids
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
 from app.services.qdrant_conn import qdrant_client_kwargs
+
+log = logging.getLogger("georag.hatchet.outbox_dispatcher")
+
+#: Log marker for a PLATFORM row (workspace_id NULL) that dead-lettered. Today
+#: the only writer of such a row is the tenant-isolation auditor, whose
+#: cross-tenant-leak escalation goes out as target_store 'external_webhook',
+#: target_collection 'security_critical'. In AWS nothing configures that channel
+#: (no EXTERNAL_WEBHOOK_URL_* / HMAC secret in deploy/aws/terraform/config.tf),
+#: so the row dead-letters on its first attempt, and the dispatcher's only
+#: durable trace of a dead letter, a silver.store_reconciliation_findings row,
+#: needs a workspace the row does not have. Result: the alarm for a tenancy leak
+#: failed to ring, and nothing said so. See deploy/aws/terraform/alerts.tf.
+OUTBOX_PLATFORM_DEAD_LETTER_MARKER = "OUTBOX_PLATFORM_DEAD_LETTER"
 
 
 class OutboxDispatcherInput(BaseModel):
@@ -473,8 +488,9 @@ async def _record_attempt_and_advance(
                     row["id"],
                 )
                 # silver.store_reconciliation_findings.workspace_id is NOT NULL
-                # + has FK to silver.workspaces — only write a finding for
-                # workspace-scoped propagations.
+                # + has FK to silver.workspaces — a workspace-scoped propagation
+                # files its finding under its own workspace; a platform row
+                # (workspace_id NULL) under the platform workspace, below.
                 if row["workspace_id"] is not None:
                     await conn.execute(
                         """
@@ -503,6 +519,8 @@ async def _record_attempt_and_advance(
                             }
                         ),
                     )
+                else:
+                    await _file_platform_finding(conn, row, attempt_no, error_message)
                 return "dead_lettered"
 
             # transient — release back to pending for the next pass.
@@ -513,22 +531,93 @@ async def _record_attempt_and_advance(
             return "transient_failure"
 
 
+async def _file_platform_finding(
+    conn: asyncpg.Connection, row: asyncpg.Record, attempts: int, last_error: str | None,
+) -> None:
+    """Record a dead-lettered PLATFORM row (workspace_id NULL) as a finding.
+
+    ``silver.store_reconciliation_findings.workspace_id`` is NOT NULL with a
+    foreign key, so a row with no workspace could not be written there and was
+    not: the dead letter existed only as an attempt row and an audit anchor
+    nobody reads. It is filed under the platform (default) workspace, where the
+    operators who triage findings look.
+
+    Best effort inside a savepoint: the transition to 'dead_lettered' (and its
+    attempt row and anchor) must commit even if this cannot be written, or the
+    row is reclaimed and retried, and fails the same way, forever.
+    """
+    channel = row["target_collection"] or "default"
+    try:
+        async with conn.transaction():
+            await bind_workspace_scope(
+                conn, workspace_id=LEGACY_DEFAULT_TENANT_UUID,
+                site="outbox_dispatcher.platform_finding",
+            )
+            await conn.execute(
+                """
+                INSERT INTO silver.store_reconciliation_findings(
+                    workspace_id, drift_type, severity,
+                    source_store, target_store,
+                    source_id, target_id, details, discovered_by
+                ) VALUES (
+                    $1::uuid, 'outbox_dead_letter', $2,
+                    'postgres', $3,
+                    $4, $5, $6::jsonb, 'outbox_dispatcher'
+                )
+                """,
+                LEGACY_DEFAULT_TENANT_UUID,
+                "critical" if channel == "security_critical" else "high",
+                row["target_store"],
+                row["source_id"],
+                row["idempotency_key"],
+                json.dumps(
+                    {
+                        "scope": "platform",
+                        "propagation_id": str(row["id"]),
+                        "channel": channel,
+                        "source_schema": row["source_schema"],
+                        "source_table": row["source_table"],
+                        "operation": row["operation"],
+                        "attempts": attempts,
+                        "last_error": last_error,
+                    }
+                ),
+            )
+    except Exception:  # noqa: BLE001 — see docstring
+        log.warning(
+            "outbox_dispatcher: could not file the platform dead-letter finding "
+            "for propagation %s", row["id"], exc_info=True,
+        )
+
+
+def _log_platform_dead_letter(row: asyncpg.Record, last_error: str | None) -> None:
+    """Emit OUTBOX_PLATFORM_DEAD_LETTER for a committed platform dead letter."""
+    log.error(
+        "%s propagation_id=%s target_store=%s channel=%s source=%s.%s source_id=%s "
+        "last_error=%s",
+        OUTBOX_PLATFORM_DEAD_LETTER_MARKER, row["id"], row["target_store"],
+        row["target_collection"] or "default", row["source_schema"],
+        row["source_table"], row["source_id"], last_error,
+    )
+
+
 async def _dispatch_one(
     pool: asyncpg.Pool, row: asyncpg.Record, dead_letter_after: int
 ) -> str:
     target = row["target_store"]
     dispatcher = _DISPATCHERS.get(target)
     if dispatcher is None:
-        return await _record_attempt_and_advance(
-            pool, row, "permanent_failure", f"unknown target_store {target!r}",
-            dead_letter_after,
-        )
+        status, err = "permanent_failure", f"unknown target_store {target!r}"
+    else:
+        sem = _semaphore_for(target, row["target_store_concurrency_hint"])
+        async with sem:
+            status, err = await dispatcher(row)
 
-    sem = _semaphore_for(target, row["target_store_concurrency_hint"])
-    async with sem:
-        status, err = await dispatcher(row)
-
-    return await _record_attempt_and_advance(pool, row, status, err, dead_letter_after)
+    outcome = await _record_attempt_and_advance(pool, row, status, err, dead_letter_after)
+    if outcome == "dead_lettered" and row["workspace_id"] is None:
+        # After the commit, so the line only ever describes a dead letter that exists.
+        _log_platform_dead_letter(row, err)
+    return outcome
 
 
 @outbox_dispatcher.task(execution_timeout="2m")

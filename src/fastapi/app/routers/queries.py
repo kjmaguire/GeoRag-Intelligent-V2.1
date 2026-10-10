@@ -68,14 +68,15 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agent.deps import AgentDeps
 from app.agent.event_stamper import EventStamper
+from app.agent.query_sanitizer import MAX_QUERY_CHARS
 from app.config import settings
 from app.db.scoped_pool import bind_workspace_scope
 from app.models.rag import GeoRAGResponse
@@ -95,7 +96,11 @@ router = APIRouter(tags=["queries"])
 class QueryRequest(BaseModel):
     """Payload sent by Laravel's GeoRagService to POST /internal/queries."""
 
-    query: str = Field(..., min_length=1, max_length=4096, description="Natural-language geological query")
+    # max_length is the sanitiser's own constant: what the router accepts is
+    # what the sanitiser keeps (it used to cut at 1000, silently).
+    query: str = Field(
+        ..., min_length=1, max_length=MAX_QUERY_CHARS, description="Natural-language geological query"
+    )
     project_id: str = Field(..., min_length=1, description="UUID of the active project scope")
     # Phase 3 / Step 3.2 — optional 12-field context envelope + Field/Office
     # mode. Forwarded by the Laravel bridge job; when the agentic-retrieval
@@ -134,6 +139,14 @@ class QueryRequest(BaseModel):
     #         ...
     #     ]
     #   }
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "The chat conversation this question belongs to (Laravel's "
+            "conversation id). Stored as answer_runs.session_id so a "
+            "conversation's runs can be grouped; dropped if not a UUID."
+        ),
+    )
     history: list[dict] | None = Field(
         default=None,
         max_length=50,
@@ -145,6 +158,49 @@ class QueryRequest(BaseModel):
             "single-turn."
         ),
     )
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id_is_a_uuid_or_nothing(cls, value: str | None) -> str | None:
+        """A lineage field: a malformed id is dropped, never a 422 for the query."""
+        if value is None:
+            return None
+        try:
+            return str(UUID(str(value)))
+        except ValueError:
+            logger.warning("queries: ignoring a session_id that is not a UUID")
+            return None
+
+    @field_validator("context_envelope")
+    @classmethod
+    def _envelope_must_parse(cls, value: dict | None) -> dict | None:
+        """Refuse an envelope the agent could not read, as a 422 before streaming.
+
+        The stream used to parse it later, inside the background task, and on
+        failure carry on with NO envelope. The envelope is the user's own
+        restrictions (Field mode's project-only corpus and word cap, the
+        data_sources they narrowed to, the reporting code), so dropping it
+        quietly answered a wider question than the one asked, from sources they
+        had excluded, and told nobody. Laravel validates the same shape before
+        it dispatches (StoreQueryRequest), so reaching this means the two
+        services disagree about the schema: a loud failure is the useful signal,
+        and an HTTP 422 is what a malformed body already gets from this route.
+        Dropping only the offending field was rejected for the same reason: it
+        is still a silent widening, just a smaller one.
+        """
+        if value is None:
+            return value
+        from app.agent.agentic_retrieval import ContextEnvelope  # noqa: PLC0415
+
+        try:
+            ContextEnvelope.model_validate(value)
+        except ValidationError as exc:
+            problems = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc']) or '(root)'}: {err['msg']}"
+                for err in exc.errors(include_url=False, include_input=False)
+            )
+            raise ValueError(f"context_envelope is not a valid envelope: {problems}") from exc
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +429,7 @@ async def _agent_rag_stream(
         # writes. Comes off the stamper so there is exactly one trace
         # id per request rather than two that nearly agree.
         trace_id=(getattr(stamper, "trace_id", None) if stamper else None),
+        session_id=body.session_id,
     )
 
     # B7 — defensive check that JWT project_id matches request body.
@@ -505,19 +562,23 @@ async def _agent_rag_stream(
             # existing test caller).
             parsed_envelope = None
             if body.context_envelope is not None:
-                try:
-                    from app.agent.agentic_retrieval import ContextEnvelope
-                    parsed_envelope = ContextEnvelope.model_validate(body.context_envelope)
-                except Exception:
-                    logger.exception(
-                        "queries: failed to parse context_envelope — proceeding with None"
-                    )
-                    parsed_envelope = None
+                # Already validated by QueryRequest (a 422 at the door), so this
+                # cannot fail on user input. If it ever does, that is a bug to
+                # surface as an error frame, never a reason to answer without
+                # the user's restrictions.
+                from app.agent.agentic_retrieval import ContextEnvelope
+                parsed_envelope = ContextEnvelope.model_validate(body.context_envelope)
             set_active_context_envelope(parsed_envelope)
             # Plan §3e — stash conversation history (when supplied by
             # the Laravel bridge) for the orchestrator's agentic-retrieval
             # dispatch to thread into run_agentic_retrieval(history=...).
             set_active_history(body.history)
+            # Publish this query's deadline so a retry inside any LLM call
+            # asks "does it fit before the query is cancelled?", not "does it
+            # fit in a fresh TIMEOUT_GATHER_S?" (llm_common).
+            from app.agent.llm_common import set_query_deadline  # noqa: PLC0415
+
+            set_query_deadline(_time.monotonic() + settings.TIMEOUT_GATHER_S)
             async with asyncio.timeout(settings.TIMEOUT_GATHER_S):
                 result = await run_deterministic_rag(
                     query=body.query,
@@ -535,6 +596,13 @@ async def _agent_rag_stream(
                 body.project_id,
             )
             await status_queue.put(("timeout", None))
+        except asyncio.CancelledError:
+            # The client went away (or the stream generator was closed) and the
+            # run was cancelled. CancelledError is a BaseException, so neither
+            # clause above catches it, and the `finally` below recorded the
+            # default outcome, "completed", for a run that never completed.
+            outcome = "cancelled"
+            raise
         except Exception as exc:
             # §35.1 — workspace cost ceiling: surface as a structured
             # quota-exceeded event so the SSE stream can translate it

@@ -127,6 +127,17 @@ export function applySmartDefaults(envelope: ContextEnvelope, project: ProjectCo
     return envelope;
 }
 
+/**
+ * The "Specific objects" text as a list: split on commas and newlines, each
+ * item trimmed, empties dropped. Spaces INSIDE an item are kept ("PLS 22-08").
+ */
+export function parseSpecificObjects(raw: string): string[] {
+    return raw
+        .split(/[,\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
 export function ContextEnvelopeForm({ project, value, onChange, disabled = false }: Props) {
     const [expanded, setExpanded] = useState(false);
 
@@ -165,11 +176,7 @@ export function ContextEnvelopeForm({ project, value, onChange, disabled = false
     );
 
     const updateSpecificObjects = useCallback(
-        (raw: string) => {
-            const items = raw
-                .split(/[,\n]/)
-                .map((s) => s.trim())
-                .filter(Boolean);
+        (items: string[]) => {
             onChange({ ...value, specific_objects: items });
         },
         [onChange, value],
@@ -316,10 +323,8 @@ export function ContextEnvelopeForm({ project, value, onChange, disabled = false
                         onChange={(v) => update('stratigraphic_frame', v.trim() === '' ? null : v)}
                         disabled={disabled}
                     />
-                    <TextField
-                        label="Specific objects"
-                        placeholder='e.g. "DDH-07, DDH-08, DDH-12"'
-                        value={value.specific_objects.join(', ')}
+                    <SpecificObjectsField
+                        objects={value.specific_objects}
                         onChange={updateSpecificObjects}
                         disabled={disabled}
                     />
@@ -407,6 +412,52 @@ export function ContextEnvelopeForm({ project, value, onChange, disabled = false
                 </div>
             )}
         </div>
+    );
+}
+
+/**
+ * The "Specific objects" box: hole ids and sample ids, separated by commas.
+ *
+ * The envelope holds the PARSED list, and the box used to be a controlled
+ * input fed `list.join(', ')`. Every keystroke was parsed and the text
+ * re-rendered from the list, so the "," typed after "DDH-07" parsed to the
+ * same one-item list, the box showed "DDH-07" again, and the separator was
+ * gone. A second id could not be typed, only pasted; a space typed inside an
+ * id ("PLS 22-08") vanished the same way. The text lives here, exactly as
+ * typed, and the list is derived from it.
+ */
+function SpecificObjectsField({
+    objects,
+    onChange,
+    disabled,
+}: {
+    objects: string[];
+    onChange: (items: string[]) => void;
+    disabled?: boolean;
+}) {
+    const [text, setText] = useState(() => objects.join(', '));
+    const [seen, setSeen] = useState(objects);
+    if (objects !== seen) {
+        // The list changed from outside (the envelope was reset): show it,
+        // unless it is just what the text already says, which is every
+        // change this box makes itself.
+        setSeen(objects);
+        const typed = parseSpecificObjects(text);
+        if (typed.length !== objects.length || typed.some((item, i) => item !== objects[i])) {
+            setText(objects.join(', '));
+        }
+    }
+    return (
+        <TextField
+            label="Specific objects"
+            placeholder='e.g. "DDH-07, DDH-08, DDH-12"'
+            value={text}
+            onChange={(raw) => {
+                setText(raw);
+                onChange(parseSpecificObjects(raw));
+            }}
+            disabled={disabled}
+        />
     );
 }
 

@@ -65,7 +65,7 @@ new_case() {
   cat > "$ST/rules.json" <<'JSON'
 [
  {"RuleArn":"arn:rule/reverb","Priority":"10","Conditions":[
-   {"Field":"path-pattern","Values":["/app/*","/apps/*"],"PathPatternConfig":{"Values":["/app/*","/apps/*"]}},
+   {"Field":"path-pattern","Values":["/app/*"],"PathPatternConfig":{"Values":["/app/*"]}},
    {"Field":"http-header","HttpHeaderConfig":{"HttpHeaderName":"X-Origin-Verify","Values":["OLDVALUE-0123456789abcdef"]}}]},
  {"RuleArn":"arn:rule/verified","Priority":"20","Conditions":[
    {"Field":"http-header","HttpHeaderConfig":{"HttpHeaderName":"X-Origin-Verify","Values":["OLDVALUE-0123456789abcdef"]}}]},
@@ -169,7 +169,7 @@ check "the distribution sends it" '[ "$(dist_value)" = "$NEW" ]'
 check "both rules accept only it" \
   '[ "$(rule_values arn:rule/verified)" = "[\"$NEW\"]" ] && [ "$(rule_values arn:rule/reverb)" = "[\"$NEW\"]" ]'
 check "the path condition on the WebSocket rule survives" \
-  'jq -e ".[] | select(.RuleArn == \"arn:rule/reverb\") | .Conditions[] | select(.Field == \"path-pattern\") | .PathPatternConfig.Values == [\"/app/*\",\"/apps/*\"]" "$ST/rules.json" >/dev/null'
+  'jq -e ".[] | select(.RuleArn == \"arn:rule/reverb\") | .Conditions[] | select(.Field == \"path-pattern\") | .PathPatternConfig.Values == [\"/app/*\"]" "$ST/rules.json" >/dev/null'
 check "never prints either value" '! grep -q OLDVALUE <<<"$OUT" && ! grep -q "$NEW" <<<"$OUT"'
 check "neither value is ever on a command line" '! grep -q "$NEW" "$ST/calls" && ! grep -q OLDVALUE "$ST/calls"'
 # The ordering property. Widen before the distribution changes; narrow after.

@@ -94,6 +94,9 @@ class Project extends Model
         'region',
         'status',
         'slug',
+        // The New Project wizard asks for it; unique per workspace
+        // (silver_projects_workspace_code_idx). Postgres-only column.
+        'project_code',
     ];
 
     protected $casts = [

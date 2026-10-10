@@ -5,10 +5,14 @@ GeoRAG is a geological intelligence platform that ingests decades of fragmented 
 ## Status
 
 **V1 production-hardened — engineering scope closed.** All 10 modules and the
-23-item V1.5 follow-up backlog are complete. ~1,500 automated assertions
-passing (199 pgTAP, ~622 FastAPI, 217 Laravel feature, 500 vitest, 14 tracing
-round-trip). Zero active leak primitives, hallucination prevention layered across six gates, RLS on 11
-silver tables.
+23-item V1.5 follow-up backlog are complete. Hallucination prevention is
+layered across six gates.
+
+Test and RLS counts are a dated snapshot, not maintained here: at engineering
+close (2026-04-27, [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md))
+there were ~1,500 automated assertions passing (199 pgTAP, ~622 FastAPI, 217
+Laravel feature, 500 vitest, 14 tracing round-trip), RLS on 11 silver tables and
+no active leak primitives. The suites have grown since.
 
 Production runs on **Amazon ECS Fargate**, provisioned by Terraform in
 [`deploy/aws/terraform/`](deploy/aws/terraform/) (ADR-0022, 2026-09-08). Start
@@ -132,7 +136,7 @@ npm run test -- --coverage
 │   ├── RUNBOOK.md          # Operator procedures (PII handling, secrets)
 │   └── ...                 # Deployment, tuning, troubleshooting
 ├── ops/
-│   ├── runbooks/            # 4 current runbooks (aws-oncall, ...) + 41 archived compose-era ones
+│   ├── runbooks/            # 4 current runbooks (aws-oncall, ...) + 40 archived compose-era ones
 │   ├── audit/               # Module security/observability audit reports
 │   ├── baselines/           # API latency + capacity-planning baselines
 │   └── backlog/             # V1.5 follow-up tracker (engineering-closed 2026-04-26)
@@ -143,7 +147,7 @@ npm run test -- --coverage
 ├── charts/georag/           # Helm chart for on-prem deployment
 ├── docker-compose.yml       # Service definitions + profiles
 ├── .env.example             # Template environment variables (dev defaults)
-├── .env.production.example  # Production template (143 keys, secrets as CHANGE_ME placeholders)
+├── .env.production.example  # Production template (secrets as CHANGE_ME placeholders)
 ├── CLAUDE.md                # Project rules + agent delegation
 └── georag-architecture.html # Complete spec (schema, design, acceptance)
 ```
@@ -156,7 +160,7 @@ npm run test -- --coverage
 - [**deploy/aws/README.md**](deploy/aws/README.md) — Production deployment on AWS ECS Fargate (Terraform, preflight, first-deploy steps)
 - [**docs/OPERATOR-AFTERNOON.md**](docs/OPERATOR-AFTERNOON.md) — Pre-ADR-0022 first-deploy checklist (SOPS bootstrap, GitHub Secrets, cold-start); now relevant to the on-prem Helm path only
 - [**docs/RUNBOOK.md**](docs/RUNBOOK.md) — Operator procedures for PII decryption, secret rotation, database maintenance
-- [**ops/runbooks/**](ops/runbooks/) — four runbooks (`aws-oncall`, `secret-rotation`, `refusal-rate-spike`, `raw-sql-layer` — the last three still carry Azure-era procedures in places, and say so) plus 41 archived compose-era ones under `_archived/`
+- [**ops/runbooks/**](ops/runbooks/) — four runbooks (`aws-oncall`, `secret-rotation`, `refusal-rate-spike`, `raw-sql-layer` — the last three still carry Azure-era procedures in places, and say so) plus 40 archived compose-era ones under `_archived/`
 - [**ops/backlog/v1.5-followups.md**](ops/backlog/v1.5-followups.md) — V1.5 follow-up tracker with per-item close-out evidence
 
 ## Contributing

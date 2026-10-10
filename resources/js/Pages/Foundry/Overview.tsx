@@ -4,6 +4,7 @@ import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Stat, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import EditProjectSheet from '@/Components/EditProjectSheet';
+import { csrfHeaders } from '@/lib/csrf';
 
 interface IngestSummary {
     in_flight: number;
@@ -70,16 +71,42 @@ export default function FoundryOverview({
     const [editing, setEditing] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
     const [ingest, setIngest] = useState<IngestSummary>(ingest_summary);
+    // The tile is fed by two sources: the Inertia prop (initial load, and the
+    // partial reload an ingest-complete event triggers below) and the poll. It
+    // used to be seeded from the prop once, so a reload's fresh `ingest_summary`
+    // was dropped and the tile waited for the next poll - which, see below,
+    // could be never. A NEW prop value is now the newest word and replaces the
+    // state; the poll keeps updating it in between.
+    const [seenSummary, setSeenSummary] = useState(ingest_summary);
+    if (ingest_summary !== seenSummary) {
+        setSeenSummary(ingest_summary);
+        setIngest(ingest_summary);
+    }
 
     // Poll the Ingestion Runs JSON endpoint while there is anything in flight,
     // so the "X files ingesting" tile updates without a hard refresh. Backs
-    // off to a single poll-on-mount when nothing is in flight (no point
-    // hitting the bucket on a quiet project).
+    // off to every 30 s when nothing is in flight (no point hitting the bucket
+    // on a quiet project), and stops while the tab is hidden with nothing in
+    // flight. That stop used to be permanent - nothing started the chain again -
+    // so a tab left in the background came back showing yesterday's tile. The
+    // tab becoming visible now refreshes at once and resumes the chain.
     useEffect(() => {
         let cancelled = false;
+        let running = false;
         let timer: ReturnType<typeof setTimeout> | null = null;
+        const inFlight = ingest.in_flight;
+
+        function schedule(): void {
+            if (cancelled) return;
+            if (inFlight === 0 && document.visibilityState !== 'visible') return;
+            timer = setTimeout(() => void tick(), inFlight > 0 ? 5000 : 30000);
+        }
 
         async function tick(): Promise<void> {
+            // One request at a time: a visibility change during a pending
+            // fetch must not start a second chain beside the first.
+            if (running || cancelled) return;
+            running = true;
             try {
                 const res = await fetch(`/projects/${project.slug}/ingestion-runs.json`, {
                     credentials: 'same-origin',
@@ -103,17 +130,24 @@ export default function FoundryOverview({
             } catch {
                 // ignore — retry on next tick if still polling
             } finally {
-                if (!cancelled && (ingest.in_flight > 0 || document.visibilityState === 'visible')) {
-                    timer = setTimeout(tick, ingest.in_flight > 0 ? 5000 : 30000);
-                }
+                running = false;
+                schedule();
             }
         }
 
-        timer = setTimeout(tick, ingest.in_flight > 0 ? 5000 : 30000);
+        function onVisibilityChange(): void {
+            if (document.visibilityState !== 'visible' || cancelled) return;
+            if (timer) clearTimeout(timer);
+            void tick();
+        }
+
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        schedule();
 
         return () => {
             cancelled = true;
             if (timer) clearTimeout(timer);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
         };
     }, [project.slug, ingest.in_flight]);
 
@@ -137,14 +171,10 @@ export default function FoundryOverview({
         setDeleting(true);
         setDeleteError(null);
         try {
-            const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-            const headers: Record<string, string> = { Accept: 'application/json' };
-            if (csrf) headers['X-CSRF-TOKEN'] = csrf;
-
             const res = await fetch(`/api/v1/projects/${project.project_id}`, {
                 method: 'DELETE',
                 credentials: 'same-origin',
-                headers,
+                headers: { Accept: 'application/json', ...csrfHeaders() },
             });
             if (!res.ok && res.status !== 204) {
                 const body = await res.json().catch(() => ({}));

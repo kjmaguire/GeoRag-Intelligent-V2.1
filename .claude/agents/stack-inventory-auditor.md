@@ -71,7 +71,7 @@ that was proven, not assumed, on the run above.
 
 3. **Infrastructure/runtime census** — every `docker-compose*.yml` and
    `docker/compose.*.yml` overlay (note there are dormant ones under `docker/`
-   — langfuse, redis-staging, wal-archiving — don't mistake them for the live
+   — langfuse, redis-staging — don't mistake them for the live
    topology), every `.tf` file's resource blocks, the Helm chart's templates,
    `.github/workflows/*.yml`, and the Hatchet workflow registry
    (`src/fastapi/app/hatchet_workflows/worker.py`'s `POOLS` dict — count it

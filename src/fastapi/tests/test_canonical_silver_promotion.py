@@ -240,7 +240,7 @@ class TestDeriveAssayV2Rows:
                 "original": "<0.5", "substitution": "half_dl",
             }},
         ))
-        (*_head, detection_limit, over, under, half_dl, _lab) = rows[0]
+        (*_head, detection_limit, over, under, half_dl, _lab, _qaqc) = rows[0]
         assert (detection_limit, over, under, half_dl) == (0.5, False, True, True)
 
     def test_bdl_with_unknown_threshold_still_lands_as_a_row(self):
@@ -267,13 +267,23 @@ class TestDeriveAssayV2Rows:
         assert rows == [] and skipped == 0
 
     def test_missing_sample_id_skips_and_counts(self):
-        """assays_v2.sample_id is NOT NULL; a synthesised one would break
-        the same-file-same-ids property. Skipped, visibly."""
-        rows, skipped = _derive(_rec(
-            sample_id=None,
-            commodity_assays={"Au_ppb": 1.0, "Cu_pct": 2.0},
-        ))
+        """assays_v2.sample_id is NOT NULL and this function never invents
+        one: with no ``fallback_sample_id`` the values are skipped, counted -
+        and, since audit finding 1, logged by name for the run's warning.
+        (``_write_intervals`` supplies the derived id; see
+        test_assay_v2_sample_id_and_qaqc.py.)"""
+        from app.hatchet_workflows.ingest_tabular import derive_assay_v2_rows
+
+        log: list[tuple[str, str]] = []
+        rows, skipped = derive_assay_v2_rows(
+            _rec(sample_id=None, commodity_assays={"Au_ppb": 1.0, "Cu_pct": 2.0}),
+            workspace_id="a0000000-0000-0000-0000-000000000001",
+            collar_id="b0000000-0000-0000-0000-000000000002",
+            element_ref={},
+            skipped_log=log,
+        )
         assert rows == [] and skipped == 2
+        assert log == [("Au_ppb", "no sample id"), ("Cu_pct", "no sample id")]
 
     def test_inverted_interval_skips_and_counts(self):
         rows, skipped = _derive(_rec(from_depth=12.0, to_depth=10.0))
@@ -297,7 +307,7 @@ class TestDeriveAssayV2Rows:
                 "original": ">10", "substitution": "limit",
             }},
         ))
-        (*_head, detection_limit, over, under, half_dl, _lab) = rows[0]
+        (*_head, detection_limit, over, under, half_dl, _lab, _qaqc) = rows[0]
         assert rows[0][7] == 10.0
         assert (detection_limit, over, under, half_dl) == (10.0, True, False, False)
 

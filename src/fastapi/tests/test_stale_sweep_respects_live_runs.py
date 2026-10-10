@@ -129,6 +129,9 @@ def _row(run_id: str, workflow_run_id: str | None, step: str = "queued") -> dict
         "current_step": step,
         "attempt_number": 1,
         "triggered_by": "upload",
+        # Recorded, nothing declared. A NULL here ("not recorded") would be
+        # declined for an archive: see test_stale_recovery_replays_upload_params.
+        "dispatch_params": {},
     }
 
 

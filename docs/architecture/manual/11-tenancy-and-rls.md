@@ -3,6 +3,15 @@
 > **Reconciled 2026-09-07** for the service-to-service auth table, which
 > listed Kestra and Caddy hops that no longer exist. The RLS policy model,
 > the `workspace_id` scoping and the role matrix were current.
+>
+> **Corrected 2026-10-10 (database audit).** §4 presented
+> `silver.collars` as the *strict* pattern and `audit.audit_ledger` as having a
+> "stricter shape". Neither is what a cluster built the way production builds it
+> (`migrate`, then `db:apply-raw`) enforces: a fail-open sibling policy sits beside the
+> strict one on 16 tables, and permissive policies OR together. §4.1 records which
+> tables, why they were left that way, and what making them strict would take.
+> Five tables that raw 95 used to re-open on every deploy are now closed
+> (`2026_10_10_100300`).
 
 GeoRAG is multi-tenant at the row level. Every workspace’s data lives in
 the same tables as every other workspace’s — segregation is enforced by
@@ -60,7 +69,10 @@ RLS:
 
 ### Strict pattern (the canonical shape)
 
-[phase0/96-rls-tenant-isolation-block1.sql:79-84](../../../database/raw/phase0/96-rls-tenant-isolation-block1.sql) — `silver.collars`:
+The shape the raw files **create**. Whether a table *enforces* it depends on what else
+sits on the table: see §4.1 — `silver.collars` does not, today.
+
+[phase0/96-rls-tenant-isolation-block1.sql:79-84](../../../database/raw/phase0/96-rls-tenant-isolation-block1.sql) — the policy it creates on `silver.collars`:
 
 ```sql
 ALTER TABLE silver.collars ENABLE ROW LEVEL SECURITY;
@@ -99,7 +111,16 @@ CREATE POLICY tenant_isolation ON %s
     WITH CHECK ( … same … )
 ```
 
-Allows admin paths (no GUC) to read system-wide events. The asymmetric
+Allows admin paths (no GUC) to read system-wide events. Since 2026-10-10 it is **not**
+applied to `workspace.workspace_memberships`, `workspace.workspace_agent_config`,
+`workspace.dry_run_outputs`, `outbox.pending_propagations` or
+`outbox.propagation_attempts`: the migration chain makes those fail-closed and, because
+`db:apply-raw` runs second, this macro used to undo it on every deploy. The outbox pair
+carry `workspace_id IS NOT DISTINCT FROM NULLIF(GUC, '')::uuid` — a session with no
+workspace bound sees only *platform* rows (`workspace_id IS NULL`, e.g. the tenant
+auditor's escalation), never a tenant's. `usage.usage_events` and
+`usage.workspace_cost_ceilings` still get this fail-open policy beside their strict one
+(§4.1). The asymmetric
 `WITH CHECK` was tightened in
 [2026_05_25_184857_normalize_layered_workspace_isolation_policies.php](../../../database/migrations/2026_05_25_184857_normalize_layered_workspace_isolation_policies.php) +
 phase-2 follow-up
@@ -111,11 +132,75 @@ phase-2 follow-up
 Global roles (`workspace_id IS NULL`) are visible to all sessions;
 per-workspace roles follow the tenant rule.
 
-### Tightened audit policy
+### Audit ledger policy (it is operator-readable, by design)
 
 [phase0/99-rls-block3-policy-tighten.sql:14](../../../database/raw/phase0/99-rls-block3-policy-tighten.sql).
-`audit.audit_ledger` keeps a stricter shape so a query without the GUC
-can't see other workspaces’ audit trails.
+*Corrected 2026-10-10:* this section used to say the ledger "keeps a stricter shape so a
+query without the GUC can't see other workspaces' audit trails". It does not. The USING
+clause is `GUC unset OR workspace_id IS NULL OR workspace_id = GUC`: a session with no
+workspace bound reads **every** workspace's audit rows (99's own comment says so:
+"Operator mode … sees everything … reads are governed at the app layer"), and a second
+fail-open policy, `audit_audit_ledger_workspace_isolation_v2`, sits beside it. Only
+**writes** are strict (a bound session cannot write another workspace's row).
+
+What protects the ledger is not the read policy but that it is append-only for the
+application role: `UPDATE`/`DELETE` are revoked from `georag_app` and a
+`BEFORE UPDATE OR DELETE` trigger refuses every role
+(`2026_10_10_100200_make_audit_ledger_append_only`, `docs/audit_ledger_hash_recipe.md`).
+
+### 4.1 As built: a fail-open sibling decides the strict policy
+
+Measured 2026-10-10 on PostgreSQL 16 after `migrate:fresh` + `db:apply-raw` (the
+production order): **87 tables carry a policy with an unbound-GUC branch** (`GUC IS NULL`
+or `= ''`). On 16 of them a *strict* policy sits next to it, so the strict one is
+decided by the open one — a session with a workspace bound is clamped, a session with
+none is not:
+
+| Strict policy comes from | Table | Fail-open sibling, and where it comes from |
+|---|---|---|
+| raw 96 | `silver.collars` | `collars_workspace_isolation_v2` (`2026_05_25_184630`) |
+| raw 96 | `silver.reports`, `silver.spatial_features` | `silver_*_workspace_isolation_v2` (`2026_05_25_175214`) |
+| raw 97 | `silver.projects`, `silver.geological_formations`, `silver.review_queue` | `silver_*_workspace_isolation_v2` (`2026_05_25_175214`) |
+| raw 97 | `silver.lithology_logs`, `silver.raster_layers` | `<t>_workspace_isolation_v2` (`2026_05_25_184630`) |
+| raw 97 | `silver.drill_traces` | `tenant_isolation` (`2026_05_30_010000`) |
+| raw 98 | `gold.cross_section_panels`, `gold.drillhole_intervals_visual`, `gold.structure_measurements_visual`, `audit.audit_ledger_verification_runs` | `*_workspace_isolation_v2` (`2026_05_25_175214`) |
+| raw 98/99 | `workflow.workflow_runs` | `workflow_workflow_runs_workspace_isolation` |
+| migrations | `usage.usage_events`, `usage.workspace_cost_ceilings` | `tenant_isolation` from raw 95 (the one case where the raw layer is the open one) |
+
+The migrations that install the `_v2` siblings are written as "no-op when the table is
+already covered", which assumes raw SQL ran first. The ECS migrate task runs the
+migrations first, so the sibling lands, the raw file drops only the policy names it
+knows, and nothing removes it. Making the other 71 tables strict is the multi-tier plan
+in [fail-open-rls-posture-2026-08-21.md](../fail-open-rls-posture-2026-08-21.md); this
+section is about the 16 where the codebase *believes* the table is strict.
+
+**Why the four named in the audit (`silver.collars`, `lithology_logs`, `raster_layers`,
+`drill_traces`) were left open — needs a decision, not a patch.** Facts checked:
+
+* `workflow.refresh_silver_agent_mvs()` (SECURITY DEFINER, owner `georag`, called by the
+  `mv_refresh_silver` Hatchet workflow, which binds nothing) refreshes
+  `silver.mv_collar_summary`, a **global** view (`GROUP BY project_id` across every
+  workspace). On RDS the owner is not a superuser, so FORCE ROW LEVEL SECURITY binds the
+  refresh. With the fail-open sibling it sees every collar; with only the strict policy
+  it sees none. Reproduced: owner switched to a non-superuser, GUC unset, one collar seeded —
+  `REFRESH` yields 1 row with the sibling, **0 rows** without it. No per-workspace binding
+  can fix a global view.
+* The Martin function sources (`silver.pg_*_by_project`) are *not* a blocker: since
+  `2026_09_16_120000` each sets `app.workspace_id` itself (`set_config(…, true)`) and adds
+  an explicit `workspace_id` predicate.
+* The 2026-08-21 AST sweep ([§2.1](../fail-open-rls-posture-2026-08-21.md)) found 12
+  unbound reader functions on `silver.collars` alone, and `BindWorkspaceRlsContext` writes
+  `''` for a multi-workspace user on any route naming no project (§2.3), which under a strict
+  policy shows that user nothing instead of everything. Not re-run for this audit.
+
+What making them strict would take, in order: (1) decide how the global MV is refreshed —
+a dedicated maintenance role that owns it with `BYPASSRLS` (contradicts §10 as written),
+or replace the view with a per-workspace gold table written by `promote_silver_to_gold`
+under a bound scope; (2) bind `mv_refresh_silver` and the unbound readers above; (3) only
+then drop the siblings in one migration, with the post-raw test in
+`src/fastapi/tests/test_rls_after_raw.py` moved from "known open" to "strict".
+Until then the honest description of these tables is: **clamped when a workspace is
+bound, open when none is.**
 
 ## 5. The coverage chain
 
@@ -149,6 +234,13 @@ PHPUnit, `RefreshDatabase`. For every live test-DB table with a
 - Asserts at least one policy in `pg_policies`
 - Exempts only `silver.workspaces` (self-referential) and partition
   children via `pg_inherits`
+
+*Corrected 2026-10-10:* the "no fail-open escape hatch" tests in this file grepped for
+`IS NULL OR`, which PostgreSQL never emits (it deparses `(… IS NULL) OR (…)`), so they
+could not fail; they now match `IS NULL` shape-independently. This test also sees only
+the migrate-only state. The state production runs is checked by
+`src/fastapi/tests/test_rls_after_raw.py` (CI job `cron-sweeps-app-role`, which applies
+migrations *then* raw) and statically by `tests/Unit/RawRlsReopensNothingTest.php`.
 
 `EXEMPT_TEST_DB_ONLY_TABLES` was emptied on 2026-05-25 when test-DB parity
 caught up to production

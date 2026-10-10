@@ -71,6 +71,7 @@ interface FlatTrace {
     pointCount: number;
     text: unknown;
     hovertemplate: string | null;
+    customdata: unknown;
     showlegend: boolean;
     xs: unknown;
     ys: unknown;
@@ -89,6 +90,7 @@ function flatten(traces: unknown[]): FlatTrace[] {
         pointCount: Array.isArray(t.x) ? t.x.length : 0,
         text: t.text ?? null,
         hovertemplate: t.hovertemplate ?? null,
+        customdata: t.customdata ?? null,
         showlegend: t.showlegend !== false,
         xs: t.x ?? null,
         ys: t.y ?? null,
@@ -173,6 +175,44 @@ describe('DrillTrace3D — baseline (collars only)', () => {
     it('emits no extra traces when intervals & structures are empty arrays', () => {
         render(<DrillTrace3D collars={[COLLAR_BASIC]} intervals={[]} structures={[]} />);
         expect(getTraceCount()).toBe(2);
+    });
+});
+
+// ── Assumed orientation (GIS audit 2026-10) ────────────────────────────────
+
+describe('DrillTrace3D — hole with no stored trace', () => {
+    const PLACEHOLDER: CollarPoint = {
+        ...COLLAR_BASIC,
+        hole_id: 'HOLE-NOTRACE',
+        collar_id: 'c-notrace',
+        azimuth: null,
+        dip: null,
+        orientation: 'unknown',
+        trace_points: [
+            { x: -105.0, y: 50.0, z: 1000, depth_m: 0, extrapolated: false },
+            { x: -105.0, y: 50.0, z: 800, depth_m: 200, extrapolated: true, assumed: true },
+        ],
+    };
+
+    it('draws the vertical placeholder dashed, not as a measured trace', () => {
+        render(<DrillTrace3D collars={[PLACEHOLDER]} />);
+        const projected = getTraces().find((t) => t.name === 'projected to TD');
+        expect(projected).toBeDefined();
+        expect(projected!.zs).toEqual([1000, 800]);
+    });
+
+    it('says on hover that the orientation is unknown', () => {
+        render(<DrillTrace3D collars={[PLACEHOLDER]} />);
+        const markers = getTraces().find((t) => t.mode === 'markers+text');
+        const customdata = markers!.customdata as unknown[][];
+        expect(customdata[0][2]).toMatch(/Orientation unknown/);
+        expect(markers!.hovertemplate).toContain('%{customdata[2]}');
+    });
+
+    it('adds no note for a hole whose trace is surveyed', () => {
+        render(<DrillTrace3D collars={[{ ...COLLAR_WITH_TRACE, orientation: 'surveyed' }]} />);
+        const markers = getTraces().find((t) => t.mode === 'markers+text');
+        expect((markers!.customdata as unknown[][])[0][2]).toBe('');
     });
 });
 

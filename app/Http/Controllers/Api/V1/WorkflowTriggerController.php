@@ -71,7 +71,14 @@ final class WorkflowTriggerController extends Controller
         'csa11348_disclosure_pack',
     ];
 
-    private const EXPORT_BUCKET = 'workspace-exports';
+    /**
+     * Key prefix of every workspace export inside the exports bucket (FastAPI:
+     * workspace_export.EXPORT_KEY_PREFIX). The bucket itself is whatever the
+     * `s3-exports` disk is configured with (AWS_BUCKET_EXPORTS), the same
+     * value FastAPI's StorageConfig resolves. Both used to be a bare
+     * `workspace-exports` bucket, which Terraform never creates.
+     */
+    private const EXPORT_KEY_PREFIX = 'workspace-exports';
 
     public function project(
         Request $request,
@@ -232,7 +239,7 @@ final class WorkflowTriggerController extends Controller
      */
     private function restoreInput(Request $request, User $user, string $workspace): array
     {
-        $prefix = 's3://'.self::EXPORT_BUCKET.'/'.$workspace.'/';
+        $prefix = 's3://'.config('filesystems.disks.s3-exports.bucket').'/'.self::EXPORT_KEY_PREFIX.'/'.$workspace.'/';
         $validated = $request->validate([
             'snapshot_manifest_uri' => ['required', 'string', 'max:1024', 'starts_with:'.$prefix, 'not_regex:/\.\./'],
             'dry_run' => ['sometimes', 'boolean'],
@@ -368,17 +375,27 @@ final class WorkflowTriggerController extends Controller
         }
 
         // The cooldown claim above exists to stop a double click dispatching
-        // twice. It must therefore be released on EVERY path where nothing was
+        // twice. It must therefore be released on every path where nothing was
         // dispatched, not only on HatchetWorkflowTriggerException: any other
         // throwable (a JWT-mint failure, a serialisation error, a cache or
         // driver exception inside trigger()) used to leave the key set, so the
         // user's retry was answered 429 "sent less than 60 seconds ago" for a
         // request that never went anywhere.
+        //
+        // It must NOT be released when the outcome is unknown. A read timeout
+        // or a reset after the request was written means FastAPI may have
+        // started the run and lost only the reply; releasing the claim then
+        // invited the very retry that starts it twice (each click mints a new
+        // request id, so FastAPI cannot tell them apart). The claim lapses on
+        // its own after COOLDOWN_SECONDS.
         $dispatched = false;
+        $outcomeUnknown = false;
         try {
             $result = $trigger->trigger($workflow, $workspaceId, $input, $user, $jwtProject);
             $dispatched = true;
         } catch (HatchetWorkflowTriggerException $exc) {
+            $outcomeUnknown = $exc->maybeDispatched;
+
             // 5xx means FastAPI was unreachable or answered with an error, and
             // the message carries the upstream URL, driver text or response
             // body. That detail is for the log; the caller gets a neutral
@@ -388,17 +405,21 @@ final class WorkflowTriggerController extends Controller
                     'workflow' => $workflow,
                     'status' => $exc->status,
                     'detail' => $exc->getMessage(),
+                    'outcome_unknown' => $outcomeUnknown,
                 ]);
 
                 return response()->json([
                     'error' => 'trigger_failed',
-                    'message' => 'The '.$workflow.' workflow could not be started right now. Please try again shortly.',
+                    'message' => $outcomeUnknown
+                        ? 'The '.$workflow.' request was sent but no answer came back, so it may have started. '
+                            .'Check its status before trying again.'
+                        : 'The '.$workflow.' workflow could not be started right now. Please try again shortly.',
                 ], $exc->status);
             }
 
             return response()->json(['error' => 'trigger_failed', 'message' => $exc->getMessage()], $exc->status);
         } finally {
-            if (! $dispatched) {
+            if (! $dispatched && ! $outcomeUnknown) {
                 Cache::forget($cooldownKey);
             }
         }

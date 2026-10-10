@@ -238,3 +238,89 @@ class TestUtf8IsNotWarnedAbout:
             "utf8", "ascii",
         ):
             assert "encoding_non_utf8" in [w["code"] for w in result.warnings]
+
+
+# ---------------------------------------------------------------------------
+# Windows-1252 is not mislabelled (audit finding 11)
+# ---------------------------------------------------------------------------
+
+class TestWindows1252IsNotMislabelled:
+    """charset-normalizer's best guess for ``Rødberg`` in cp1252 was cp1250,
+    which decodes 0xF8 as ``ř``: ``Rřdberg``. A short ``Café`` came back as
+    cp1006, an Urdu code page. Nothing failed - every accented letter in
+    every hole name and comment was simply wrong."""
+
+    def test_rodberg_reads_back_as_rodberg(self):
+        data = "Name,Place\nA,Rødberg\nB,Tromsø\nC,Ålesund\n".encode("cp1252")
+        stream, encoding = open_csv_bytes(data)
+        assert encoding == "cp1252"
+        assert "Rødberg" in stream.getvalue()
+        assert "Rřdberg" not in stream.getvalue()
+
+    def test_a_short_cafe_is_cp1252_not_an_urdu_page(self):
+        assert detect_encoding("Name\nCafé\n".encode("cp1252")) == "cp1252"
+
+    def test_the_warning_quotes_the_first_non_ascii_tokens(self):
+        from georag_geoparsers._encoding import decode_warnings
+
+        data = "Name,Place\nA,Rødberg\nB,Tromsø\n".encode("cp1252")
+        stream, encoding = open_csv_bytes(data)
+        (warning,) = decode_warnings(encoding, stream.getvalue())
+
+        assert warning["code"] == "encoding_non_utf8"
+        assert warning["context"]["non_ascii_samples"] == ["Rødberg", "Tromsø"]
+        assert "Rødberg" in warning["message"]
+        assert "Rødberg" in warning["detail"]
+
+    def test_a_cp1252_collar_file_keeps_its_accents_end_to_end(self):
+        csv_bytes = _make_collar_csv("Rødberg").encode("cp1252")
+        csv_bytes = csv_bytes.replace(b"DH-01", "Rød-01".encode("cp1252"))
+        result = parse_csv_collars(BytesIO(csv_bytes))
+
+        assert result.detected_encoding == "cp1252"
+        assert result.records[0]["hole_id"] == "Rød-01"
+        warning = next(w for w in result.warnings if w["code"] == "encoding_non_utf8")
+        assert "Rød-01" in warning["message"]
+
+    def test_utf8_is_tried_first_so_a_utf8_file_is_never_cp1252(self):
+        data = "Name,Place\nA,Rødberg\n".encode()
+        stream, encoding = open_csv_bytes(data)
+        assert encoding == "utf-8"
+        assert "Rødberg" in stream.getvalue()
+
+    def test_a_utf8_bom_is_stripped_and_not_flagged(self):
+        from georag_geoparsers._encoding import decode_warnings
+
+        stream, encoding = open_csv_bytes("﻿HoleID,Name\nDH-01,Ålesund\n".encode())
+        assert encoding == "utf-8-sig"
+        assert not stream.getvalue().startswith("﻿")
+        assert decode_warnings(encoding, stream.getvalue()) == []
+
+    def test_utf16_without_a_bom_is_still_recognised(self):
+        data = "HoleID,Easting\nDH-01,495000\n".encode("utf-16-le")
+        stream, encoding = open_csv_bytes(data)
+        assert "utf" in encoding and "16" in encoding
+        assert "DH-01" in stream.getvalue()
+
+    def test_damaged_utf8_is_decoded_with_replacement_and_says_so(self):
+        """A truncated multi-byte character in an otherwise UTF-8 export must
+        not turn every other accented letter in the file into mojibake, and
+        the character that WAS lost is reported, not hidden."""
+        from georag_geoparsers._encoding import decode_warnings
+
+        data = (
+            b"HoleID,Name\nDH-01,\xc3\x85lesund\nDH-02,Troms\xc3\xb8\nDH-03,Bad\xc3\n"
+        )
+        stream, encoding = open_csv_bytes(data)
+        text = stream.getvalue()
+
+        assert encoding == "utf-8"
+        assert "Ålesund" in text and "Tromsø" in text
+        codes = [w["code"] for w in decode_warnings(encoding, text)]
+        assert codes == ["encoding_replacement_characters"]
+
+    def test_a_clean_utf8_file_earns_no_decode_warning(self):
+        from georag_geoparsers._encoding import decode_warnings
+
+        stream, encoding = open_csv_bytes("HoleID,Name\nDH-01,Ålesund °\n".encode())
+        assert decode_warnings(encoding, stream.getvalue()) == []

@@ -232,3 +232,35 @@ async def test_node_raises_backend_unavailable_on_reranker_failure(monkeypatch) 
     with pytest.raises(RetrievalBackendUnavailable) as exc_info:
         await execute_node(state)
     assert exc_info.value.reason == "reranker_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-10 audit, finding 10: only the literal "bedrock" failed closed
+# ---------------------------------------------------------------------------
+#
+# Any other RERANKER_BACKEND value ("cohere", a typo) took the lenient local
+# path: no reranker could be built for it, so search_documents returned 12
+# RRF-ordered chunks with no relevance floor. "Explicitly local" is now a
+# closed set; everything else is held to the hosted contract.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["cohere", "bedrok", "Bedrock", "foundry", "", "local"])
+async def test_an_unrecognised_backend_with_no_reranker_fails_closed(backend: str) -> None:
+    result = await _search(None, backend=backend)
+    assert result.chunks == []
+    assert result.count == 0
+    assert result.retrieval_failure == "reranker_unavailable"
+    assert result.rerank_degraded is False
+
+
+@pytest.mark.asyncio
+async def test_an_unrecognised_backend_is_held_to_the_hosted_floor_not_the_logit_one() -> None:
+    """With a reranker object in hand but a backend value nobody defined, the
+    scores are not assumed to be logits: 0.1 sits under the hosted 0.2 floor
+    (the logit floor, 0.0, would have kept it) and 0.9 is not sigmoided."""
+    reranker = MagicMock()
+    reranker.predict = MagicMock(return_value=[0.9, 0.1])
+    result = await _search(reranker, backend="cohere")
+    assert [c.chunk_id for c in result.chunks] == ["chunk-1"]
+    assert [c.relevance_score for c in result.chunks] == pytest.approx([0.9])

@@ -378,7 +378,7 @@ class TileProxyController extends Controller
         if ($inm !== null && $inm !== '' && $this->etagMatches($inm, $etag)) {
             return response('', 304)
                 ->header('ETag', "\"{$etag}\"")
-                ->header('Cache-Control', "public, max-age={$maxAge}, must-revalidate")
+                ->header('Cache-Control', "private, max-age={$maxAge}, must-revalidate")
                 ->header('Server-Timing', "db;dur={$dbMs}");
         }
 
@@ -397,7 +397,7 @@ class TileProxyController extends Controller
 
         if ($status === 204) {
             return response('', 204)
-                ->header('Cache-Control', 'public, max-age=60')
+                ->header('Cache-Control', 'private, max-age=60')
                 ->header('Server-Timing', "db;dur={$dbMs}, tile;dur={$tileMs}");
         }
 
@@ -412,6 +412,10 @@ class TileProxyController extends Controller
             x: $x,
             y: $y,
             cacheMaxAge: $maxAge,
+            // One tenant's project data, served only after the membership
+            // check above: no shared cache (corporate proxy, CDN) may keep a
+            // copy and hand it to someone who never passed that check.
+            private: true,
         );
     }
 
@@ -507,10 +511,12 @@ class TileProxyController extends Controller
         int $x,
         int $y,
         int $cacheMaxAge,
+        bool $private = false,
     ): Response {
+        $scope = $private ? 'private' : 'public';
         $headers = [
             'Content-Type' => $martinHeaders['Content-Type'] ?? 'application/x-protobuf',
-            'Cache-Control' => "public, max-age={$cacheMaxAge}, must-revalidate",
+            'Cache-Control' => "{$scope}, max-age={$cacheMaxAge}, must-revalidate",
             'Server-Timing' => "db;dur={$dbMs}, tile;dur={$tileMs}",
             'X-Tile-Source' => $source,
             'X-Tile-Coord' => "{$z}/{$x}/{$y}",

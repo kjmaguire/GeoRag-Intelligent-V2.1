@@ -77,7 +77,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 PARSER_NAME = "surpac_parser"
-PARSER_VERSION = "1.0.0"
+PARSER_VERSION = "1.1.0"   # 1.1.0: SurpacFile reports what was skipped / dropped / truncated
 
 #: Extensions this parser claims. Surpac also writes ``.dtm`` (triangulated
 #: surfaces) and ``.sss`` (string styles); neither is handled here.
@@ -111,6 +111,12 @@ _END_SENTINEL = "END"
 #: orders of magnitude above that noise and three-and-a-half below the 5 m
 #: level spacing, so it can neither split one level in two nor merge two.
 FLAT_TOLERANCE_M = 1e-3
+
+#: Distinct descriptor texts kept per string. A file that names every vertex
+#: (point ids) would otherwise put thousands of strings in one feature's
+#: properties; the overflow is COUNTED (``SurpacFile.descriptors_dropped``),
+#: never silently lost.
+MAX_DESCRIPTORS_PER_STRING = 100
 
 #: ``level_z`` is rounded to millimetres for the same reason. Reporting the
 #: raw mean would hand the caller 129 near-duplicate elevations to key a
@@ -155,6 +161,16 @@ class SurpacString:
     #: not that the elevation is missing.
     level_z: float | None
 
+    #: The distinct non-empty descriptor texts on this string's vertex rows, in
+    #: the order first seen, at most ``MAX_DESCRIPTORS_PER_STRING``. Surpac
+    #: descriptors carry the attribute data (ore code, wall, a point id); they
+    #: used to be counted in the log and thrown away. They are per VERTEX in
+    #: the file; here they are per string, which is the grain a feature has.
+    descriptors: tuple[str, ...] = ()
+
+    #: Distinct descriptor texts beyond the cap that are NOT in ``descriptors``.
+    descriptors_dropped: int = 0
+
 
 @dataclass(frozen=True)
 class SurpacFile:
@@ -172,6 +188,22 @@ class SurpacFile:
     #: is this in", and the magnitude of the two ranges is the only evidence
     #: the file offers. Answering that question is the caller's job.
     bounds: tuple[float, float, float, float]
+
+    #: Records skipped because the string number or a coordinate would not
+    #: parse. Each is one vertex (or one stray line) the file has and the
+    #: result does not. Previously only logged.
+    rows_skipped: int = 0
+
+    #: Vertex rows that carried a non-empty descriptor.
+    descriptor_rows: int = 0
+
+    #: Distinct descriptor texts that did not fit under the per-string cap.
+    descriptors_dropped: int = 0
+
+    #: The file does not end with the ``END`` record, or ends inside a string:
+    #: it may have lost its tail, and the strings after the break are not here.
+    #: Previously only logged.
+    truncated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +289,8 @@ def _level_of(points: list[tuple[float, float, float]]) -> float | None:
 def _build_string(
     string_number: int,
     points: list[tuple[float, float, float]],
+    descriptors: tuple[str, ...] = (),
+    descriptors_dropped: int = 0,
 ) -> SurpacString:
     """Finish one accumulated run into an immutable record."""
     return SurpacString(
@@ -264,7 +298,27 @@ def _build_string(
         points=points,
         closed=len(points) >= 2 and points[0] == points[-1],
         level_z=_level_of(points),
+        descriptors=descriptors,
+        descriptors_dropped=descriptors_dropped,
     )
+
+
+class _Descriptors:
+    """The descriptors seen on the run being accumulated, capped and counted."""
+
+    def __init__(self) -> None:
+        self.kept: list[str] = []
+        self._seen: set[str] = set()
+        self.dropped = 0
+
+    def add(self, text: str) -> None:
+        if not text or text in self._seen:
+            return
+        self._seen.add(text)
+        if len(self.kept) < MAX_DESCRIPTORS_PER_STRING:
+            self.kept.append(text)
+        else:
+            self.dropped += 1
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +376,18 @@ def read_surpac_strings(path: str | Path) -> SurpacFile:
     strings: list[SurpacString] = []
     pending_number: int | None = None
     pending_points: list[tuple[float, float, float]] = []
+    pending_descriptors = _Descriptors()
     malformed_rows = 0
     descriptor_rows = 0
     last_terminator_descriptor: str | None = None
+
+    def finish_pending() -> None:
+        """Close the run in progress into ``strings`` (nothing if it is empty)."""
+        if pending_number is not None and pending_points:
+            strings.append(_build_string(
+                pending_number, pending_points,
+                tuple(pending_descriptors.kept), pending_descriptors.dropped,
+            ))
 
     for lineno, line in enumerate(lines[first_record:], start=first_record + 1):
         if not line.strip():
@@ -342,9 +405,9 @@ def read_surpac_strings(path: str | Path) -> SurpacFile:
             # Terminators arrive back-to-back at the end of a file (the last
             # string's, then the END sentinel's), so an empty run here is
             # normal and must not become a zero-vertex string.
-            if pending_number is not None and pending_points:
-                strings.append(_build_string(pending_number, pending_points))
+            finish_pending()
             pending_number, pending_points = None, []
+            pending_descriptors = _Descriptors()
             last_terminator_descriptor = _descriptor_text(parts)
             continue
 
@@ -357,7 +420,8 @@ def read_surpac_strings(path: str | Path) -> SurpacFile:
             _warn_malformed(path, lineno, line, "coordinate fields missing or non-numeric")
             continue
 
-        if _descriptor_text(parts):
+        descriptor = _descriptor_text(parts)
+        if descriptor:
             descriptor_rows += 1
 
         # A string number that changes without an intervening terminator is
@@ -369,12 +433,13 @@ def read_surpac_strings(path: str | Path) -> SurpacFile:
                 "open — closing %d at the boundary.",
                 path, lineno, number, pending_number, pending_number,
             )
-            if pending_points:
-                strings.append(_build_string(pending_number, pending_points))
+            finish_pending()
             pending_points = []
+            pending_descriptors = _Descriptors()
 
         pending_number = number
         pending_points.append((x, y, z))   # THE SWAP: file is Y,X — we emit X,Y.
+        pending_descriptors.add(descriptor)
 
     # An unterminated final string still has its vertices; keep them.
     if pending_number is not None and pending_points:
@@ -382,9 +447,12 @@ def read_surpac_strings(path: str | Path) -> SurpacFile:
             "Surpac parser: '%s' ends inside string %d — no terminator record.",
             path, pending_number,
         )
-        strings.append(_build_string(pending_number, pending_points))
+        finish_pending()
 
-    if last_terminator_descriptor != _END_SENTINEL:
+    # A file that ends inside a string has no final terminator record at all,
+    # so it cannot have ended with END either: one flag covers both.
+    truncated = last_terminator_descriptor != _END_SENTINEL
+    if truncated:
         logger.warning(
             "Surpac parser: '%s' does not end with the '%s' record — it may be truncated.",
             path, _END_SENTINEL,
@@ -407,16 +475,24 @@ def read_surpac_strings(path: str | Path) -> SurpacFile:
         bounds[0], bounds[2], bounds[1], bounds[3],
     )
 
+    descriptors_dropped = sum(s.descriptors_dropped for s in strings)
     if malformed_rows:
         logger.warning(
             "Surpac parser: '%s' — %d row(s) skipped as malformed.", path, malformed_rows,
         )
-    if descriptor_rows:
-        # Descriptors are not part of SurpacFile. Saying so out loud beats
-        # dropping attribute data with no trace of having seen it.
+    if descriptors_dropped:
         logger.warning(
-            "Surpac parser: '%s' — %d row(s) carry descriptor fields, which this "
-            "parser does not return.", path, descriptor_rows,
+            "Surpac parser: '%s' — %d distinct descriptor text(s) beyond the "
+            "%d-per-string cap were not kept.",
+            path, descriptors_dropped, MAX_DESCRIPTORS_PER_STRING,
         )
 
-    return SurpacFile(title=title, strings=strings, bounds=bounds)
+    return SurpacFile(
+        title=title,
+        strings=strings,
+        bounds=bounds,
+        rows_skipped=malformed_rows,
+        descriptor_rows=descriptor_rows,
+        descriptors_dropped=descriptors_dropped,
+        truncated=truncated,
+    )

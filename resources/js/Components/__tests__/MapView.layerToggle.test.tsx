@@ -35,6 +35,7 @@ const {
     mockGetZoom,
     mockGetStyle,
     mockGetCanvas,
+    startFailure,
 } = vi.hoisted(() => ({
     mockSetLayoutProperty: vi.fn(),
     mockGetLayer: vi.fn().mockReturnValue(true),
@@ -50,6 +51,8 @@ const {
     mockGetZoom: vi.fn().mockReturnValue(5),
     mockGetStyle: vi.fn().mockReturnValue({ layers: [] }),
     mockGetCanvas: vi.fn().mockReturnValue({ style: {} }),
+    // Make the next Map construction throw, as maplibre-gl does with no WebGL 2.
+    startFailure: { next: false },
 }));
 
 vi.mock('maplibre-gl', () => {
@@ -58,6 +61,7 @@ vi.mock('maplibre-gl', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function MapMock(this: any) {
+        if (startFailure.next) throw new Error('Failed to initialize WebGL');
         this.addControl = mockAddControl;
         this.on = mockOn;
         this.off = mockOff;
@@ -158,6 +162,17 @@ describe('MapView layer toggle panel — Deliverable C', () => {
         // Make getLayer return true so layers "exist" for setLayoutProperty calls
         mockGetLayer.mockReturnValue(true);
         mockGetSource.mockReturnValue(null); // sources don't exist yet (triggers addSource)
+        startFailure.next = false;
+    });
+
+    it('keeps the page and says why when the map cannot start (no WebGL 2)', () => {
+        startFailure.next = true;
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        const { getByTestId } = render(<MapView projectId="proj-1" useMartinTiles={true} />);
+
+        // Thrown into the root error boundary, this used to take the page.
+        expect(getByTestId('map-start-failure').textContent).toMatch(/needs WebGL 2/);
     });
 
     // ── Test 1: Panel has role="region" and aria-label ────────────────────────

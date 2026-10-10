@@ -21,7 +21,10 @@ import logging
 import re
 from typing import Any, Literal
 
-from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
+from app.agent.hallucination.citation_markers import (
+    CITATION_MARKER_RE,
+    normalize_grouped_markers,
+)
 from app.agent.llm_calls import get_run_llm_model
 from app.agent.public_geoscience_tool import (
     PublicGeoscienceRecord,
@@ -80,6 +83,11 @@ EMPTY_SOURCE_SENTINELS: frozenset[str] = frozenset({
 _EMPTY_SOURCE_SUFFIXES: tuple[str, ...] = (
     ":count=0",          # assays, spatial collars
     ":rows=0:first_row=none",   # ADR-0007 project summary card
+    # Coverage-gap card with no ingest gap and no attribute rows. Its id does not
+    # carry the findings count, so a result with findings but neither of the
+    # other two would read as empty here; the live path always returns one
+    # coverage row per attribute, so that shape only arises from a failure.
+    ":indexed=0:processed=0:attrs=0",
 )
 
 #: Substrings that mark a zero-row card result.
@@ -214,6 +222,9 @@ def assemble_response(
     tool_results: list[tuple[str, Any]],
     map_payload: MapPayload | None = None,
     viz_payload: VizPayload | None = None,
+    *,
+    intent: str | None = None,
+    query: str | None = None,
 ) -> GeoRAGResponse:
     """Build a GeoRAGResponse from LLM text and the list of tool call results.
 
@@ -233,6 +244,11 @@ def assemble_response(
     If the LLM text contains no citation markers, we append them to the end so
     the text + citations list stay consistent.
     """
+    # "[NI43-1, NI43-2]" -> "[NI43-1] [NI43-2]" before anything reads the
+    # markers: the refusal check below treats an answer with no (single)
+    # marker as having grounded nothing, and the guards that run afterwards
+    # know one marker per bracket (2026-10-10 audit, finding 5).
+    text = normalize_grouped_markers(text)
     citations: list[Citation] = []
     sources_used: list[str] = []  # all chunk IDs involved (cited + retrieved)
 
@@ -354,7 +370,7 @@ def assemble_response(
 
     # Compute confidence from tool result quality AND answer text.
     # Refusal responses get low confidence even when tools succeeded.
-    confidence = _compute_confidence(tool_results, text=text)
+    confidence = _compute_confidence(tool_results, text=text, intent=intent, query=query)
 
     # Apply qualitative claim penalty — vague geological assertions
     # reduce confidence to signal the answer needs verification.
@@ -996,7 +1012,13 @@ def _is_refusal(text: str) -> bool:
     return False
 
 
-def _compute_confidence(tool_results: list[tuple[str, Any]], text: str = "") -> float:
+def _compute_confidence(
+    tool_results: list[tuple[str, Any]],
+    text: str = "",
+    *,
+    intent: str | None = None,
+    query: str | None = None,
+) -> float:
     """Compute overall response confidence from tool result quality AND answer text.
 
     A refusal response ("I don't have data on that") must have LOW confidence
@@ -1013,7 +1035,25 @@ def _compute_confidence(tool_results: list[tuple[str, Any]], text: str = "") -> 
     if not tool_results:
         return 0.1
 
-    # Layer C: average tool relevance, capped at 0.95.
-    relevances = [_extract_relevance(r) for _, r in tool_results]
+    # Layer C: average tool relevance, capped at 0.95 -- over the results
+    # that are EVIDENCE for this question. A structured result scores 1.0
+    # whenever it has rows, and the synthesis / decision / uncertainty
+    # profiles always run query_spatial_collars and query_assay_data, so a
+    # document answer built on marginal chunks (0.21-0.22) was shown at
+    # ~0.74. Layer 1 already decides which project-wide dumps count as
+    # evidence for a document-centric question (layer1_retrieval
+    # ._counts_as_evidence); confidence now uses the same rule. Document and
+    # public-geoscience results always count: they carry real scores.
+    from app.agent.hallucination.layer1_retrieval import (  # noqa: PLC0415
+        _counts_as_evidence,
+    )
+
+    scored = [
+        (name, result)
+        for name, result in tool_results
+        if isinstance(result, (DocumentSearchResult, PublicGeoscienceSearchResult))
+        or _counts_as_evidence(name, result, intent=intent, query=query)
+    ] or tool_results
+    relevances = [_extract_relevance(r) for _, r in scored]
     avg_relevance = sum(relevances) / len(relevances)
     return min(0.95, avg_relevance)

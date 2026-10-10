@@ -45,6 +45,11 @@ export interface TracePoint {
     north_m?: number | null;
     /** True past the last survey station — projected to TD, not measured. */
     extrapolated?: boolean | null;
+    /**
+     * True when the direction itself is assumed (the vertical placeholder
+     * drawn for a hole with no stored trace), not just its length.
+     */
+    assumed?: boolean | null;
 }
 
 /** A trace point in scene metres: east/north of the collar centroid. */
@@ -66,8 +71,15 @@ export interface CollarPoint {
     hole_type: string;
     status: string;
     collar_id?: string;
-    azimuth?: number;
-    dip?: number;
+    /** The collar row's own azimuth / dip; null when it records none (never a defaulted 0 / -90). */
+    azimuth?: number | null;
+    dip?: number | null;
+    /**
+     * Where the drawn path's direction comes from: 'surveyed' (the stored
+     * desurveyed trace) or 'unknown' (no stored trace: a vertical
+     * placeholder, drawn dashed).
+     */
+    orientation?: 'surveyed' | 'unknown';
     /**
      * Survey-aware trace from collar to toe. When present and length >= 2,
      * the per-hole tube uses these points (allows deviated holes); when
@@ -120,6 +132,9 @@ const STRUCTURE_COLORS: Record<string, string> = {
 };
 
 const STRUCTURE_DEFAULT_COLOR = '#9ca3af';
+
+/** Hover note for a hole drawn as a vertical placeholder (no stored trace; direction not known). */
+const ORIENTATION_UNKNOWN_HINT = '<br><i>Orientation unknown: vertical stub drawn, dashed</i>';
 
 /**
  * Build a (synthetic-if-needed) trace_points array for a collar:
@@ -246,7 +261,11 @@ export default function DrillTrace3D({ collars = [], intervals = [], structures 
                 x: holes.map((h) => ex(h.longitude, h.latitude)),
                 y: holes.map((h) => ny(h.longitude, h.latitude)),
                 z: holes.map((h) => h.elevation || 0),
-                customdata: holes.map((h) => [h.longitude, h.latitude]),
+                customdata: holes.map((h) => [
+                    h.longitude,
+                    h.latitude,
+                    h.orientation === 'unknown' ? ORIENTATION_UNKNOWN_HINT : '',
+                ]),
                 // Plotly hovertemplate renders %{text} as pseudo-HTML (<b>,
                 // <br>, …) — hole_id is ingested data, so a hostile value
                 // could inject markup. Escape before it reaches Plotly (same
@@ -263,7 +282,7 @@ export default function DrillTrace3D({ collars = [], intervals = [], structures 
                 hovertemplate:
                     '<b>%{text}</b><br>' +
                     'Lon: %{customdata[0]:.5f}<br>Lat: %{customdata[1]:.5f}<br>' +
-                    'Elev: %{z:.0f} m<extra></extra>',
+                    'Elev: %{z:.0f} m%{customdata[2]}<extra></extra>',
             });
 
             holes.forEach((h) => {

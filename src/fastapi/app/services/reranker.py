@@ -138,6 +138,49 @@ _ACTIVE_VERSION: str | None = None
 # order. Unset means Bedrock in code and in docker-compose.yml alike;
 # .env.example sets the self-hosted value explicitly for the dev stack.
 RERANKER_BACKEND = (os.environ.get("RERANKER_BACKEND") or "bedrock").strip().lower()
+
+#: The RERANKER_BACKEND values this module implements. ``bedrock`` is the
+#: hosted backend (Cohere Rerank 3.5; no local model, calibrated [0, 1] scores
+#: held to RERANKER_SCORE_THRESHOLD_HOSTED). The other two load a model on this
+#: host and are explicitly local/dev: ``cross_encoder`` emits raw logits and
+#: ``qwen3_causal`` a probability. Anything else -- "cohere", a typo -- is not a
+#: backend, and (2026-10-10 audit, finding 10) used to be read as a local one:
+#: it failed to load a CrossEncoder and returned RRF-ordered chunks with no
+#: relevance floor, the one retrieval-quality gate in the system silently off.
+HOSTED_RERANKER_BACKENDS: frozenset[str] = frozenset(("bedrock",))
+LOCAL_RERANKER_BACKENDS: frozenset[str] = frozenset(("cross_encoder", "qwen3_causal"))
+SUPPORTED_RERANKER_BACKENDS: frozenset[str] = HOSTED_RERANKER_BACKENDS | LOCAL_RERANKER_BACKENDS
+
+
+class UnsupportedRerankerBackend(RuntimeError):
+    """RERANKER_BACKEND names a backend that does not exist.
+
+    Raised, never swallowed into "no reranker": a deployment with a typo in
+    this variable should stop at startup, not serve every document query
+    unfiltered.
+    """
+
+
+def validate_reranker_backend(value: str) -> None:
+    """Raise :class:`UnsupportedRerankerBackend` unless ``value`` is implemented."""
+    if value not in SUPPORTED_RERANKER_BACKENDS:
+        raise UnsupportedRerankerBackend(
+            f"RERANKER_BACKEND={value!r} is not a reranker backend. Supported "
+            f"values: {', '.join(sorted(SUPPORTED_RERANKER_BACKENDS))}. This is a "
+            "hard error rather than a fallback because the fallback would be a "
+            "local model that is not there and retrieval with no relevance floor."
+        )
+
+
+def reranker_backend_is_hosted(value: str) -> bool:
+    """Whether ``value`` promises a precision stage that must fail CLOSED.
+
+    True for everything that is not an explicitly local backend, so an
+    unrecognised value takes the strict path rather than the lenient one.
+    """
+    return value not in LOCAL_RERANKER_BACKENDS
+
+
 QWEN3_RERANKER_MODEL = (
     os.environ.get("QWEN3_RERANKER_MODEL") or "Qwen/Qwen3-Reranker-0.6B"
 ).strip()
@@ -610,6 +653,9 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
     """Load and return the BGE reranker singleton (cached per worker process).
 
     Raises:
+        UnsupportedRerankerBackend: if RERANKER_BACKEND is not a backend. The
+            sidecar and the eval harness call this directly, and a typo there
+            used to load the default CrossEncoder without a word.
         ImportError: if sentence-transformers is not installed.
         OSError: if the model files cannot be downloaded / found.
 
@@ -619,6 +665,8 @@ def _get_reranker() -> CrossEncoder | _Qwen3CausalReranker:
     global _ACTIVE_VERSION
 
     import os  # noqa: PLC0415
+
+    validate_reranker_backend(RERANKER_BACKEND)
 
     import torch  # noqa: PLC0415
     from sentence_transformers import CrossEncoder  # noqa: PLC0415
@@ -716,10 +764,12 @@ def get_reranker_or_none() -> (
     degrades to RRF order. Env is read fresh each call so it stays
     monkeypatchable in tests.
 
-    One exception to "all exceptions are caught": a retired backend value
-    raises rather than returning None, and the lifespan hook re-raises it.
-    A deployment that was never repointed off Foundry should stop, not start
-    and quietly fail every document query (ADR-0022 gotcha 3).
+    Two exceptions to "all exceptions are caught": a retired backend value
+    and a value that is not a backend at all (``UnsupportedRerankerBackend``)
+    raise rather than returning None, and the lifespan hook re-raises them.
+    A deployment that was never repointed off Foundry, or that mistyped the
+    variable, should stop, not start and quietly fail -- or worse, answer
+    without a relevance floor -- every document query (ADR-0022 gotcha 3).
 
     Cohere Rerank v4 discovery (2026-09-16, Kyle; advisory-only since
     2026-09-29): this also asks app.services._bedrock whether Bedrock's
@@ -731,6 +781,7 @@ def get_reranker_or_none() -> (
     from app.services._bedrock import reject_retired_backend  # noqa: PLC0415
 
     reject_retired_backend(RERANKER_BACKEND, setting="RERANKER_BACKEND")
+    validate_reranker_backend(RERANKER_BACKEND)
 
     caller_budget_s = _caller_budget_s()
     if RERANKER_BACKEND == "bedrock":

@@ -167,7 +167,7 @@ class _Env:
         self.conn = _FakeConn()
 
     async def run(
-        self, filename: str, *, sheet_type: str | None = None,
+        self, filename: str, *, sheet_type: str | None = None, ctx: Any = None,
     ) -> Any:
         payload = self.it.IngestTabularInput(
             workspace_id=WS,
@@ -176,7 +176,7 @@ class _Env:
             run_id=RUN,
             sheet_type=sheet_type,
         )
-        return await self.it.run_ingest_tabular.fn(payload, object())
+        return await self.it.run_ingest_tabular.fn(payload, ctx if ctx is not None else object())
 
     # -- assertions the tests share ------------------------------------
     @property
@@ -1107,8 +1107,16 @@ class TestOneSheetFailureIsIsolated:
         env.parsed["Collars"] = _ParseResult(records=[
             {"hole_id": "DDH-1", "easting": 1.0, "northing": 2.0, "total_depth": 100.0},
         ])
+        # Attempt 1 of 2: Hatchet will retry, so the row must stay OPEN -- a
+        # terminal 'failed' would make a successful retry a no-op against it.
+        first = types.SimpleNamespace(attempt_number=1, max_attempts=2)
         with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
-            await env.run("book.xlsx")
+            await env.run("book.xlsx", ctx=first)
+        assert not env.failed
+        # The last attempt closes it.
+        last = types.SimpleNamespace(attempt_number=2, max_attempts=2)
+        with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError):
+            await env.run("book.xlsx", ctx=last)
         assert env.failed
 
     async def test_second_assay_sheet_does_not_delete_the_first(self, env) -> None:

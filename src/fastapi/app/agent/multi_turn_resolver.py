@@ -60,8 +60,8 @@ from typing import Literal
 from app.agent.hallucination.citation_markers import ALL_MARKER_RE
 from app.agent.hole_id_patterns import (
     HOLE_CONTEXT_RE,
-    HOLE_ID_RE,
     NUMERIC_HOLE_ID_RE,
+    iter_hole_id_matches,
 )
 
 logger = logging.getLogger(__name__)
@@ -327,9 +327,9 @@ _COMPARATIVE_PATTERNS: tuple[tuple[re.Pattern[str], int], ...] = (
 # "Interpreted as:" chip.
 #
 # Now shares app.agent.hole_id_patterns with viz_builder and Layer 4, which
-# requires a two-letter minimum prefix (so "Figure A-1" is not a hole) and
-# gates bare numeric IDs on a hole-context word.
-_HOLE_ID_PATTERN = HOLE_ID_RE
+# requires a two-letter minimum prefix (so "Figure A-1" is not a hole), leaves
+# out the lettered shapes that are words ("Pre-2010", "Zone-3"; see
+# ``iter_hole_id_matches``) and gates bare numeric IDs on a hole-context word.
 
 # Property / project names — title-case multi-word phrases followed by
 # the keyword 'property' / 'project' / 'deposit'. The leading letter
@@ -365,7 +365,9 @@ def extract_entity_mentions(
 
     lettered_spans: list[tuple[int, int]] = []
 
-    for match in _HOLE_ID_PATTERN.finditer(text):
+    # Not "Pre-2010" or "Zone-3": a follow-up of "what is its depth?" would be
+    # rewritten against whichever word-digit token came last.
+    for match in iter_hole_id_matches(text):
         surface = match.group(1).strip()
         if not any(c.isdigit() for c in surface):
             continue  # bare letters aren't a hole ID

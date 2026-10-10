@@ -473,7 +473,12 @@ async def _promote_lithology_canonical(
 #: `_collar_local_utm`) and the surveys behind them had not changed, so a
 #: re-run recognised them as current and skipped all of them. Folding this
 #: constant into the digest makes a builder fix invalidate its own output.
-_TRACE_BUILDER_VERSION = 2
+#:
+#: v3 (GIS audit 2026-10): the line now starts AT THE COLLAR. v2 wrote one
+#: vertex per survey station, so a survey whose first reading is below the
+#: collar (30 m is ordinary) produced a line whose vertex 0 was measured
+#: depth 30 - see ``_with_collar_station``.
+_TRACE_BUILDER_VERSION = 3
 
 
 def _survey_hash(
@@ -624,6 +629,38 @@ def _clean_stations(
     return [by_depth[d] for d in sorted(by_depth)]
 
 
+def _with_collar_station(
+    stations: list[tuple[float, float, float]],
+) -> list[tuple[float, float, float]]:
+    """Make sure the desurveyed line has a vertex AT THE COLLAR (md 0).
+
+    ``minimum_curvature`` returns exactly one point per station, and the
+    collar is a station only when the survey has a row at depth 0. A survey
+    whose first reading is deeper (30 m is ordinary; some start at 100 m)
+    therefore produced a line whose vertex 0 was the position at measured
+    depth 30 - not the collar. Every reader treats vertex 0 as md 0
+    (``query_drill_traces_3d`` / ``trace_points_with_depth`` derive depth
+    from cumulative length), so each interval was drawn that far uphole of
+    where it is, and a tail of the same length was invented at the toe to
+    reach total depth.
+
+    The interpolator already propagates collar -> first station straight
+    along the first station's attitude (its "tangent method" for the first
+    leg), so a station ``(0, az0, dip0)`` is not a new assumption: it makes
+    the interpolator emit the vertex it computed and threw away, and
+    changes no other vertex (zero dogleg between the two, so
+    ``dogleg_max_deg`` is unaffected).
+
+    Not done here, deliberately: extending the line below the LAST station
+    to total depth. That is a different assumption and needs its own
+    ``trace_quality`` value (the CHECK allows three) - a modelling decision.
+    """
+    if not stations or stations[0][0] <= 0:
+        return stations
+    _, azimuth, dip = stations[0]
+    return [(0.0, azimuth, dip), *stations]
+
+
 #: Collars desurveyed per survey read / upsert batch. Bounds memory (a hole
 #: carries tens of stations; 40k holes would otherwise be one multi-million
 #: row fetch) while still cutting the per-hole round trips by this factor.
@@ -728,8 +765,9 @@ UPDATE silver.collars c
 #: Collars the terrain fallback applies to (no file elevation, a position):
 #: how many in all, and how many still need a lookup.
 _TERRAIN_SCOPE = """
-SELECT count(*)                                         AS candidates,
-       count(*) FILTER (WHERE c.elevation_dem_geom IS NULL) AS pending
+SELECT count(*)                                              AS candidates,
+       count(*) FILTER (WHERE c.elevation_dem_geom IS NULL)  AS pending,
+       count(*) FILTER (WHERE c.elevation_dem_geom IS NOT NULL) AS held
   FROM silver.collars c
  WHERE c.project_id = $1::uuid
    AND c.elevation IS NULL
@@ -826,12 +864,20 @@ async def _fill_terrain_elevations(
     """
     config = dem_elevation.config_from_env()
     if not config.enabled:
+        # Off (privacy, air-gap): withdraw any height an earlier run stored, so
+        # readers stop drawing it as a terrain value. Nothing is looked up.
+        try:
+            await conn.execute(_TERRAIN_CLEAR_ALL, project_id)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            log.warning("promote.terrain: project %s could not clear its terrain heights (%s)", project_id, exc)
         return
     try:
         await conn.execute(_TERRAIN_CLEAR_STALE, project_id, config.source)
         scope = await conn.fetchrow(_TERRAIN_SCOPE, project_id)
         if scope is None or not scope["candidates"]:
             return
+        if not scope["pending"] and not scope["held"]:
+            return  # nothing to fill and nothing to withdraw: no remote reads
         if not budget.usable:
             log.warning(
                 "promote.terrain: project %s skipped; the run's terrain budget is "
@@ -1113,6 +1159,10 @@ async def _promote_traces(
                     "promote.traces: azimuth reference not applied collar=%s (%s)",
                     c["collar_id"], "; ".join(unapplied),
                 )
+
+            # The line starts at the collar even when the first survey reading
+            # is below it (GIS audit 2026-10; see `_with_collar_station`).
+            stations = _with_collar_station(stations)
 
             # Hashed BEFORE the skip test, and over the collar origin as well as
             # the stations — a collar that moves must invalidate its own trace.
@@ -1486,6 +1536,17 @@ SELECT count(*) - count(DISTINCT (s.collar_id, round(s.from_depth::numeric, 3),
 #: computed in SQL so the gold row is self-contained: a client that cannot
 #: run the projection still gets x/y.
 #:
+#: THE POLE, NOT THE PLANE (GIS audit 2026-10). The point plotted is the pole
+#: to the plane: trend = dip direction + 180, plunge = 90 - dip, lower
+#: hemisphere. An equal-area LINE of plunge p sits at radius
+#: sqrt(2) * sin((90 - p) / 2) with the primitive circle at 1, so the pole
+#: (p = 90 - dip) sits at sqrt(2) * sin(dip / 2): a horizontal bed (dip 0)
+#: plots at the centre, a vertical one (dip 90) on the rim. The statement
+#: used to put ``90 - dip`` in that formula - the radius of a LINE plunging
+#: ``dip`` - which swapped the two. Rows are rebuilt from silver on every
+#: promotion (_STRUCTURES_VISUAL_CLEAR below), so old rows correct themselves
+#: on the next run. x is east and y north, both normalised to <= 1.
+#:
 #: TWO THINGS THIS STATEMENT MUST SURVIVE, both learned when silver.structure
 #: gained a real writer (ingest_tabular, 2026-09-29):
 #:
@@ -1522,11 +1583,11 @@ SELECT gen_random_uuid(), s.collar_id, c.workspace_id, c.project_id,
        s.dip, s.dip_dir,
        NULL, NULL,
        CASE WHEN s.dip IS NULL OR s.dip_dir IS NULL THEN NULL ELSE
-            SQRT(2) * SIN(RADIANS((90 - s.dip) / 2.0))
+            SQRT(2) * SIN(RADIANS(s.dip / 2.0))
                     * SIN(RADIANS(MOD((s.dip_dir + 180)::numeric, 360)))
        END,
        CASE WHEN s.dip IS NULL OR s.dip_dir IS NULL THEN NULL ELSE
-            SQRT(2) * SIN(RADIANS((90 - s.dip) / 2.0))
+            SQRT(2) * SIN(RADIANS(s.dip / 2.0))
                     * COS(RADIANS(MOD((s.dip_dir + 180)::numeric, 360)))
        END,
        'equal_area', NOW(), NOW()

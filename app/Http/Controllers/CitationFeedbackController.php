@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * POST /api/v1/citations/feedback — record a citation thumbs-up/down.
@@ -82,19 +83,31 @@ class CitationFeedbackController extends Controller
                 ->timeout(10)
                 ->post($base.'/api/v1/citations/feedback', $payload);
         } catch (\Throwable $exc) {
-            return response()->json(
-                ['error' => 'fastapi dispatch failed', 'reason' => $exc->getMessage()],
-                502,
-            );
+            // The exception text names FastAPI's internal host and port. It
+            // goes to the log, never to the browser (TrustController and
+            // WorkflowTriggerController had the same fix).
+            Log::warning('CitationFeedbackController: FastAPI unreachable', [
+                'answer_run_id' => $payload['answer_run_id'],
+                'error' => $exc->getMessage(),
+            ]);
+
+            return response()->json(['error' => 'fastapi dispatch failed'], 502);
         }
 
         // FastAPI answers 201 Created; ok() is true for 200 only, so every
         // successful write used to come back to the browser as a 502.
         if (! $response->successful()) {
+            // FastAPI's body stays server-side: it can name internal hosts
+            // and carry framework error text. The browser gets the status.
+            Log::warning('CitationFeedbackController: FastAPI returned non-2xx', [
+                'answer_run_id' => $payload['answer_run_id'],
+                'status' => $response->status(),
+                'body' => substr($response->body(), 0, 480),
+            ]);
+
             return response()->json(
                 ['error' => 'fastapi returned non-2xx',
-                    'fastapi_status' => $response->status(),
-                    'fastapi_body' => $response->json()],
+                    'fastapi_status' => $response->status()],
                 502,
             );
         }

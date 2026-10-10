@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react';
 import { Head, router, usePage } from '@inertiajs/react';
 import type { PageProps } from '@/types';
 import { safeReturnTo } from '@/lib/safeReturnTo';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * Login — split-screen Foundry auth (TrustGauge-style).
@@ -34,12 +35,8 @@ export default function Login(): JSX.Element {
         setLoading(true);
 
         try {
+            // Primes the XSRF-TOKEN cookie csrfHeaders() reads.
             await fetch('/sanctum/csrf-cookie', { credentials: 'same-origin' });
-
-            const xsrfToken = document.cookie
-                .split('; ')
-                .find((row) => row.startsWith('XSRF-TOKEN='))
-                ?.split('=')[1];
 
             const res = await fetch('/api/v1/auth/spa-login', {
                 method: 'POST',
@@ -47,7 +44,7 @@ export default function Login(): JSX.Element {
                 headers: {
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
-                    ...(xsrfToken ? { 'X-XSRF-TOKEN': decodeURIComponent(xsrfToken) } : {}),
+                    ...csrfHeaders(),
                 },
                 body: JSON.stringify({ email, password }),
             });
@@ -381,7 +378,7 @@ export default function Login(): JSX.Element {
                         Sign in to GeoRAG
                     </h2>
                     <p style={{ fontSize: 12.5, color: 'var(--fg-3)', marginTop: 8, lineHeight: 1.5 }}>
-                        Use your operator workspace credentials. SSO is recommended for team accounts.
+                        Use your operator workspace credentials.
                     </p>
 
                     <form
@@ -525,61 +522,6 @@ export default function Login(): JSX.Element {
                         </button>
                     </form>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '22px 0' }}>
-                        <div style={{ flex: 1, height: 1, background: 'var(--line-1)' }} />
-                        <span
-                            style={{
-                                fontSize: 10,
-                                color: 'var(--fg-3)',
-                                letterSpacing: '0.06em',
-                                textTransform: 'uppercase',
-                            }}
-                        >
-                            or continue with
-                        </span>
-                        <div style={{ flex: 1, height: 1, background: 'var(--line-1)' }} />
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                        <button
-                            type="button"
-                            style={{
-                                padding: '10px 12px',
-                                fontSize: 12,
-                                color: 'var(--fg-1)',
-                                background: 'var(--bg-1)',
-                                border: '1px solid var(--line-1)',
-                                borderRadius: 5,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: 8,
-                                cursor: 'pointer',
-                            }}
-                        >
-                            <MicrosoftLogo size={13} />
-                            Microsoft SSO
-                        </button>
-                        <button
-                            type="button"
-                            style={{
-                                padding: '10px 12px',
-                                fontSize: 12,
-                                color: 'var(--fg-1)',
-                                background: 'var(--bg-1)',
-                                border: '1px solid var(--line-1)',
-                                borderRadius: 5,
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: 8,
-                                cursor: 'pointer',
-                            }}
-                        >
-                            <LockIcon size={11} /> SAML
-                        </button>
-                    </div>
-
                     {isDemoEnv && (
                         <div
                             style={{
@@ -689,37 +631,6 @@ function GeoRAGMark({ size = 16 }: { size?: number }) {
         >
             <path d="M12 3 L21 8 L21 16 L12 21 L3 16 L3 8 Z" />
             <path d="M12 3 L12 21 M3 8 L21 16 M21 8 L3 16" opacity="0.35" />
-        </svg>
-    );
-}
-
-/** Microsoft 4-square logo (official quadrant colours). */
-function MicrosoftLogo({ size = 13 }: { size?: number }) {
-    return (
-        <svg width={size} height={size} viewBox="0 0 23 23" aria-hidden xmlns="http://www.w3.org/2000/svg">
-            <rect x="1" y="1" width="10" height="10" fill="#f25022" />
-            <rect x="12" y="1" width="10" height="10" fill="#7fba00" />
-            <rect x="1" y="12" width="10" height="10" fill="#00a4ef" />
-            <rect x="12" y="12" width="10" height="10" fill="#ffb900" />
-        </svg>
-    );
-}
-
-function LockIcon({ size = 11 }: { size?: number }) {
-    return (
-        <svg
-            width={size}
-            height={size}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-        >
-            <rect x="5" y="11" width="14" height="10" rx="1" />
-            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
         </svg>
     );
 }

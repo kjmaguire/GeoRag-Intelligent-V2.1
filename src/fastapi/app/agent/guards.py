@@ -33,10 +33,13 @@ from enum import StrEnum
 from typing import Any
 
 __all__ = [
+    "VALIDATION_RAISED_WARNING",
+    "VALIDATION_UNVERIFIED_KEY",
     "GuardErrorCode",
     "RepairAttempt",
     "classify_guards",
     "detect_death_loop",
+    "validation_did_not_complete",
 ]
 
 
@@ -86,6 +89,41 @@ class GuardErrorCode(StrEnum):
     # data leaves the trust boundary. Operators flip the workspace
     # setting ``profile.allow_external_llm = true`` to permit egress.
     EGRESS_BLOCKED = "EGRESS_BLOCKED"
+
+
+# ---------------------------------------------------------------------------
+# "The checks did not run" is a verdict of its own
+# ---------------------------------------------------------------------------
+#
+# When ``run_post_assembly_validation`` raises, validate_node fails closed
+# (answer floored, banner prepended, validation_state="unverified") and adds
+# this warning. It matches no ``_WARNING_PATTERNS`` row, deliberately: it is not
+# a numeric-grounding or entity failure, it is the ABSENCE of a verdict, and
+# filing it under either code would put a false user-facing message (and a
+# repair strategy) on an answer that merely could not be checked. Adding a
+# member to GuardErrorCode instead ripples into the plan §4b 16-code contract,
+# the repair-strategy table and the Laravel renderer. So persist_node reads this
+# helper and records the absence of a verdict under its own key instead of
+# writing ``{"guards": {}}``, which the column defines as "the chain ran clean".
+#
+# The text lives here, shared by validate_node and persist_node, and
+# tests/test_guards.py pins it: rewording it would silently turn the detection off.
+
+VALIDATION_RAISED_WARNING = (
+    "Layer 3/4/6: post-assembly validation raised an exception "
+    "before numeric grounding, entity resolution, and constraint "
+    "checks could complete — this answer is UNVERIFIED, not "
+    "confirmed clean."
+)
+
+#: Key in ``answer_runs.hallucination_guard_results["guards"]`` meaning the
+#: post-assembly chain did not complete. NOT a GuardErrorCode (see above).
+VALIDATION_UNVERIFIED_KEY = "VALIDATION_UNVERIFIED"
+
+
+def validation_did_not_complete(validation_warnings: list[str] | None) -> bool:
+    """True when validate_node recorded that the Layer 3/4/6 chain raised."""
+    return VALIDATION_RAISED_WARNING in (validation_warnings or [])
 
 
 # ---------------------------------------------------------------------------

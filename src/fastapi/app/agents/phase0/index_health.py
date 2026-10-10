@@ -237,7 +237,8 @@ async def index_health_check(
     try:
         from qdrant_client import AsyncQdrantClient  # noqa: PLC0415
 
-        qc = AsyncQdrantClient(**qdrant_client_kwargs())
+        # A reachability probe: a few seconds, not the 60 s a bulk writer gets.
+        qc = AsyncQdrantClient(**qdrant_client_kwargs(timeout=5))
         try:
             collections = (await qc.get_collections()).collections
             reach_results: dict[str, Any] = {}

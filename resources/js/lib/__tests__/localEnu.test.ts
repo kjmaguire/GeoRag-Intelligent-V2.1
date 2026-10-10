@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { centroidOrigin, metresPerDegree, toLocalMetres } from '@/lib/localEnu';
+import { centroidOrigin, metresPerDegree, toLocalMetres, wrapLonDelta } from '@/lib/localEnu';
 
 describe('localEnu (GIS-9)', () => {
     it('has the right ground distance per degree', () => {
@@ -30,5 +30,36 @@ describe('localEnu (GIS-9)', () => {
 
     it('returns null origin for no finite points', () => {
         expect(centroidOrigin([{ lon: NaN, lat: 1 }])).toBeNull();
+    });
+
+    describe('across the antimeridian', () => {
+        it('takes the short way round for a longitude difference', () => {
+            expect(wrapLonDelta(359.8)).toBeCloseTo(-0.2, 9);
+            expect(wrapLonDelta(-359.8)).toBeCloseTo(0.2, 9);
+            expect(wrapLonDelta(10)).toBeCloseTo(10, 9);
+            expect(wrapLonDelta(-10)).toBeCloseTo(-10, 9);
+        });
+
+        it('puts the centroid of 179.9 and -179.9 at the antimeridian, not at the Greenwich meridian', () => {
+            const o = centroidOrigin([
+                { lon: 179.9, lat: 50 },
+                { lon: -179.9, lat: 50 },
+            ])!;
+            expect(Math.abs(o.lon)).toBeCloseTo(180, 6);
+        });
+
+        it('measures two collars 0.2 degrees apart across 180 as about 14 km, not 20,000 km', () => {
+            const pts = [
+                { lon: 179.9, lat: 50 },
+                { lon: -179.9, lat: 50 },
+            ];
+            const f = toLocalMetres(centroidOrigin(pts)!);
+            const a = f(pts[0].lon, pts[0].lat);
+            const b = f(pts[1].lon, pts[1].lat);
+            const eastGap = b.east - a.east;
+            // 0.2 degrees of longitude at 50 N is ~14.3 km.
+            expect(eastGap).toBeGreaterThan(14000);
+            expect(eastGap).toBeLessThan(14600);
+        });
     });
 });

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Enums\CollarStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreCollarRequest;
 use App\Http\Resources\CollarResource;
@@ -17,6 +18,8 @@ use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class CollarController extends Controller
@@ -122,14 +125,52 @@ class CollarController extends Controller
         try {
             $project = Project::findOrFail($projectId);
 
-            $data = array_merge($request->validated(), [
+            // Only geom_4326 places a collar: the tile source, the traces,
+            // the agent tools and the project hull all read it, and nothing
+            // derives it any more (2026_09_30_100000 dropped the trigger).
+            // Easting/northing on their own are numbers in an unknown frame,
+            // so a collar with no coordinate system is refused rather than
+            // stored where nothing can find it. The project's crs_datum is
+            // NOT used: every project is created with 'EPSG:32613' there,
+            // whatever its real system is (Project::effectiveCrsEpsg()).
+            $epsg = $request->validated('crs_epsg') ?? $project->crs_epsg;
+            if ($epsg === null || ! $this->isKnownSrid((int) $epsg)) {
+                return response()->json([
+                    'message' => 'A known coordinate system is needed to place this collar: send crs_epsg, or set one on the project.',
+                    'errors' => ['crs_epsg' => ['A known EPSG code is required when the project has none.']],
+                ], 422);
+            }
+
+            $data = array_merge(Arr::except($request->validated(), ['crs_epsg']), [
                 'project_id' => $project->project_id,
                 // The database derives it too (trg_collars_hole_id_canonical);
                 // set here so the model and any non-Postgres test DB agree.
                 'hole_id_canonical' => HoleId::canonicalize((string) $request->validated('hole_id')),
+                // NOT NULL in silver.collars; 'unknown' is what ingest writes
+                // when a file has no status (silver_row_guard).
+                'status' => $request->validated('status') ?? CollarStatus::Unknown->value,
+                // Typed in by hand against a stated coordinate system.
+                'georef_method' => 'manual',
             ]);
 
-            $collar = Collar::create($data);
+            $collar = DB::transaction(function () use ($data, $project, $epsg): Collar {
+                $collar = new Collar($data);
+                // Not fillable, and NOT NULL once the raw RLS block has run.
+                $collar->forceFill(['workspace_id' => $project->workspace_id]);
+                $collar->save();
+
+                if (DB::connection()->getDriverName() === 'pgsql') {
+                    DB::update(
+                        'UPDATE silver.collars
+                            SET geom_4326 = ST_Transform(ST_SetSRID(ST_MakePoint(?, ?), ?::int), 4326)
+                          WHERE collar_id = ?::uuid',
+                        [(float) $data['easting'], (float) $data['northing'], (int) $epsg, $collar->collar_id],
+                    );
+                }
+
+                return $collar;
+            });
+            $collar->refresh();
             $collar->loadCount(['surveys', 'samples']);
 
             return (new CollarResource($collar))
@@ -172,6 +213,10 @@ class CollarController extends Controller
             // Confirm the project exists to give a useful 404 if the project is wrong.
             Project::findOrFail($projectId);
 
+            // Only what CollarResource serialises. wellLogCurves used to be
+            // eager-loaded here too, though the resource never emits it: each
+            // curve carries two float8[] arrays (every depth and every value),
+            // so this read megabytes per hole to throw them away.
             $collar = Collar::with([
                 'surveys',
                 'lithologyLogs',
@@ -180,7 +225,10 @@ class CollarController extends Controller
                 'structures',
                 'samples',
                 'geochemistry',
-                'wellLogCurves',
+                // StripLogViewer's curve track. A row with no depth_unit is a
+                // legacy one in an unrecorded unit and cannot share the
+                // metre axis, so it is not sent.
+                'wellLogCurves' => fn ($curves) => $curves->whereNotNull('depth_unit')->orderBy('curve_name'),
             ])
                 ->withCount(['surveys', 'samples'])
                 ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')
@@ -240,5 +288,19 @@ class CollarController extends Controller
                 'error' => SafeErrorMessage::forResponse($e),
             ], 500);
         }
+    }
+
+    /**
+     * Whether PostGIS can transform from this SRID. ST_Transform on an
+     * unknown one raises, which would surface as a 500 for a typo.
+     * SQLite (the fast test suite) has no spatial_ref_sys: any code passes.
+     */
+    private function isKnownSrid(int $srid): bool
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            return true;
+        }
+
+        return DB::table('spatial_ref_sys')->where('srid', $srid)->exists();
     }
 }

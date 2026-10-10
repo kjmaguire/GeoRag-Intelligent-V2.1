@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "phase0/95-rls-policies.sql",
-      "note": "Phase 0 RLS enable + tenant_isolation policies on the workspace/audit/workflow/outbox/usage tables.",
+      "note": "Phase 0 RLS enable + tenant_isolation policies on the audit/workflow/usage/silver-findings tables. The workspace_memberships/workspace_agent_config/dry_run_outputs and outbox tables are NOT re-created here: the migration chain owns their fail-closed policy (2026_10_10_100300).",
       "requires": [
         "audit.audit_ledger",
         "workflow.workflow_runs"

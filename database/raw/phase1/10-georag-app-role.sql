@@ -51,6 +51,34 @@ GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA
     audit, usage, outbox, workflow, workspace
     TO georag_app;
 
+-- audit.audit_ledger is APPEND-ONLY for this role (2026_10_10_100200): the
+-- blanket grant above includes UPDATE, which would let the application role
+-- rewrite history and re-hash it. This file is re-run by hand ("Idempotent. Safe
+-- to re-run"), so it has to take the privilege back again, in this order, or the
+-- migration's revoke is undone. (The BEFORE UPDATE OR DELETE trigger the
+-- migration installs refuses the write regardless; this keeps the privilege
+-- matrix and the trigger telling the same story.) Walks the inheritance tree so a
+-- partitioned ledger's children are covered too.
+DO $$
+DECLARE
+    v_rel regclass;
+BEGIN
+    IF to_regclass('audit.audit_ledger') IS NULL THEN
+        RETURN;
+    END IF;
+
+    FOR v_rel IN
+        WITH RECURSIVE tree(oid) AS (
+            SELECT 'audit.audit_ledger'::regclass::oid
+            UNION ALL
+            SELECT i.inhrelid FROM pg_inherits i JOIN tree t ON i.inhparent = t.oid
+        )
+        SELECT oid::regclass FROM tree
+    LOOP
+        EXECUTE format('REVOKE UPDATE, DELETE ON %s FROM georag_app', v_rel);
+    END LOOP;
+END $$;
+
 -- DELETE for the transient cache-style tables only.
 GRANT DELETE ON workspace.idempotency_keys, workspace.dry_run_outputs TO georag_app;
 

@@ -117,6 +117,18 @@ class TestQueryCoverageGap:
         assert 96.9 <= result.ingest_gap.gap_pct <= 97.0
 
     @pytest.mark.asyncio
+    async def test_gap_is_never_negative_when_more_reports_than_manifest_rows(self) -> None:
+        # 5 manifest rows in the project's sections, 7 of its reports with
+        # provenance: the two counts are different populations.
+        pool, _ = _build_pool(indexed=5, processed=7, collars_total=3, attribute_data={})
+        result = await query_coverage_gap(
+            _make_deps(pg_pool=pool),
+            workspace_id="a0000000-0000-0000-0000-000000000001",
+            project_id="proj-test-uuid",
+        )
+        assert result.ingest_gap.gap_pct == 0.0
+
+    @pytest.mark.asyncio
     async def test_attribute_coverage_rows_shape(self) -> None:
         """Each attribute row reports collars_with_data / collars_total / coverage_pct."""
         pool, _captured = _build_pool(
@@ -224,3 +236,81 @@ class TestQueryCoverageGap:
         assert result.ingest_gap.indexed == 0
         assert result.attribute_coverage == []
         assert result.findings == []
+
+
+class TestIngestStageIsProjectScoped:
+    """2026-10-10 audit, finding 12: the ingest stage counted bronze.ingest_manifest
+    by workspace_id only, so a project answer reported the whole workspace's
+    indexed / processed counts -- every other project's files included -- next
+    to project-scoped attribute coverage.
+
+    The manifest has no project column. A project's rows are found the way the
+    Sources page finds them: the PLSS sections named in the source paths of the
+    provenance rows of the project's own collars and reports. These tests pin
+    the shape of the query the mock pool sees; the arithmetic was run against
+    a real PostgreSQL 16 with a seeded two-workspace, three-project fixture
+    (indexed/processed: 8/1 and 7/1 for the two archive projects, 0/0 for a
+    project uploaded through the live pipeline and for the wrong workspace,
+    where the old query said 19/2 for every one of them). Since then a project
+    with no archive files reports its uploads from silver.ingest_progress.
+    """
+
+    WORKSPACE = "a0000000-0000-0000-0000-000000000001"
+    PROJECT = "b0000000-0000-0000-0000-000000000001"
+
+    async def _ingest_call(self) -> _SqlCall:
+        pool, captured = _build_pool(
+            indexed=8, processed=1, collars_total=3, attribute_data={"assays_v2": 1}
+        )
+        await query_coverage_gap(
+            _make_deps(pg_pool=pool), workspace_id=self.WORKSPACE, project_id=self.PROJECT
+        )
+        return next(c for c in captured if "WITH indexed AS" in c.sql)
+
+    @pytest.mark.asyncio
+    async def test_the_ingest_query_is_bound_to_the_project_too(self) -> None:
+        call = await self._ingest_call()
+        assert call.args == (self.WORKSPACE, self.PROJECT)
+
+    @pytest.mark.asyncio
+    async def test_processed_counts_only_this_projects_reports(self) -> None:
+        sql = (await self._ingest_call()).sql
+        processed = sql[sql.index("processed AS") :]
+        assert "r.project_id = $2::uuid" in processed
+
+    @pytest.mark.asyncio
+    async def test_indexed_is_restricted_to_this_projects_sections(self) -> None:
+        sql = (await self._ingest_call()).sql
+        indexed = sql[sql.index("WITH indexed AS") : sql.index("processed AS")]
+        # the manifest has no project column: its rows are attributed through
+        # the project's own collars and reports...
+        assert "m.guessed_project IN (" in indexed
+        assert "bp.target_table = 'collars'" in indexed
+        assert "bp.target_table = 'reports'" in indexed
+        assert indexed.count("c.project_id = $2::uuid") == 1
+        assert indexed.count("r.project_id = $2::uuid") == 1
+        # ...and still inside the caller's workspace
+        assert "m.workspace_id = $1::uuid" in indexed
+        assert indexed.count("bp.workspace_id = $1::uuid") == 2
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_archive_files_reports_its_uploads(self) -> None:
+        """A project uploaded through the live pipeline has no manifest rows;
+        0 / 0 told the model nothing had been ingested. Its uploads are in
+        silver.ingest_progress, used only when the archive count is zero."""
+        sql = (await self._ingest_call()).sql
+        live = sql[sql.index("live AS") :]
+        assert "FROM silver.ingest_progress ip" in live
+        assert "ip.workspace_id = $1::uuid" in live
+        assert "ip.project_id = $2::uuid" in live
+        assert "DISTINCT ON (ip.minio_key)" in live
+        assert "CASE WHEN indexed.n > 0 THEN indexed.n ELSE live.indexed_n END" in live
+        assert "CASE WHEN indexed.n > 0 THEN processed.n ELSE live.done_n END" in live
+
+    @pytest.mark.asyncio
+    async def test_no_unscoped_manifest_count_is_left(self) -> None:
+        """The old query was `SELECT COUNT(*) FROM bronze.ingest_manifest WHERE
+        workspace_id = $1` and nothing else."""
+        sql = (await self._ingest_call()).sql
+        assert sql.count("bronze.ingest_manifest") == 1
+        assert "guessed_project" in sql

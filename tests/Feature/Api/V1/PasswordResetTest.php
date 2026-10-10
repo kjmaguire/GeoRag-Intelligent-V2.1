@@ -78,6 +78,22 @@ class PasswordResetTest extends TestCase
         ])->assertUnprocessable();
     }
 
+    public function test_reset_does_not_reveal_whether_an_email_has_an_account(): void
+    {
+        $user = User::factory()->create();
+        $attempt = fn (string $email) => $this->postJson('/api/v1/auth/reset-password', [
+            'token' => 'invalid-token',
+            'email' => $email,
+            'password' => 'new-secure-password',
+            'password_confirmation' => 'new-secure-password',
+        ]);
+
+        $known = $attempt($user->email)->assertUnprocessable();
+        $unknown = $attempt('nobody-here@example.com')->assertUnprocessable();
+
+        $this->assertSame($known->json('message'), $unknown->json('message'));
+    }
+
     public function test_reset_says_so_when_no_mailer_is_configured(): void
     {
         // Production runs MAIL_MAILER=log. sendResetLink() then writes the

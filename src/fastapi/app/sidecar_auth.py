@@ -33,6 +33,13 @@ legitimately receive the key via the .env file rather than process env, and
 without the fallback such a deployment would send NO header and 401 against a
 keyed sidecar. The guarded import simply fails on the sidecars themselves
 (Settings demands DB secrets they don't have), leaving them env-only.
+
+Rotation: ``FASTAPI_SERVICE_KEY_PREVIOUS`` is accepted beside the primary, the
+way ``app.services.auth.service_key_matches`` does for the main app and for
+the same reason (ops/runbooks/secret-rotation.md § 3). On ECS the callers
+(fastapi, hatchet-worker) and this sidecar restart on their own schedules; a
+sidecar that knows only the new key refuses every caller still on the old one.
+Process env only, like the primary. Empty is the steady state.
 """
 from __future__ import annotations
 
@@ -47,6 +54,14 @@ logger = logging.getLogger(__name__)
 # Server-side enforcement key — process env ONLY (the sidecars cannot import
 # app.config; see module docstring).
 _SERVICE_KEY = (os.environ.get("FASTAPI_SERVICE_KEY") or "").strip()
+
+# The outgoing key during a rotation overlap; "" when none is in progress.
+_SERVICE_KEY_PREVIOUS = (os.environ.get("FASTAPI_SERVICE_KEY_PREVIOUS") or "").strip()
+
+#: Logged once per process the first time a request authenticates with the
+#: PREVIOUS key. Expected during a rotation; a week later it means a caller
+#: never got the new value (same signal as app/services/auth.py).
+_previous_key_seen = False
 
 # Explicit, in-writing opt-out of sidecar auth (e.g. an air-gapped single-host
 # dev loop). Without this, an unset key fails closed with HTTP 503.
@@ -80,7 +95,12 @@ async def require_service_key(
     is set. Comparison is constant-time over the UTF-8 bytes — comparing the
     ``str`` values directly would raise TypeError (→ 500) on a non-ASCII
     header, which HTTP permits (audit 2026-07-01).
+
+    During a rotation the previous key is accepted as well. Both candidates
+    are compared, not short-circuited, so the response time does not reveal
+    which key (if any) the caller matched.
     """
+    global _previous_key_seen
     if not _SERVICE_KEY:
         if _AUTH_OPTIONAL:
             return  # explicit opt-out (logged at import)
@@ -92,10 +112,21 @@ async def require_service_key(
                 "explicitly run unauthenticated)."
             ),
         )
-    if not x_service_key or not hmac.compare_digest(
-        x_service_key.encode("utf-8"), _SERVICE_KEY.encode("utf-8")
-    ):
+    supplied = (x_service_key or "").encode("utf-8")
+    matched_primary = hmac.compare_digest(supplied, _SERVICE_KEY.encode("utf-8"))
+    matched_previous = bool(_SERVICE_KEY_PREVIOUS) and hmac.compare_digest(
+        supplied, _SERVICE_KEY_PREVIOUS.encode("utf-8")
+    )
+    if not x_service_key or not (matched_primary or matched_previous):
         raise HTTPException(status_code=401, detail="invalid or missing X-Service-Key")
+    if matched_previous and not matched_primary and not _previous_key_seen:
+        _previous_key_seen = True
+        logger.warning(
+            "sidecar_auth: X-Service-Key authenticated with "
+            "FASTAPI_SERVICE_KEY_PREVIOUS — a caller is still on the outgoing "
+            "key. Expected during the rotation window; a caller was missed if "
+            "this persists."
+        )
 
 
 def enforce_batch_limits(
@@ -134,34 +165,25 @@ _MAX_BODY_BYTES = int(os.environ.get("SIDECAR_MAX_BODY_BYTES", str(16 * 1024 * 1
 
 
 def install_body_size_limit(app, max_bytes: int = _MAX_BODY_BYTES) -> None:
-    """Reject oversized request bodies by Content-Length (HTTP 413).
+    """Reject oversized request bodies (HTTP 413), chunked ones included.
 
     ``enforce_batch_limits`` runs only AFTER pydantic has parsed the JSON body,
     which means a multi-GB body is fully read and decoded before any guard
-    fires. This middleware refuses on the declared Content-Length header
-    before the route handler ever reads the body. Bodies without the header
-    (chunked) fall through to the post-parse guards.
-    """
-    from starlette.responses import JSONResponse  # noqa: PLC0415
+    fires. FastAPI also reads the body BEFORE it resolves dependencies, so
+    ``require_service_key`` has not run either: an unauthenticated POST is
+    buffered whole.
 
-    @app.middleware("http")
-    async def _body_size_limit(request, call_next):  # noqa: ANN001, ANN202
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                declared = int(content_length)
-            except ValueError:
-                return JSONResponse(
-                    status_code=400, content={"detail": "invalid Content-Length"}
-                )
-            if declared > max_bytes:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": f"request body of {declared} B exceeds {max_bytes} B"
-                    },
-                )
-        return await call_next(request)
+    This used to refuse on the declared Content-Length alone, so a chunked
+    body (no header) or one that lied about its length went straight through.
+    It now delegates to the main app's ``BodySizeLimitMiddleware``, which also
+    wraps ``receive`` and counts bytes as they arrive, stopping at the first
+    chunk that crosses the cap. Reused, not copied: it imports only
+    starlette, so the sidecars stay as lean as they were, and the two
+    services cannot drift apart again.
+    """
+    from app.middleware import BodySizeLimitMiddleware  # noqa: PLC0415
+
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=max_bytes)
 
 
 def _client_service_key() -> str:

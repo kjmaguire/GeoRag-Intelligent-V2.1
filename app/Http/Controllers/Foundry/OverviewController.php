@@ -120,7 +120,11 @@ class OverviewController extends Controller
                 'id' => (string) $r->audit_id,
                 'when' => $r->created_at?->diffForHumans() ?? '—',
                 'kind' => $r->response_text ? 'query' : 'refusal',
-                'text' => substr((string) ($r->query_text ?? ''), 0, 120),
+                // 120 CHARACTERS, not bytes: a byte cut through a multibyte
+                // character (any accented hole name or place) leaves malformed
+                // UTF-8, which json_encode refuses, so the whole landing page
+                // answered 500 instead of one snippet being a character short.
+                'text' => mb_substr((string) ($r->query_text ?? ''), 0, 120),
             ])->values();
 
         // Recommended next action — picks the highest-leverage thing to do based

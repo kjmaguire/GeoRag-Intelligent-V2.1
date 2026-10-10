@@ -1,11 +1,11 @@
 import { Head, Link, router } from '@inertiajs/react';
-import { useMemo } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { PageHeader, Card, Pill, Stat, EmptyState } from '@/Components/Foundry/primitives';
 import { DataQualityBadge } from '@/Components/Foundry/DataQualityBadge';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import DataQualityFlagsBadge from '@/Components/DataQualityFlagsBadge';
 import DrillholeStripLog from '@/Components/Foundry/DrillholeStripLog';
+import DrillholeStereonet from '@/Components/Foundry/DrillholeStereonet';
 import { EMPTY_TRACKS, tracksFromIntervals, type StripTracks } from '@/lib/stripLog';
 
 /**
@@ -266,7 +266,7 @@ export default function DrillholeDetail({
                                 detail="Upload a structure table (depth, dip and dip direction, or alpha and beta) and the stereonet fills in."
                             />
                         ) : (
-                            <Stereonet points={structures} />
+                            <DrillholeStereonet points={structures} />
                         )}
                     </Card>
                 </section>
@@ -408,33 +408,5 @@ function AssayTable({ rows }: { rows: AssayRow[] }) {
                 </div>
             ))}
         </>
-    );
-}
-
-function Stereonet({ points }: { points: StructureRow[] }) {
-    const valid = useMemo(() => points.filter((p) => p.stereonet_x !== null && p.stereonet_y !== null), [points]);
-    return (
-        <div className="flex justify-center">
-            <svg viewBox="-1.6 -1.6 3.2 3.2" className="w-64 h-64">
-                <circle cx={0} cy={0} r={Math.SQRT2} fill="none" stroke="var(--line-2)" strokeWidth={0.02} />
-                <line x1={0} y1={-Math.SQRT2} x2={0} y2={Math.SQRT2} stroke="var(--line-1)" strokeWidth={0.01} />
-                <line x1={-Math.SQRT2} y1={0} x2={Math.SQRT2} y2={0} stroke="var(--line-1)" strokeWidth={0.01} />
-                {valid.map((p, i) => (
-                    <circle
-                        key={i}
-                        cx={p.stereonet_x ?? 0}
-                        cy={-(p.stereonet_y ?? 0)}
-                        r={0.025}
-                        fill={
-                            p.structure_type === 'fault'
-                                ? '#dc2626'
-                                : p.structure_type === 'bedding'
-                                  ? '#2563eb'
-                                  : 'var(--fg-1)'
-                        }
-                    />
-                ))}
-            </svg>
-        </div>
     );
 }

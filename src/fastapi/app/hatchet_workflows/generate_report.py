@@ -194,10 +194,11 @@ async def execute(input: GenerateReportInput, ctx: Context) -> GenerateReportOut
     )
 
     # Phase 2 admin surface push — list-level reports refresh + workflow_runs.
-    # The per-build cockpit (admin.reports.{build_id}) already gets per-section
-    # progress events from post_report_build_progress during the run; this
-    # broadcast is the "new build appeared / build finished" signal for the
-    # Admin/ReportBuilder index page. Best-effort.
+    # This broadcast is the "new build appeared / build finished" signal for
+    # the Admin/ReportBuilder index page, and the only report-build event
+    # Laravel receives: there are no per-section progress events (the
+    # admin/reports/{build_id}/progress route was deleted in #337, and
+    # post_report_build_progress has no callers). Best-effort.
     try:
         from app.services.laravel_bridge import post_admin_surface_updated
         admin_payload = {

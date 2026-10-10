@@ -130,6 +130,26 @@
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
+            <!-- 2026-10-10: the export job stored a presigned URL in
+                 silver.exports.download_url varchar(1000); an ECS session-token
+                 URL overflowed it (22001). SQLite does not enforce varchar
+                 lengths, so the failure is only observable here. -->
+            <file>tests/Feature/Jobs/GenerateExportJobStoresNoUrlTest.php</file>
+            <!-- 2026-10-10: horizon_queue_depth against a REAL Redis. Not a
+                 Postgres test; it is listed here because this CI job has a
+                 Redis service (the SQLite job has none, and the test skips
+                 there), and the key prefix it pins is only observable on one. -->
+            <file>tests/Feature/MetricsEndpointRedisTest.php</file>
+            <!-- 2026-10-10: the collar exporters, run on persisted rows. They
+                 read silver.collars.geom_4326 through PostGIS (ST_Transform
+                 into the project's CRS or the collar's UTM zone), which SQLite
+                 does not have. -->
+            <file>tests/Feature/Services/Exports/CsvCollarExporterTest.php</file>
+            <file>tests/Feature/Services/Exports/CsaBundleExporterTest.php</file>
+            <file>tests/Feature/Services/Exports/DxfExporterTest.php</file>
+            <file>tests/Feature/Services/Exports/LasBundleExporterTest.php</file>
+            <!-- silver.geochemistry.geom is a PostGIS geometry NOT NULL. -->
+            <file>tests/Feature/Services/Exports/CsvGeochemistryExporterPagingTest.php</file>
             <!-- 2026-09-24: silver.answer_runs / silver.message_feedback are
                  raw-SQL Postgres-only migrations. -->
             <file>tests/Feature/Api/V1/AnswerRunFeedbackControllerTest.php</file>
@@ -203,6 +223,19 @@
             <!-- 2026-10-04: audit.compute_audit_hash() previous-hash lookup is two
                  index probes; the chain it writes is unchanged. -->
             <file>tests/Feature/Tenancy/AuditChainTriggerLookupTest.php</file>
+            <!-- 2026-10-10 database audit: georag_app may DELETE from
+                 audit.query_audit_log (retention_sweep); the hash trigger stamps
+                 created_at after the chain lock and takes no row lock; the ledger
+                 itself is append-only (UPDATE/DELETE revoked from georag_app + a
+                 raising trigger). Each fails on the previous state. All three run
+                 in a rolled-back transaction: the ledger cannot be cleaned up. -->
+            <file>tests/Feature/Tenancy/AuditQueryLogRetentionGrantTest.php</file>
+            <file>tests/Feature/Tenancy/AuditHashTriggerCreatedAtTest.php</file>
+            <file>tests/Feature/Tenancy/AuditLedgerAppendOnlyTest.php</file>
+            <!-- 2026-10-10: audit.verify_hash_chain() checks the first in-window
+                 row of each chain against the row before the window instead of
+                 reporting it as a break (2026_10_10_100400). -->
+            <file>tests/Feature/Tenancy/AuditVerifyHashChainWindowTest.php</file>
             <!-- 2026-10-04 database audit: MV refresh CONCURRENTLY, hot-path and
                  FK indexes, SECURITY DEFINER ACL + search_path, role timeouts. -->
             <file>tests/Feature/Tenancy/DatabaseAuditHardeningMigrationsTest.php</file>
@@ -213,12 +246,17 @@
                  names a transaction-mode PgBouncer with a pool of one. -->
             <file>tests/Feature/Tenancy/WorkspaceBindFailsClosedTest.php</file>
             <file>tests/Feature/Tenancy/PooledRlsBindingTest.php</file>
+            <!-- 2026-10-10: workspace.{id}.activity channel authorisation,
+                 called through the registered closure. Its projects need real
+                 silver.workspaces rows here (projects_workspace_id_fkey). -->
+            <file>tests/Feature/Tenancy/WorkspaceActivityChannelAuthTest.php</file>
             <file>tests/Feature/Tenancy/TargetBacktestsRlsTest.php</file>
             <!-- 2026-08-25: storage_tier_policy platform-default visibility
-                 (2026_08_25_200000). Self-skips on migrate-only clusters
-                 like georag_test — the table exists only where the phase0
-                 raw SQL ran — but must be registered here so the manifest
-                 test sees it and raw-SQL-provisioned clusters exercise it. -->
+                 (2026_08_25_200000). This note used to say the test self-skips
+                 on migrate-only clusters because the table exists only where
+                 the phase0 raw SQL ran. Not since 2026_08_28_100500 creates
+                 the table: measured 2026-10-10 on a migrate:fresh-only
+                 database, all 4 tests RUN and pass. -->
             <file>tests/Feature/Tenancy/StorageTierPolicyPlatformDefaultsTest.php</file>
             <!-- 2026-08-28: the fifteen operational-core objects ported out of
                  database/raw/ into the migration chain. Unlike the file above,
@@ -244,6 +282,10 @@
                  rows) and PG-1 (mv_collar_summary no longer multiplies its
                  counts by the samples x lithology cross product). -->
             <file>tests/Feature/Api/V1/ProjectControllerDeleteTypedDrillDataTest.php</file>
+            <!-- 2026-10-10 audit FE-10: the wizard's project code is stored
+                 and unique per workspace. project_code is a Postgres-only
+                 column (2026_05_20_060100 returns early on SQLite). -->
+            <file>tests/Feature/Api/V1/ProjectCodeTest.php</file>
             <file>tests/Feature/Database/MvCollarSummaryAggregatesTest.php</file>
             <!-- 2026-09-29 database audit PG-4: the audit PII / golden-set
                  commands under production's search_path=public. -->
@@ -276,6 +318,11 @@
                  2026-08-17 pass. -->
             <file>tests/Feature/Foundry/ReportControllerTest.php</file>
             <file>tests/Feature/Foundry/SourcesControllerTest.php</file>
+            <!-- 2026-10-10: the project-scoped half of the Foundry routes
+                 smoke test. It used to sit in FoundryRoutesSmokeTest under
+                 `Project::query()->first()` + markTestSkipped, where no
+                 project exists, so every case skipped on every run. -->
+            <file>tests/Feature/Foundry/FoundryProjectRoutesSmokeTest.php</file>
             <!-- Deliberately last: does NOT use RefreshDatabase, asserts
                  against whatever project already exists after the
                  RefreshDatabase group above has run — see its own docblock. -->
@@ -298,6 +345,12 @@
                  safe here; it needs the RefreshDatabase group above to have
                  built the schema first. -->
             <file>tests/Feature/Tenancy/ProjectUserPivotRlsExemptionTest.php</file>
+            <!-- 2026-10-10: the lifecycle_state NOT NULL / DEFAULT / CHECK /
+                 index contract on silver.projects. Catalog reads only. It used
+                 to connect to `pgsql_migrations` and skip when it could not,
+                 which the manifest guard did not recognise as a Postgres gate,
+                 so it was in no suite at all. -->
+            <file>tests/Feature/ProjectLifecycleTest.php</file>
         </testsuite>
     </testsuites>
     <source>

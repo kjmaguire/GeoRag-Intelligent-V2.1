@@ -349,6 +349,138 @@ class TestLayer6MultiNumberSentences:
         assert governing[0].name == "azimuth_range"
 
 
+class TestLayer6MoneyIsNotAGrade:
+    """A commodity price or an economic measure is not a measurement.
+
+    Layer 6 attaches a number to the NEAREST constraint keyword, and an
+    economics paragraph is full of commodity names beside large numbers: "a gold
+    price of US$1,900/oz" tested 1,900 against the 1,000 ppm gold ceiling, and
+    "US$65/lb U3O8 and a long-term price of 80" tested 65 and 80 as uranium
+    grades over the 50 % ceiling (2026-10-10 audit, finding 4). Each is a
+    high-severity finding -- confidence floored to 0.2, fabrication banner --
+    on a correct answer.
+    """
+
+    PRICES = [
+        "At a gold price of US$1,900/oz, the after-tax NPV is US$425 million [NI43-1].",
+        "The study assumes a gold price of $1,800 per ounce [NI43-1].",
+        "The economics use US$65/lb U3O8 and a long-term price of 80 [NI43-1].",
+        "In the second quarter, gold was $1,750 [NI43-1].",
+        "Gold was trading at C$2,400 per ounce when the PEA was released [NI43-1].",
+        "A uranium price of US$75 per pound U3O8 gives an IRR of 35% [NI43-1].",
+        "At a U3O8 price of $60/lb the NPV is $120 million with capex of US$300 million.",
+        "Metal prices: gold 1,900 US$/oz, silver 25 US$/oz [NI43-1].",
+        "The base case uses a gold price of 1,850 per ounce [NI43-1].",
+        "Gold price (US$/oz) 1,900 [NI43-1].",
+        "The spot gold price was US$ 1,950 [NI43-1].",
+        "Gold: $1,750 [NI43-1].",
+        "The after-tax IRR is 61% at a uranium price of 80 [NI43-1].",
+    ]
+
+    @pytest.mark.parametrize("text", PRICES)
+    def test_a_price_is_not_checked_as_a_grade(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        found = _find_violations(text)
+        assert found == [], [(v.value, v.constraint.name) for v in found]
+
+    @pytest.mark.parametrize("text", PRICES)
+    def test_and_the_layer_raises_nothing(self, text: str) -> None:
+        from app.agent.hallucination.orchestrator_validators import verify_constraints
+
+        assert verify_constraints(text) == []
+
+    @pytest.mark.parametrize(
+        ("text", "value", "constraint_name"),
+        [
+            # A price clause in the same sentence must not shield a grade.
+            (
+                "At a gold price of US$1,900/oz the zone averages 2,500 g/t Au [NI43-1].",
+                2500.0, "grade_gold_max_ppm",
+            ),
+            (
+                "Uranium grades reach 61 % U3O8, well above the US$65/lb price case [NI43-1].",
+                61.0, "grade_uranium_max_pct",
+            ),
+            (
+                "The gold price is high; the sample assayed 1,500 ppm Au [NI43-1].",
+                1500.0, "grade_gold_max_ppm",
+            ),
+            # A grade unit outranks a price word that happens to sit nearby.
+            ("Gold price aside, assays reached 2,500 g/t [NI43-1].", 2500.0, "grade_gold_max_ppm"),
+            ("The price check found 1,800 ppm gold in the pulp [NI43-1].", 1800.0, "grade_gold_max_ppm"),
+            # Plain breaches, as before.
+            ("The zone averages 2,500 g/t Au [NI43-1].", 2500.0, "grade_gold_max_ppm"),
+            ("Uranium grades reach 61 % U3O8 [NI43-1].", 61.0, "grade_uranium_max_pct"),
+            ("The total depth was 6,200 m [NI43-1].", 6200.0, "depth_max_m"),
+        ],
+    )
+    def test_a_real_grade_violation_is_still_flagged(
+        self, text: str, value: float, constraint_name: str
+    ) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        found = _find_violations(text)
+        assert [(v.value, v.constraint.name) for v in found] == [(value, constraint_name)]
+
+
+class TestLayer6MoneySkipIsForGradesOnly:
+    """The price-word heuristic must not shield a depth, a dip or a recovery.
+
+    "The cost at depth 6,500 m rises sharply" and "At the assumed price
+    recovery of 112 % was used" were findings on origin/main and passed once
+    the money skip became global (2026-10-10 review, item 8): the skip is for
+    the grade_* constraints a commodity name can mis-attach a price to.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "value", "constraint_name"),
+        [
+            ("The cost at depth 6,500 m rises sharply [NI43-1].", 6500.0, "depth_max_m"),
+            ("The hole was priced by depth 7,200 m [NI43-1].", 7200.0, "depth_max_m"),
+            ("Drilling cost is high: total depth of 6,500 m [NI43-1].", 6500.0, "depth_max_m"),
+            ("At the assumed price recovery of 112 % was used [NI43-1].", 112.0, "recovery_max_pct"),
+            ("The capex case assumes a dip of 120 degrees [NI43-1].", 120.0, "dip_range"),
+            ("Costs rose; the azimuth was 400 degrees [NI43-1].", 400.0, "azimuth_range"),
+        ],
+    )
+    def test_an_impossible_value_beside_a_price_word_is_flagged(
+        self, text: str, value: float, constraint_name: str
+    ) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        found = _find_violations(text)
+        assert [(v.value, v.constraint.name) for v in found] == [(value, constraint_name)]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # a currency mark or a price unit is money for ANY constraint
+            "Drilling at depth costs US$6,500 per metre [NI43-1].",
+            "The depth cost was $7,200 [NI43-1].",
+            "Drilling cost at depth: 6,500 per tonne of ore [NI43-1].",
+            # and the grade-side economics fixes stand
+            *TestLayer6MoneyIsNotAGrade.PRICES,
+        ],
+    )
+    def test_money_is_still_not_a_measurement(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        assert _find_violations(text) == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "The cost at depth 650 m rises sharply [NI43-1].",
+            "At the assumed price recovery of 92 % was used [NI43-1].",
+        ],
+    )
+    def test_a_plausible_value_beside_a_price_word_is_not_a_violation(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        assert _find_violations(text) == []
+
+
 # ---------------------------------------------------------------------------
 # Module 6 Chunk 3 — Guard 3: Completeness (per-claim citation coverage)
 # ---------------------------------------------------------------------------
@@ -411,13 +543,19 @@ class TestLayer3OrchestratorTightened:
         assert not any("31.1" in w for w in warnings)
 
     def test_m_to_ft_conversion_accepted(self) -> None:
-        """Metres to feet conversion (3.28084 factor) is accepted."""
-        from app.agent.hallucination.orchestrator_validators import _expand_grounded_with_conversions
+        """Metres to feet conversion (3.28084 factor) is accepted when the
+        answer says feet -- and only then (2026-10-10 audit, finding 2: the
+        factor used to be applied to every grounded value, whatever its unit
+        and whatever the answer's, via ``_expand_grounded_with_conversions``)."""
+        from app.agent.hallucination.orchestrator_validators import verify_numbers
 
-        grounded = {100.0}  # 100 m
-        expanded = _expand_grounded_with_conversions(grounded)
+        tool_results = [
+            ("query_spatial_collars", {"count": 1, "collars": [{"total_depth": 100.0}]})
+        ]
         # 100 m * 3.28084 = 328.084 ft
-        assert any(abs(v - 328.084) < 0.5 for v in expanded)
+        assert verify_numbers("The hole reached 328 ft. [DATA:1]", tool_results) == []
+        # 328 metres is not a restatement of 100 metres.
+        assert verify_numbers("The hole reached 328 m. [DATA:1]", tool_results)
 
     def test_disabled_returns_empty(self) -> None:
         """verify_numbers returns [] when NUMERICAL_VERIFICATION_ENABLED=False."""

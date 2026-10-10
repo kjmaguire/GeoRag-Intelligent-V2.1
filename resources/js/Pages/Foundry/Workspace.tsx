@@ -13,6 +13,8 @@ import {
     DownholeMultiLog,
     ChronoColumn,
     LithologyStripColumn,
+    geologyDepth,
+    sharedDepthAxis,
     type StratUnit,
     type LithologyInterval,
     type StereonetPole,
@@ -61,7 +63,12 @@ interface Collar {
     lng: number | null;
     ore_bands: number;
     ore_thickness_m: number;
+    /** Relative to TRUE north when the project declares an azimuth reference (the 3D frame's north). */
     azimuth?: number | null;
+    /** The collar table's own azimuth, sent when `azimuth` was converted from it. */
+    azimuth_recorded?: number | null;
+    /** The project's declared reference could not be applied: `azimuth` is as recorded. */
+    azimuth_unapplied?: boolean;
     dip?: number | null;
     elevation?: number | null;
     /** 'terrain' = no elevation in the file; `elevation` is the terrain model's. */
@@ -75,8 +82,15 @@ interface Collar {
 interface Survey3D {
     collar_id: string;
     depth: number;
+    /** Relative to TRUE north when the station declares a reference (SurveyAzimuthReference). */
     azimuth: number | null;
     dip: number | null;
+    /** 'true' | 'magnetic' | 'grid': the declared reference that was applied (or not). */
+    azimuth_reference?: string;
+    /** The recorded azimuth, sent when `azimuth` was converted from it. */
+    azimuth_recorded?: number;
+    /** A declared reference that could not be applied: `azimuth` is as recorded. */
+    azimuth_unapplied?: boolean;
 }
 
 interface Structure3D {
@@ -570,6 +584,20 @@ export default function FoundryWorkspace({
     // A hole can have a logged strip with no curves at all (a geology log and no LAS).
     const hasLogGeologyTracks = log_alteration_intervals.length > 0 || log_mineralization_intervals.length > 0;
     const hasLogGeology = log_lithology_intervals.length > 0 || hasLogGeologyTracks;
+    // ONE depth axis for the curve tracks and the geology column drawn beside
+    // them. `log_depth_max` is the deepest drawn CURVE — or the API's 600 m
+    // placeholder when no curve is drawn, which must not become the axis of a
+    // geology-only hole — and the geology can run deeper than the curves, so
+    // the axis is the deeper of the two. The column ignored it altogether
+    // before and fitted its own data, so the two tracks disagreed on depth.
+    const logDepthAxis = sharedDepthAxis([
+        log_tracks.length > 0 ? log_depth_max : null,
+        geologyDepth({
+            intervals: log_lithology_intervals,
+            alteration: log_alteration_intervals,
+            mineralization: log_mineralization_intervals,
+        }),
+    ]);
 
     function changeLogCurves(next: string[]) {
         router.get(
@@ -994,8 +1022,14 @@ export default function FoundryWorkspace({
                                                                                 hole_id:
                                                                                     c.hole_id_canonical || c.hole_id,
                                                                                 azimuth: c.azimuth ?? null,
+                                                                                azimuth_unapplied:
+                                                                                    c.azimuth_unapplied ?? false,
                                                                                 dip: c.dip ?? null,
                                                                                 elevation: c.elevation ?? null,
+                                                                                // Placed by lng/lat (geom_4326); easting/northing
+                                                                                // are in each upload's own CRS.
+                                                                                lng: c.lng,
+                                                                                lat: c.lat,
                                                                                 easting: c.easting,
                                                                                 northing: c.northing,
                                                                                 total_depth: c.total_depth,
@@ -1385,7 +1419,7 @@ export default function FoundryWorkspace({
                                                         <div className="shrink-0">
                                                             <DownholeMultiLog
                                                                 tracks={log_tracks}
-                                                                depthMax={log_depth_max}
+                                                                depthMax={logDepthAxis}
                                                                 height={chartH}
                                                                 trackWidth={96}
                                                             />
@@ -1398,7 +1432,7 @@ export default function FoundryWorkspace({
                                                             mineralization={log_mineralization_intervals}
                                                             truncated={log_tracks_truncated}
                                                             holeId={log_hole_id}
-                                                            depthMax={log_depth_max}
+                                                            depthMax={logDepthAxis}
                                                             height={chartH}
                                                             width={hasLogGeologyTracks ? 520 : 380}
                                                         />
@@ -1621,6 +1655,7 @@ export default function FoundryWorkspace({
                                                                 leftHole={compareLeft}
                                                                 rightHole={compareRight}
                                                                 chartHeight={Math.max(360, chartH - 120)}
+                                                                crsEpsg={project.crs_epsg}
                                                             />
                                                         )
                                                     ) : (
@@ -1765,6 +1800,7 @@ export default function FoundryWorkspace({
                     leftHole={compareSet[0]}
                     rightHole={compareSet[1]}
                     onClose={closeCompareKeepOriginal}
+                    crsEpsg={project.crs_epsg}
                 />
             )}
         </>

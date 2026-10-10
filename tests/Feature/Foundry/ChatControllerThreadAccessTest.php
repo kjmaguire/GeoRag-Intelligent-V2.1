@@ -151,8 +151,11 @@ final class ChatControllerThreadAccessTest extends TestCase
             );
     }
 
-    public function test_a_long_thread_keeps_its_newest_200_messages_in_order(): void
+    public function test_a_long_thread_loads_whole_so_the_next_sync_cannot_drop_its_head(): void
     {
+        // The page PUTs back what it loaded plus the new turn, and the sync
+        // is a full replace. Loading only the newest 200 of these 230 erased
+        // m0..m29 on the next answer.
         $texts = [];
         for ($i = 0; $i < 230; $i++) {
             $texts[] = "m{$i}";
@@ -163,9 +166,9 @@ final class ChatControllerThreadAccessTest extends TestCase
             ->get($this->url('?thread='.$id))
             ->assertOk()
             ->assertInertia(fn (AssertableInertia $page) => $page
-                ->has('messages', 200)
-                ->where('messages.0.content', 'm30')
-                ->where('messages.199.content', 'm229'),
+                ->has('messages', 230)
+                ->where('messages.0.content', 'm0')
+                ->where('messages.229.content', 'm229'),
             );
     }
 }

@@ -588,8 +588,11 @@ class TestAnswerRunEmbeddingModel:
         )
         assert len(_embedding_model_for_run(state) or "") <= 128
 
-    def test_the_insert_writes_it_as_the_last_positional_argument(self) -> None:
+    def test_the_insert_writes_it_as_the_twentieth_positional_argument(self) -> None:
         from app.agent.agentic_retrieval.nodes import _ANSWER_RUN_INSERT_SQL
 
         assert "embedding_model," in _ANSWER_RUN_INSERT_SQL
-        assert "$20" in _ANSWER_RUN_INSERT_SQL and "$21" not in _ANSWER_RUN_INSERT_SQL
+        # $20 is the embedding model; user_id ($21) and trace_id ($22) were
+        # appended after it (audit 2026-10 finding 24), nothing beyond.
+        assert "$20" in _ANSWER_RUN_INSERT_SQL
+        assert "$22" in _ANSWER_RUN_INSERT_SQL and "$23" not in _ANSWER_RUN_INSERT_SQL

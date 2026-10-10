@@ -17,21 +17,55 @@
  * ## Method
  *
  * Minimum curvature — the same method `promote_silver_to_gold` uses for the
- * server-side traces, so a hole drawn here agrees with its MVT trace on the
- * map. Each station's attitude becomes a unit direction vector and each
- * segment is the circular arc between them; because it works on vectors, an
- * azimuth pair straddling north needs no special case. (`circularMeanDeg` is
- * exported for anywhere a single averaged bearing is wanted.)
+ * server-side traces. Each station's attitude becomes a unit direction vector
+ * and each segment is the circular arc between them; because it works on
+ * vectors, an azimuth pair straddling north needs no special case.
+ * (`circularMeanDeg` is exported for anywhere a single averaged bearing is
+ * wanted.)
+ *
+ * ## Does a hole drawn here agree with its MVT trace? (GIS-12, audit 2026-10)
+ *
+ * Only as far as the AZIMUTHS agree, and this module does not touch them:
+ * WorkspaceController converts a DECLARED reference (a station's own
+ * `azimuth_reference`, else the project's `orientation_reference`) to an
+ * azimuth from TRUE north before it sends the stations, because true north is
+ * this frame's north (`SurveyAzimuthReference`). With that, a hole whose
+ * azimuths are true, magnetic (+ the project's declination) or grid north of
+ * the project CRS is drawn where its map trace is.
+ *
+ * Two things are NOT reconciled, and a caller should not claim otherwise:
+ *   - a hole with NO declared reference is drawn at its recorded azimuth, read
+ *     as true north (Kyle, 2026-09-29: no correction unless declared), while
+ *     promote reads the same number as grid north of the collar's UTM zone, so
+ *     the map trace differs from this drawing by the grid convergence (about
+ *     2.5 degrees at 58 N, 3 degrees from the central meridian);
+ *   - a declared reference that could not be applied (magnetic with no
+ *     declination, or no usable grid) arrives flagged `azimuth_unapplied`,
+ *     drawn as recorded, and the caption says so.
  *
  * Conventions:
- *   - azimuth: degrees clockwise from north, in whatever north the data uses
- *     (declination / grid convergence are NOT applied — see GIS-12);
+ *   - azimuth: degrees clockwise from TRUE north when the server converted a
+ *     declared reference, otherwise exactly as recorded (above);
  *   - dip: degrees from horizontal in the silver convention — negative is
  *     below horizontal (-60 = 60° down), positive is an UP-HOLE (+30 = 30°
  *     up). The sign used to be ignored, which drew every up-hole downward;
  *     up-holes are stored as measured since 2026-09-29 (§04e, SME-approved),
  *     so the sign is honoured;
- *   - output: x = east, y = north, z = up, metres relative to the collar.
+ *   - output: x = east, y = north, z = up, metres relative to the collar;
+ *     placed holes are in the scene's local frame (below).
+ *
+ * ## One frame for every collar (GIS audit 2026-10)
+ *
+ * `silver.collars.easting/northing` are stored in the CRS and UNITS of
+ * whichever upload the collar came from — UTM of any zone, US-survey-foot
+ * state plane, lon/lat degrees — so two collars' numbers are not comparable,
+ * and adding metre offsets to them is wrong as soon as a project holds more
+ * than one upload. They are never used to place a hole here. The position is
+ * the collar's EPSG:4326 point (`lng`/`lat`, `silver.collars.geom_4326`),
+ * and every hole in a scene is placed in ONE local east/north/up frame of
+ * metres about the centroid of the scene's collars (lib/localEnu — the frame
+ * DrillTrace3D uses). A collar with no geographic position cannot be placed
+ * and is left out, and the caption says how many.
  *
  * ## Holes without surveys
  *
@@ -42,17 +76,31 @@
  * station (to TD) is flagged `extrapolated` on the path points.
  */
 
+import { centroidOrigin, toLocalMetres, type LonLatOrigin } from './localEnu';
+
 const DEG = Math.PI / 180;
+
+/** Axis titles for a scene in the local frame: metres about the scene centroid, not a map grid. */
+export const EAST_AXIS_TITLE = 'East (m, local)';
+export const NORTH_AXIS_TITLE = 'North (m, local)';
 
 export interface SurveyStationInput {
     depth: number;
     azimuth: number | null;
     dip: number | null;
+    /**
+     * The station declares an azimuth reference (its own, or the project's)
+     * that the server could not apply — magnetic with no declination, or no
+     * usable grid — so `azimuth` is as recorded.
+     */
+    azimuth_unapplied?: boolean | null;
 }
 
 export interface DesurveyCollar {
     azimuth: number | null;
     dip: number | null;
+    /** As SurveyStationInput.azimuth_unapplied, for the collar's own azimuth. */
+    azimuthUnapplied?: boolean;
     /**
      * Total depth, or null when the collar has none (§04e 2026-09-29: the
      * column is optional). The path is extended to max(TD, extendTo, last
@@ -82,6 +130,8 @@ export interface DesurveyedHole {
     /** At least one downhole survey station contributed. */
     surveyed: boolean;
     orientation: OrientationSource;
+    /** A declared azimuth reference of this hole could not be applied: azimuths are as recorded. */
+    azimuthUnapplied: boolean;
     /** Deepest MD the path reaches. */
     maxDepth: number;
 }
@@ -259,7 +309,8 @@ export function desurveyHole(
         });
     }
 
-    return { path, surveyed, orientation, maxDepth };
+    const azimuthUnapplied = collar.azimuthUnapplied === true || surveys.some((st) => st.azimuth_unapplied === true);
+    return { path, surveyed, orientation, azimuthUnapplied, maxDepth };
 }
 
 /**
@@ -306,19 +357,55 @@ export function pathBetween(
 
 export interface CollarForDesurvey {
     collar_id: string;
-    easting: number | null;
-    northing: number | null;
+    /**
+     * The collar's EPSG:4326 position (`silver.collars.geom_4326`) — the one
+     * position that means the same thing for every collar. A collar without it
+     * is not placed.
+     */
+    lng?: number | null;
+    lat?: number | null;
+    /**
+     * As stored: in the CRS and units of the collar's own upload (UTM of any
+     * zone, US-ft state plane, degrees). Never used to place a hole; kept so a
+     * view can show the stored value.
+     */
+    easting?: number | null;
+    northing?: number | null;
     elevation?: number | null;
     /** 'terrain': `elevation` is a terrain-model ground height, not a surveyed RL. */
     elevation_source?: 'file' | 'terrain' | null;
     azimuth?: number | null;
     dip?: number | null;
+    /** As SurveyStationInput.azimuth_unapplied, for the collar's own azimuth. */
+    azimuth_unapplied?: boolean | null;
     total_depth?: number | null;
+}
+
+/** East/north metres about a lon/lat origin: the one frame a scene is drawn in. */
+export interface LocalFrame {
+    origin: LonLatOrigin;
+    toLocal: (lng: number, lat: number) => { east: number; north: number };
+}
+
+/** True when the collar has the EPSG:4326 position it needs to be placed. */
+export function hasLonLat(c: { lng?: number | null; lat?: number | null }): boolean {
+    return c.lng != null && c.lat != null && Number.isFinite(c.lng) && Number.isFinite(c.lat);
+}
+
+/** The local frame about the centroid of the collars that have a position; null when none do. */
+export function localFrameFor(collars: ReadonlyArray<{ lng?: number | null; lat?: number | null }>): LocalFrame | null {
+    const origin = centroidOrigin(
+        collars.filter(hasLonLat).map((c) => ({ lon: c.lng as number, lat: c.lat as number })),
+    );
+    return origin ? { origin, toLocal: toLocalMetres(origin) } : null;
 }
 
 export interface PlacedHole extends DesurveyedHole {
     collar_id: string;
-    /** Absolute collar position: easting, northing, elevation (0 when unknown). */
+    /**
+     * Collar position in the scene's local frame: x = metres east and
+     * y = metres north of the frame origin, z = elevation (0 when unknown).
+     */
     origin: { x: number; y: number; z: number };
     elevationKnown: boolean;
     /** The z is a terrain-model height (a surface model: it reads canopy in forest). */
@@ -326,13 +413,16 @@ export interface PlacedHole extends DesurveyedHole {
 }
 
 /**
- * Desurvey every collar that has a position. `extendTo` lets a view make sure
- * each hole reaches its deepest interval even when TD is missing or short.
+ * Desurvey every collar that has a position and place it in `frame` (default:
+ * the local frame about these collars' own centroid). `extendTo` lets a view
+ * make sure each hole reaches its deepest interval even when TD is missing or
+ * short. A collar with no lng/lat is not placed.
  */
 export function desurveyCollars(
     collars: readonly CollarForDesurvey[],
     surveys: ReadonlyArray<SurveyStationInput & { collar_id: string }>,
     extendTo: ReadonlyMap<string, number> = new Map(),
+    frame: LocalFrame | null = localFrameFor(collars),
 ): Map<string, PlacedHole> {
     const byCollar = new Map<string, SurveyStationInput[]>();
     for (const s of surveys) {
@@ -341,17 +431,24 @@ export function desurveyCollars(
         else byCollar.set(s.collar_id, [s]);
     }
     const out = new Map<string, PlacedHole>();
+    if (!frame) return out;
     for (const c of collars) {
-        if (c.easting == null || c.northing == null) continue;
+        if (!hasLonLat(c)) continue;
         const hole = desurveyHole(
-            { azimuth: c.azimuth ?? null, dip: c.dip ?? null, totalDepth: c.total_depth ?? null },
+            {
+                azimuth: c.azimuth ?? null,
+                dip: c.dip ?? null,
+                totalDepth: c.total_depth ?? null,
+                azimuthUnapplied: c.azimuth_unapplied === true,
+            },
             byCollar.get(c.collar_id) ?? [],
             extendTo.get(c.collar_id) ?? 0,
         );
+        const at = frame.toLocal(c.lng as number, c.lat as number);
         out.set(c.collar_id, {
             ...hole,
             collar_id: c.collar_id,
-            origin: { x: c.easting, y: c.northing, z: c.elevation ?? 0 },
+            origin: { x: at.east, y: at.north, z: c.elevation ?? 0 },
             elevationKnown: c.elevation != null,
             elevationFromTerrain: c.elevation != null && c.elevation_source === 'terrain',
         });
@@ -359,13 +456,13 @@ export function desurveyCollars(
     return out;
 }
 
-/** Absolute (easting, northing, elevation) of MD `md` on a placed hole. */
+/** Local-frame (east, north, elevation) of MD `md` on a placed hole. */
 export function worldAtDepth(hole: PlacedHole, md: number): { x: number; y: number; z: number } {
     const p = positionAtDepth(hole, md);
     return { x: hole.origin.x + p.x, y: hole.origin.y + p.y, z: hole.origin.z + p.z };
 }
 
-/** Absolute sub-path between two MDs on a placed hole. */
+/** Local-frame sub-path between two MDs on a placed hole. */
 export function worldPathBetween(
     hole: PlacedHole,
     fromMd: number,
@@ -404,16 +501,22 @@ export interface XYZArrays {
 }
 
 /**
- * A desurveyed set of holes in one Plotly scene: easting/northing re-centred
- * on the mean collar (so the axes read in tens/hundreds of metres, not
- * 6,000,000), z = collar elevation + desurveyed offset (collars without an
- * elevation start at 0 — `elevationKnownForAll` says whether that happened).
+ * A desurveyed set of holes in one Plotly scene, in the LOCAL frame: x = metres
+ * east and y = metres north of the centroid of the placed collars (taken from
+ * their lng/lat, never from the stored easting/northing, which are in each
+ * upload's own CRS), z = collar elevation + desurveyed offset (collars without
+ * an elevation start at 0 — `elevationKnownForAll` says whether that
+ * happened).
  *
  * Replaces the `(collar E, collar N, -measured depth)` placement the gold 3D
  * views used, which hung every inclined hole vertically from z = 0 (FE-9).
  */
 export interface Scene3D {
     holes: Map<string, PlacedHole>;
+    /** The frame every hole is placed in; null when no collar had a position. */
+    frame: LocalFrame | null;
+    /** Collars left out for want of a lng/lat. */
+    unplaced: number;
     at(collarId: string, md: number): XYZ | null;
     segment(collarId: string, fromMd: number, toMd: number): XYZArrays | null;
     fullPath(collarId: string): XYZArrays | null;
@@ -422,34 +525,35 @@ export interface Scene3D {
     elevationFromTerrainAny: boolean;
 }
 
+/**
+ * @param notPlaced  Collars the caller already left out because they have no
+ *                   lng/lat (views pre-filter), so the caption can say so.
+ */
 export function buildScene3D(
     collars: readonly CollarForDesurvey[],
     surveys: ReadonlyArray<SurveyStationInput & { collar_id: string }>,
     extendTo: ReadonlyMap<string, number> = new Map(),
+    notPlaced = 0,
 ): Scene3D {
-    const holes = desurveyCollars(collars, surveys, extendTo);
-    let sumE = 0;
-    let sumN = 0;
-    for (const h of holes.values()) {
-        sumE += h.origin.x;
-        sumN += h.origin.y;
-    }
-    const n = Math.max(1, holes.size);
-    const cE = sumE / n;
-    const cN = sumN / n;
+    const frame = localFrameFor(collars);
+    const holes = desurveyCollars(collars, surveys, extendTo, frame);
+    const unplaced = notPlaced + collars.filter((c) => !hasLonLat(c)).length;
+    // Hole origins are already local metres: no re-centring on raw numbers.
     const shift = (p: XYZ, h: PlacedHole): XYZ => ({
-        x: h.origin.x - cE + p.x,
-        y: h.origin.y - cN + p.y,
+        x: h.origin.x + p.x,
+        y: h.origin.y + p.y,
         z: h.origin.z + p.z,
     });
     const shiftArrays = (a: { x: number[]; y: number[]; z: number[] }, h: PlacedHole): XYZArrays => ({
-        x: a.x.map((v) => v + h.origin.x - cE),
-        y: a.y.map((v) => v + h.origin.y - cN),
+        x: a.x.map((v) => v + h.origin.x),
+        y: a.y.map((v) => v + h.origin.y),
         z: a.z.map((v) => v + h.origin.z),
     });
 
     return {
         holes,
+        frame,
+        unplaced,
         at(collarId, md) {
             const h = holes.get(collarId);
             return h ? shift(positionAtDepth(h, md), h) : null;
@@ -470,11 +574,27 @@ export function buildScene3D(
                 h,
             );
         },
-        caption: describeDesurvey(holes.values()),
+        caption: describeDesurvey(holes.values(), { unplaced, frame }),
         elevationKnownForAll: Array.from(holes.values()).every((h) => h.elevationKnown),
         elevationFromTerrainAny: Array.from(holes.values()).some((h) => h.elevationFromTerrain),
     };
 }
+
+/**
+ * Plotly scene aspect for every 3D view built on a Scene3D: true scale.
+ *
+ * The scene is in metres on all three axes (easting and northing offsets from
+ * the project centroid, elevation), and `aspectmode: 'data'` draws 1 m the same
+ * length on each, so a hole's apparent dip and azimuth can be read off the plot.
+ * The five Workspace views used `aspectmode: 'manual'` with `{ x: 1, y: 1,
+ * z: 0.6 }`, which fits whatever the data spans into a fixed 1 : 1 : 0.6 box:
+ * a 600 m x 200 m footprint came out square, and every dip was off by an amount
+ * that depended on the project's shape. DrillTrace3D, MultiHole3DTrace and
+ * OrientationSpiral already draw true scale (GIS-9, 2026-09-29); this is the
+ * same rule for the rest. A project that is much deeper than it is wide draws as
+ * a tall box, which is what it is; the camera can be rotated and zoomed.
+ */
+export const SCENE_3D_ASPECT = { aspectmode: 'data' } as const;
 
 /** z-axis title for a Scene3D. */
 export function sceneZAxisTitle(
@@ -486,21 +606,39 @@ export function sceneZAxisTitle(
     return notes.length ? `Elevation (m · ${notes.join(' · ')})` : 'Elevation (m)';
 }
 
+/** "58.2468°N 106.1234°W" — where a local frame is centred. */
+export function describeOrigin(origin: LonLatOrigin): string {
+    const lat = `${Math.abs(origin.lat).toFixed(4)}°${origin.lat >= 0 ? 'N' : 'S'}`;
+    const lon = `${Math.abs(origin.lon).toFixed(4)}°${origin.lon >= 0 ? 'E' : 'W'}`;
+    return `${lat} ${lon}`;
+}
+
 /**
  * One-line caption for a set of placed holes, so a view can say how many are
- * drawn from real surveys and how many are projections.
+ * drawn from real surveys and how many are projections, how many could not be
+ * placed, and where the local frame is centred.
  */
-export function describeDesurvey(holes: Iterable<PlacedHole>): string {
+export function describeDesurvey(
+    holes: Iterable<PlacedHole>,
+    opts: { unplaced?: number; frame?: LocalFrame | null } = {},
+): string {
     let surveyed = 0;
     let collarOnly = 0;
     let vertical = 0;
+    let unapplied = 0;
     for (const h of holes) {
         if (h.orientation === 'surveys') surveyed++;
         else if (h.orientation === 'collar') collarOnly++;
         else vertical++;
+        if (h.azimuthUnapplied) unapplied++;
     }
     const parts = [`${surveyed} desurveyed (minimum curvature)`];
     if (collarOnly > 0) parts.push(`${collarOnly} unsurveyed — projected along collar azimuth/dip`);
     if (vertical > 0) parts.push(`${vertical} with no orientation — drawn vertical`);
+    if (unapplied > 0) {
+        parts.push(`${unapplied} with a declared azimuth reference that could not be applied — azimuths as recorded`);
+    }
+    if ((opts.unplaced ?? 0) > 0) parts.push(`${opts.unplaced} with no geographic position — not drawn`);
+    if (opts.frame) parts.push(`metres about ${describeOrigin(opts.frame.origin)}`);
     return parts.join(' · ');
 }

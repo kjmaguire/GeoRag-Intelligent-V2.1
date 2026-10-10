@@ -80,7 +80,7 @@ class CsvAssaysExporter
                 'detection_limit',
                 'below_detection',
                 'qc_flag',
-            ]);
+            ], escape: '');
 
             $query = DB::table('silver.assays_v2 as a')
                 ->join('silver.collars as c', 'a.collar_id', '=', 'c.collar_id')
@@ -102,7 +102,7 @@ class CsvAssaysExporter
                 ]);
 
             if (! empty($filters['hole_id'])) {
-                $query->where('c.hole_id', $filters['hole_id']);
+                CollarExportQuery::whereHoleId($query, (string) $filters['hole_id'], 'c');
             }
             if (! empty($filters['element'])) {
                 $query->where('a.element', $filters['element']);
@@ -141,7 +141,7 @@ class CsvAssaysExporter
                             $row->detection_limit,
                             $row->below_detection ? 'true' : 'false',
                             $row->qc_flag,
-                        ]);
+                        ], escape: '');
                     }
                 });
         } finally {

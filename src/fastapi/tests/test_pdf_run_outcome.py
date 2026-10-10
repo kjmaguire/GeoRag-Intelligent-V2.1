@@ -389,8 +389,11 @@ def _persist_input() -> Any:
 async def _run_persist(
     parsed: dict, *, page_count: int, store: MagicMock | None = None,
     fail_image_insert: bool = False, diagnostics_ok: bool = True,
+    events: list[str] | None = None,
 ) -> tuple[Any, AsyncMock, list[str]]:
-    events: list[str] = []
+    # `events` may be supplied so a test can interleave its own markers (an object
+    # store call, say) with the transaction's begin/commit.
+    events = [] if events is None else events
     conn = _PersistConn(events, fail_image_insert=fail_image_insert)
 
     async def _diagnostics(**kwargs: Any) -> bool:

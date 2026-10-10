@@ -162,15 +162,45 @@ def test_the_two_coverage_numbers_are_both_written() -> None:
     assert "text_page_coverage_pct" in sql
 
 
-def test_page_coverage_counts_pages_that_produced_text() -> None:
+def test_page_coverage_is_over_the_documents_pages_not_the_pages_that_have_text() -> None:
+    """The producer only appends a page that PRODUCED text.
+
+    ``_parse_with_fitz`` / the OCR paths build per_page_text from the pages
+    that came back with text, so a 300-page scan of which 12 pages read has a
+    12-entry list. The old test fed this function blank entries - which no
+    producer ever emits - and so passed while the real shape returned 100%
+    (12 / 12) and the blank pages could never lower it (audit finding 13).
+    """
+    from app.services.ingest.pdf_report import _text_page_coverage
+
+    produced = [(n, f"page {n} text") for n in (1, 2, 5, 9)]       # 4 of 20 pages
+
+    total, with_text, fraction = _text_page_coverage(produced, 20)
+
+    assert (total, with_text) == (20, 4)
+    assert fraction == 0.2
+
+
+def test_page_coverage_without_a_page_count_keeps_the_old_denominator() -> None:
     from app.services.ingest.pdf_report import _text_page_coverage
 
     pages = [(1, "granodiorite"), (2, "   "), (3, ""), (4, "assay"), (5, None)]
 
     total, with_text, fraction = _text_page_coverage(pages)  # type: ignore[arg-type]
 
-    assert (total, with_text) == (5, 2)
+    assert (total, with_text) == (5, 2)        # blank entries are not text
     assert fraction == 0.4
+
+
+def test_page_coverage_counts_a_page_once_and_never_exceeds_one() -> None:
+    from app.services.ingest.pdf_report import _text_page_coverage
+
+    # A page that appears twice (text layer + an OCR narrative) is one page,
+    # and a page count smaller than the pages seen cannot push it past 100%.
+    pages = [(1, "text"), (1, "more text"), (2, "text")]
+
+    assert _text_page_coverage(pages, 2) == (2, 2, 1.0)
+    assert _text_page_coverage(pages, 1) == (2, 2, 1.0)
 
 
 def test_page_coverage_of_nothing_is_zero_not_a_crash() -> None:

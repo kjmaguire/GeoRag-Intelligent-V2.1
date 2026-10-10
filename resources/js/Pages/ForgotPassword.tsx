@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 import { Head, Link } from '@inertiajs/react';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * Forgot Password page — sends a reset link to the user's email.
@@ -8,12 +9,6 @@ import { Head, Link } from '@inertiajs/react';
 
 interface ForgotPasswordApiResponse {
     message?: string;
-}
-
-/** Same-origin session CSRF token; stateful Sanctum requests are rejected (419) without it. */
-function csrfHeader(): Record<string, string> {
-    const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-    return token ? { 'X-CSRF-TOKEN': token } : {};
 }
 
 export default function ForgotPassword(): JSX.Element {
@@ -30,7 +25,7 @@ export default function ForgotPassword(): JSX.Element {
         try {
             const res = await fetch('/api/v1/auth/forgot-password', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...csrfHeader() },
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...csrfHeaders() },
                 body: JSON.stringify({ email }),
             });
             const data: ForgotPasswordApiResponse = await res.json().catch(() => ({}));

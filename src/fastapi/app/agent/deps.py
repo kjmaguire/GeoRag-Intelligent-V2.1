@@ -115,6 +115,10 @@ class AgentDeps:
     # joined back to the Laravel log line for the same request. None
     # on paths that build deps outside an HTTP request (eval runner).
     trace_id: str | None = None
+    # The chat conversation the question came from (QueryRequest.session_id),
+    # persisted as answer_runs.session_id. None for single-shot queries and
+    # for paths outside an HTTP request.
+    session_id: str | None = None
 
     @contextlib.asynccontextmanager
     async def acquire_scoped(self):

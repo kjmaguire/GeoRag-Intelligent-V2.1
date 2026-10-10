@@ -117,10 +117,43 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 -- Idempotent: cron.schedule() upserts by job name as of pg_cron 1.4+, but
 -- unschedule-then-schedule works across the version range and reads
 -- unambiguously on a second run of this file.
+--
+-- WHEN IT RUNS. pg_cron schedules in GMT (data.tf does not set cron.timezone)
+-- and the instance is STOPPED 17:00-08:30 America/Vancouver (variables.tf):
+-- 00:00-15:30 UTC in PDT, 01:00-16:30 UTC in PST. This job was '0 3 * * *' --
+-- 03:00 UTC, inside that span in both halves of the year -- and pg_cron does
+-- not run a job it missed, so it never ran once. 18:45 UTC is 11:45 PDT /
+-- 10:45 PST: well after the startup sweep, clear of the daily backup window
+-- (17:00-17:30 UTC) and the Sunday maintenance window (18:00-18:30 UTC), and
+-- between the Hatchet crons that cluster on :00, :15 and :30. A test reads
+-- the statement below (src/fastapi/tests/test_crons_avoid_the_shutdown_window.py)
+-- and fails if it drifts back into the closed span.
+--
+-- A DATABASE BOOTSTRAPPED BEFORE THIS CHANGE still has the 03:00 job. Running
+-- this whole file moves it, but that needs all three password variables set,
+-- so this is the same fix on its own. As the master user, in the georag
+-- database (the cron.database_name target), pasted as-is:
+--
+--   SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
+--   SELECT cron.schedule('partman-maintenance', '45 18 * * *',
+--                        $$CALL partman.run_maintenance_proc()$$);
+--   GRANT USAGE ON SCHEMA partman TO georag_app;
+--   GRANT SELECT ON partman.part_config TO georag_app;
+--
+-- (The two GRANTs are the georag_app block further down; they are safe to
+-- repeat.) Check it with
+--
+--   SELECT jobid, schedule, active FROM cron.job WHERE jobname = 'partman-maintenance';
+--
+-- and, the day after, that it RAN:
+--
+--   SELECT status, start_time, return_message FROM cron.job_run_details
+--    WHERE jobid = (SELECT jobid FROM cron.job WHERE jobname = 'partman-maintenance')
+--    ORDER BY start_time DESC LIMIT 3;
 SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
 SELECT cron.schedule(
     'partman-maintenance',
-    '0 3 * * *',
+    '45 18 * * *',
     $$CALL partman.run_maintenance_proc()$$
 );
 
@@ -178,6 +211,35 @@ ALTER ROLE georag_app LOGIN PASSWORD :'georag_app_password';
 -- georag_app in the first place, so there is nothing to repair it FROM.
 -- CREATE ROLE above already applied NOSUPERUSER NOBYPASSRLS at creation,
 -- which is the one path that does not require the caller to be a superuser.
+
+-- georag_app READS partman's configuration, and only reads it.
+--
+-- The Hatchet cron pg_partman_maintenance (src/fastapi/app/hatchet_workflows/
+-- pg_partman_maintenance.py, 19:15 UTC) connects as this role and runs
+-- `SELECT count(*) FROM partman.part_config`, then
+-- `CALL partman.run_maintenance_proc()`. The schema is created above with no
+-- grant to georag_app (database/raw/phase1/10-georag-app-role.sql, which did
+-- grant it, is not in database/raw/manifest.json and has never run), so both
+-- statements failed with "permission denied for schema partman" every night.
+-- Verified against PostgreSQL 16 with pg_partman 5.0.1, not inferred. These two
+-- grants are what that job needs while no parent is registered; in 5.0.1 the
+-- procedure reads nothing but part_config to find its parents. If another
+-- pg_partman version reads a second table, the error names it: grant SELECT on
+-- that table, not on the schema.
+--
+-- THIS DOES NOT MAKE THE HATCHET JOB A MAINTAINER, and must not be widened to.
+-- Once a parent IS registered (partman.create_parent(), database/raw/phase0/
+-- 20/30/60) the CALL has to create and drop partitions in schemas georag_app
+-- cannot even see ("permission denied for schema audit", same test), so it
+-- fails again. The pg_cron job above runs as the master user, which owns those
+-- tables, and is the one owner of partition maintenance. Retiring the Hatchet
+-- duplicate is for that workflow's owner to decide.
+--
+-- After the CREATE ROLE above, not beside the schema: on a fresh database the
+-- role does not exist earlier in this file, and ON_ERROR_STOP would end the
+-- run there.
+GRANT USAGE ON SCHEMA partman TO georag_app;
+GRANT SELECT ON partman.part_config TO georag_app;
 
 -- ---------------------------------------------------------------------------
 -- Grant-holder roles (docker/postgresql/init/init-roles.sql)

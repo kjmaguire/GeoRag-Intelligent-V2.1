@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace Tests\Feature\Middleware;
 
 use App\Http\Middleware\SecurityHeadersMiddleware;
+use App\Providers\AppServiceProvider;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -201,6 +204,22 @@ final class SecurityHeadersTest extends TestCase
         $this->assertSame('http://', URL::formatScheme());
     }
 
+    public function test_an_https_app_url_pins_generated_links_to_its_host(): void
+    {
+        // A forgot-password request whose X-Forwarded-Host names another site
+        // must still be mailed a link on APP_URL's host: the reset token is in
+        // the link, so whoever owns the host it points at owns the account.
+        config(['app.url' => 'https://georag.example']);
+        (new AppServiceProvider($this->app))->boot();
+
+        URL::setRequest(Request::create('http://evil.example/api/v1/auth/forgot-password', 'POST'));
+
+        $this->assertSame(
+            'https://georag.example/reset-password/abc123',
+            url(route('password.reset', ['token' => 'abc123'], false)),
+        );
+    }
+
     public function test_csp_omits_upgrade_insecure_in_local_env(): void
     {
         // Default test env is `testing`. Build the CSP directly with env=local
@@ -258,12 +277,152 @@ final class SecurityHeadersTest extends TestCase
 
     public function test_csp_keeps_the_origins_that_are_not_configurable(): void
     {
-        // MapLibre's built-in fallback style and the presigned export host
-        // are not basemap config, so they cannot be derived.
+        // MapLibre's built-in fallback style is not basemap config, so it
+        // cannot be derived. (The presigned-download hosts used to be a second
+        // literal here, `https://s3.amazonaws.com`; they are derived from the
+        // disk config now — see the object-storage tests below.)
         $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
 
         $this->assertStringContainsString('https://demotiles.maplibre.org', $csp);
-        $this->assertStringContainsString('https://s3.amazonaws.com', $csp);
+    }
+
+    /**
+     * The hosts a presigned URL is really on, for every layout a deployment
+     * can have. Each case is checked against a URL the AWS SDK builds from the
+     * same config, not against what the middleware believes the layout is.
+     *
+     * @return iterable<string, array{array<string, mixed>}>
+     */
+    public static function storageLayouts(): iterable
+    {
+        yield 'aws, virtual-hosted (production)' => [['region' => 'ca-central-1', 'bucket' => 'georag-bronze-prod']];
+        yield 'aws us-east-1 (the SDK uses the global host)' => [['region' => 'us-east-1', 'bucket' => 'georag-bronze-prod']];
+        yield 'aws, path style forced' => [['region' => 'ca-central-1', 'bucket' => 'georag-bronze-prod', 'use_path_style_endpoint' => true]];
+        yield 'aws, bucket name with a dot' => [['region' => 'ca-central-1', 'bucket' => 'georag.bronze.prod']];
+        yield 'aws china partition' => [['region' => 'cn-north-1', 'bucket' => 'georag-bronze']];
+        yield 'aws govcloud' => [['region' => 'us-gov-west-1', 'bucket' => 'georag-bronze']];
+        yield 'explicit aws regional endpoint' => [['region' => 'eu-west-1', 'bucket' => 'georag-bronze', 'endpoint' => 'https://s3.eu-west-1.amazonaws.com']];
+        yield 'compose: seaweedfs, path style' => [['region' => 'ca-central-1', 'bucket' => 'bronze', 'endpoint' => 'http://seaweedfs:8333', 'use_path_style_endpoint' => true]];
+        yield 'on-prem: custom host, virtual-hosted, with a port' => [['region' => 'ca-central-1', 'bucket' => 'bronze', 'endpoint' => 'https://storage.example.internal:9000']];
+        yield 'on-prem: ip address endpoint' => [['region' => 'ca-central-1', 'bucket' => 'bronze', 'endpoint' => 'http://10.0.0.5:9000']];
+    }
+
+    /**
+     * @param array<string, mixed> $layout
+     */
+    #[DataProvider('storageLayouts')]
+    public function test_csp_allows_the_origin_of_a_real_presigned_url(array $layout): void
+    {
+        // THE BUG. Production presigned URLs are
+        // https://<bucket>.s3.<region>.amazonaws.com/..., but the CSP listed
+        // https://s3.amazonaws.com, and a CSP host-source matches the host
+        // exactly -- so the Reports "Original" iframe was blocked on AWS.
+        //
+        // All three disks are configured, each with its own bucket, and a
+        // presigned URL is built for each through the disk itself.
+        foreach (['s3', 's3-bronze', 's3-exports'] as $name) {
+            config(["filesystems.disks.{$name}" => array_merge([
+                'driver' => 's3',
+                'key' => 'AKIAEXAMPLEEXAMPLE',
+                'secret' => 'example-secret-access-key',
+                'throw' => false,
+            ], $layout, ['bucket' => $layout['bucket'].($name === 's3' ? '' : "-{$name}")])]);
+            Storage::forgetDisk($name);
+        }
+        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
+
+        foreach (['s3', 's3-bronze', 's3-exports'] as $name) {
+            $url = Storage::disk($name)->temporaryUrl('reports/some file.pdf', now()->addMinutes(5));
+
+            $this->assertTrue(
+                $this->cspDirectiveAllows($csp, 'frame-src', $url),
+                "frame-src must allow the presigned URL of the {$name} disk: {$url}\n".$this->directive($csp, 'frame-src'),
+            );
+            $this->assertTrue(
+                $this->cspDirectiveAllows($csp, 'connect-src', $url),
+                "connect-src must allow the presigned URL of the {$name} disk: {$url}\n".$this->directive($csp, 'connect-src'),
+            );
+        }
+    }
+
+    public function test_csp_does_not_allow_another_bucket_in_the_same_region(): void
+    {
+        // Exact hosts, not a `*.s3.<region>.amazonaws.com` wildcard: anyone's
+        // bucket in that region would otherwise be frameable from this app.
+        foreach (['s3', 's3-bronze', 's3-exports'] as $name) {
+            config(["filesystems.disks.{$name}" => [
+                'driver' => 's3',
+                'region' => 'ca-central-1',
+                'bucket' => "georag-{$name}",
+                'endpoint' => null,
+                'use_path_style_endpoint' => false,
+            ]]);
+        }
+
+        $csp = (new SecurityHeadersMiddleware)->buildCsp('production');
+
+        $this->assertFalse($this->cspDirectiveAllows($csp, 'frame-src', 'https://someone-elses-bucket.s3.ca-central-1.amazonaws.com/x.pdf'));
+        $this->assertFalse($this->cspDirectiveAllows($csp, 'frame-src', 'https://georag-s3-bronze.s3.us-west-2.amazonaws.com/x.pdf'), 'nor the same bucket name in another region');
+        $this->assertFalse($this->cspDirectiveAllows($csp, 'frame-src', 'http://georag-s3-bronze.s3.ca-central-1.amazonaws.com/x.pdf'), 'nor over plain http');
+        $this->assertStringNotContainsString('*.', $this->directive($csp, 'frame-src'));
+        $this->assertStringNotContainsString('https://s3.amazonaws.com', $this->directive($csp, 'frame-src'), 'the global host is not needed outside us-east-1');
+    }
+
+    public function test_csp_frame_src_still_has_a_host_when_nothing_is_configured(): void
+    {
+        // No region, no endpoint (a bare test or CI environment): the SDK's
+        // global host is the only thing the URL could be on.
+        foreach (['s3', 's3-bronze', 's3-exports'] as $name) {
+            config(["filesystems.disks.{$name}" => ['driver' => 's3', 'bucket' => null, 'region' => null, 'endpoint' => null]]);
+        }
+
+        $frameSrc = $this->directive((new SecurityHeadersMiddleware)->buildCsp('production'), 'frame-src');
+
+        $this->assertStringContainsString('https://s3.amazonaws.com', $frameSrc);
+        $this->assertStringNotContainsString('://.', $frameSrc, 'no host built from a missing bucket');
+    }
+
+    private function directive(string $csp, string $name): string
+    {
+        foreach (explode('; ', $csp) as $directive) {
+            if (str_starts_with($directive, "{$name} ")) {
+                return $directive;
+            }
+        }
+
+        $this->fail("the CSP has no {$name} directive");
+    }
+
+    /**
+     * Whether a CSP directive's host-sources admit a URL: scheme and host must
+     * match exactly (a `*.` wildcard standing for one or more leading labels),
+     * and a source without a port means the scheme's default port.
+     */
+    private function cspDirectiveAllows(string $csp, string $name, string $url): bool
+    {
+        $target = parse_url($url);
+        $defaultPorts = ['http' => 80, 'https' => 443];
+        $targetPort = $target['port'] ?? ($defaultPorts[$target['scheme']] ?? null);
+
+        foreach (array_slice(explode(' ', $this->directive($csp, $name)), 1) as $source) {
+            $parts = parse_url($source);
+            if (! isset($parts['scheme'], $parts['host']) || $parts['scheme'] !== $target['scheme']) {
+                continue;
+            }
+
+            $sourcePort = $parts['port'] ?? ($defaultPorts[$parts['scheme']] ?? null);
+            if ($sourcePort !== $targetPort) {
+                continue;
+            }
+
+            $host = $parts['host'];
+            if ($host === $target['host']
+                || (str_starts_with($host, '*.') && str_ends_with($target['host'], substr($host, 1)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function test_csp_tolerates_a_relative_basemap_url(): void

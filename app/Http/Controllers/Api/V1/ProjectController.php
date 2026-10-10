@@ -14,6 +14,7 @@ use App\Support\AuthorizationAuditLogger;
 use App\Support\PaginationLimit;
 use App\Support\SafeErrorMessage;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -25,6 +26,34 @@ use Throwable;
 
 class ProjectController extends Controller
 {
+    /**
+     * Tables destroy() clears by project_id before deleting the project:
+     * every relation to silver.projects that does not cascade. A SET NULL
+     * one would otherwise orphan the tenant's rows under a NULL project, and
+     * a RESTRICT / NO ACTION one would block the delete.
+     * ProjectControllerDeleteTypedDrillDataTest fails when a non-cascading
+     * foreign key to silver.projects is missing here.
+     *
+     * @var list<string>
+     */
+    public const DESTROY_CLEANUP_TABLES = [
+        // Must run before silver.reports — see destroy()'s docblock.
+        'silver.answer_runs',
+        // SET NULL relations — would orphan otherwise
+        'silver.reports',
+        'silver.spatial_features',
+        'silver.seismic_surveys',
+        'silver.raster_layers',
+        'silver.geophysics_surveys',
+        'silver.geochronology_samples',
+        // RESTRICT / NO ACTION relations — would block the delete
+        'silver.mineral_claims',
+        'silver.review_queue',
+        'silver.campaigns',
+        'gold.zone_statistics',
+        'gold.element_correlations',
+    ];
+
     /**
      * List all projects, paginated.
      *
@@ -59,6 +88,12 @@ class ProjectController extends Controller
             ], 422);
         }
 
+        $code = $request->validated('project_code');
+        if (is_string($code) && $code !== ''
+            && Project::query()->where('workspace_id', $workspaceId)->where('project_code', $code)->exists()) {
+            return $this->duplicateProjectCode();
+        }
+
         try {
             // One transaction: a project saved without its owner row is
             // invisible to everyone (membership is the access rule), so it
@@ -83,6 +118,13 @@ class ProjectController extends Controller
                 ->response()
                 ->setStatusCode(201);
         } catch (Throwable $e) {
+            // Two creates racing past the check above with the same code:
+            // silver_projects_workspace_code_idx is the real guarantee.
+            if ($e instanceof UniqueConstraintViolationException
+                && str_contains($e->getMessage(), 'silver_projects_workspace_code_idx')) {
+                return $this->duplicateProjectCode();
+            }
+
             report($e);
 
             return response()->json([
@@ -107,7 +149,14 @@ class ProjectController extends Controller
      *
      * An admin bootstrapping a fresh deployment has no memberships either,
      * so they may name the workspace explicitly; without one they get the
-     * configured default. Everyone else must already belong somewhere.
+     * configured default. Everyone else must already belong somewhere, as
+     * an owner or member (StoreProjectRequest::CREATOR_ROLES).
+     *
+     * The bootstrap privilege ends with the admin's first membership. An
+     * admin who already belongs to a workspace naming another one would
+     * become a member of that tenant by creating a project in it, which is
+     * the reach a global admin flag must not have (WorkflowTriggerPolicy,
+     * PublicApiController::denyUnlessWorkspaceAdmin both require membership).
      */
     private function resolveWorkspaceId(Request $request): ?string
     {
@@ -117,19 +166,28 @@ class ProjectController extends Controller
             return null;
         }
 
-        $owned = $user->projects()
-            ->pluck('silver.projects.workspace_id')
+        $memberships = $user->projects()->get(['silver.projects.workspace_id']);
+
+        $workspacesOf = fn ($rows) => $rows
+            ->pluck('workspace_id')
             ->filter()
             ->map(fn ($id): string => (string) $id)
             ->unique()
             ->values();
 
+        $owned = $user->is_admin
+            ? $workspacesOf($memberships)
+            : $workspacesOf($memberships->filter(
+                fn ($project): bool => in_array(data_get($project, 'pivot.role'), StoreProjectRequest::CREATOR_ROLES, true),
+            ));
+
         $requested = $request->string('workspace_id')->trim()->value();
 
         if ($requested !== '') {
-            // Naming a workspace you do not belong to is only an admin's
-            // privilege; for everyone else it must be one of their own.
-            if ($user->is_admin || $owned->contains($requested)) {
+            // Naming a workspace you do not belong to is only the privilege
+            // of an admin with no workspace yet; for everyone else it must be
+            // one of their own.
+            if ($owned->contains($requested) || ($user->is_admin && $memberships->isEmpty())) {
                 return $requested;
             }
 
@@ -352,23 +410,7 @@ class ProjectController extends Controller
             // already-doomed row. answer_runs moved to the front of the
             // list for this reason — it must run before silver.reports.
             DB::transaction(function () use ($project, $projectId) {
-                $tables = [
-                    // Must run before silver.reports — see docblock above.
-                    'silver.answer_runs',
-                    // SET NULL relations — would orphan otherwise
-                    'silver.reports',
-                    'silver.spatial_features',
-                    'silver.seismic_surveys',
-                    'silver.raster_layers',
-                    'silver.geophysics_surveys',
-                    // RESTRICT / NO ACTION relations — would block the delete
-                    'silver.mineral_claims',
-                    'silver.review_queue',
-                    'silver.campaigns',
-                    'gold.zone_statistics',
-                    'gold.element_correlations',
-                ];
-                foreach ($tables as $table) {
+                foreach (self::DESTROY_CLEANUP_TABLES as $table) {
                     if (! $this->tableExists($table)) {
                         continue;
                     }
@@ -421,6 +463,18 @@ class ProjectController extends Controller
             ->where('table_schema', $schema)
             ->where('table_name', $table)
             ->exists();
+    }
+
+    /**
+     * The 422 for a project_code already used in the workspace
+     * (silver_projects_workspace_code_idx), in the field-error shape the
+     * New Project form shows against the field.
+     */
+    private function duplicateProjectCode(): JsonResponse
+    {
+        $message = 'This project code is already used in your workspace.';
+
+        return response()->json(['message' => $message, 'errors' => ['project_code' => [$message]]], 422);
     }
 
     /**

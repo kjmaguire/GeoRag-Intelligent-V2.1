@@ -30,7 +30,7 @@ from app.agent.agentic_retrieval.intent_classifier import classify_intent
 from app.agent.agentic_retrieval.preprocessor import preprocess_envelope
 from app.agent.agentic_retrieval.retrieval_profile import (
     RetrievalProfile,
-    profile_for_intent,
+    profile_for_query,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
 from app.models.rag import GeoRAGResponse
@@ -202,10 +202,24 @@ async def route_node(state: AgenticRetrievalState) -> dict[str, Any]:
             decision.override_reason,
         )
 
-    profile = profile_for_intent(effective, regulatory_touch=regulatory)
+    # factual_lookup is documents-only by profile, but "what is the deepest
+    # hole?" and "show the gold assays for PLS-22-08" are answered from the
+    # project's tables; widen it by what the question is about (finding 22).
+    profile = profile_for_query(
+        effective,
+        state.query,
+        hole_ids=_hole_ids_from_query(state.query),
+        regulatory_touch=regulatory,
+    )
 
     # Phase 3 / Step 3.1 — pre-process envelope into retrieval filters.
     filters = preprocess_envelope(state.context_envelope)
+    if filters.no_data_source_allowed:
+        _sources_label: object = "(none: the narrowing left nothing)"
+    elif filters.allowed_data_sources:
+        _sources_label = sorted(filters.allowed_data_sources)
+    else:
+        _sources_label = "(all)"
     logger.info(
         "agentic_retrieval.route: intent=%s effective_intent=%s primary_tools=%s "
         "adversarial=%s conflict_detection=%s require_regulatory=%s mode=%s "
@@ -218,7 +232,7 @@ async def route_node(state: AgenticRetrievalState) -> dict[str, Any]:
         profile.require_regulatory_constraints,
         filters.mode,
         filters.crs_epsg,
-        sorted(filters.allowed_data_sources) if filters.allowed_data_sources else "(all)",
+        _sources_label,
     )
     return {
         "retrieval_profile": profile,
@@ -1194,6 +1208,44 @@ _AGGREGATE_FIELDS: frozenset[str] = frozenset({
 })
 
 
+#: Room kept for the "collars: showing k of N ..." line when fitting rows.
+_ROWS_HEADER_RESERVE = 120
+
+
+def _collar_summaries(collars: list[Any]) -> list[str]:
+    """The HIGH-CONFIDENCE SUMMARIES block for a COMPLETE set of collars.
+
+    The NUMERIC system prompt tells the model to quote a "HIGH-CONFIDENCE
+    SUMMARIES" block verbatim and do no arithmetic of its own, and the shared
+    preamble's rule 1 says the same of a "PRE-COMPUTED SUMMARY". Nothing on
+    the live path produced either: ``_build_collar_aggregates`` was only ever
+    called by ``context_builder._build_context``, which has no production
+    caller. So "what is the deepest hole" was answered, by a model told not to
+    compute, from the twelve alphabetical rows below (audit 2026-10 finding 23).
+
+    Only ever called for a result whose retrieved rows ARE every matching hole.
+    Over a LIMIT-capped sample, "deepest" or "average" describes the sample, and
+    Layer 3 would ground it all the same because the value is in the evidence.
+    Best-effort: a summary that cannot be computed is left out, never allowed
+    to fail the render.
+    """
+    from app.agent.tool_result_helpers import _build_collar_aggregates  # noqa: PLC0415
+
+    try:
+        aggregates = [line for line in _build_collar_aggregates(collars) if line]
+    except Exception:
+        logger.warning("agentic_retrieval.render: collar aggregates failed", exc_info=True)
+        return []
+    if not aggregates:
+        return []
+    return [
+        f"HIGH-CONFIDENCE SUMMARIES (computed in Python over all {len(collars)} "
+        f"matching holes, the complete set rather than only the rows listed "
+        f"below; quote these exact values, do no arithmetic of your own):",
+        *aggregates,
+    ]
+
+
 def _render_spatial_result(result: Any) -> str:
     """Header-first rendering of a SpatialQueryResult (audit item 3).
 
@@ -1202,25 +1254,73 @@ def _render_spatial_result(result: Any) -> str:
     "how many holes" with 50 on a 567-hole project, and Layer 3 grounded it
     because 50 was in the evidence. The matching total is stated first and
     the sample is labelled as a sample.
+
+    When the retrieved rows are every matching hole, the summaries computed
+    over all of them come next (finding 23): the rows listed below are capped at
+    a dozen, and a superlative or an average taken from a dozen of thirty is
+    wrong. When they are not, the block says plainly that no such figure exists
+    in the evidence.
     """
     collars = list(getattr(result, "collars", None) or [])
     returned = len(collars)
-    total = getattr(result, "total_count", None)
-    total = int(total) if total is not None else returned
+    reported = getattr(result, "total_count", None)
+    total = int(reported) if reported is not None else returned
     lines = [
         f"data_source={_short(getattr(result, 'data_source', ''))} "
         f"total_holes_matching={total}"
     ]
+    summarised = False
     if total > returned:
         lines.append(
             f"NOTE: the project has {total} matching holes; only {returned} "
             f"are retrieved (an alphabetical sample by hole id, not a "
-            f"ranking). State the total as {total}, never as {returned}."
+            f"ranking). State the total as {total}, never as {returned}. "
+            f"No deepest, shallowest, average, easternmost, westernmost, "
+            f"northernmost, southernmost or per-type figure is given, because "
+            f"none computed from a sample describes the project: say it "
+            f"cannot be determined from the retrieved sample rather than "
+            f"picking one from these rows."
         )
-    shown = collars[:_STRUCTURED_ROW_SAMPLE]
-    suffix = " (alphabetical sample)" if total > len(shown) else ""
-    lines.append(f"collars: showing {len(shown)} of {total}{suffix}")
-    lines.extend(f"  {_short(item, 400)}" for item in shown)
+    elif reported is not None and returned:
+        # Completeness is only known when the query reported its own total.
+        summary = _collar_summaries(collars)
+        lines.extend(summary)
+        summarised = bool(summary)
+    # What the coordinates are, and which CRS the search centre was read in
+    # (GIS audit 2026-10): the model cites easting/northing verbatim, and
+    # without this they read as map coordinates.
+    note = getattr(result, "coordinate_note", None)
+    if note:
+        lines.append(f"NOTE: {note}")
+    centre = getattr(result, "centre_crs", None)
+    if centre:
+        lines.append(f"search centre read as {centre}")
+    rows = []
+    for item in collars[:_STRUCTURED_ROW_SAMPLE]:
+        row = f"  {_short(item, 400)}"
+        caveat = getattr(item, "position_caveat", None)
+        if caveat:
+            row += f"  [position: {caveat}]"
+        rows.append(row)
+    # Whole rows only: with the summaries above, twelve rows no longer fit the
+    # cap, and a row cut off mid-number would be read as a value.
+    used = sum(len(line) + 1 for line in lines) + _ROWS_HEADER_RESERVE
+    kept = 0
+    for row in rows:
+        if used + len(row) + 1 > _STRUCTURED_CAP:
+            break
+        used += len(row) + 1
+        kept += 1
+    if total > returned or not summarised:
+        suffix = " (alphabetical sample)" if total > kept else ""
+    else:
+        suffix = (
+            f" (alphabetical listing; the summaries above cover all {total})"
+            if total > kept
+            else ""
+        )
+    lines.append(f"collars: showing {kept} of {total}{suffix}")
+    lines.extend(rows[:kept])
     return "\n".join(lines)[:_STRUCTURED_CAP]
 
 
@@ -1647,6 +1747,13 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "refused this query -- %s",
             _l1_verdict.reason,
         )
+        # A data-source narrowing that left nothing denied every tool, so
+        # nothing was SEARCHED: the refusal must not say that nothing cleared
+        # the relevance threshold (2026-10-10 review, item 9).
+        _narrowed_out = bool(
+            state.retrieval_filters is not None
+            and state.retrieval_filters.no_data_source_allowed
+        )
         try:
             from app.metrics import RETRIEVAL_GATE_REFUSED_TOTAL  # noqa: PLC0415
 
@@ -1655,7 +1762,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             logger.debug("RETRIEVAL_GATE_REFUSED_TOTAL increment failed", exc_info=True)
         if state.status_callback is not None:
             try:
-                await state.status_callback("No relevant evidence found…")
+                await state.status_callback(
+                    "The selected data sources exclude this question…"
+                    if _narrowed_out
+                    else "No relevant evidence found…"
+                )
             except Exception:  # pragma: no cover — status is a UX affordance
                 logger.debug(
                     "agentic_retrieval.assemble: status_callback raised",
@@ -1680,7 +1791,9 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             raise RetrievalBackendUnavailable(
                 "; ".join(state.retrieval_failures)
             )
-        response = assemble_response(build_refusal_text(), state.tool_results)
+        response = assemble_response(
+            build_refusal_text(narrowed_out=_narrowed_out), state.tool_results
+        )
         response = _with_retrieval_failures(response, state.retrieval_failures)
         # CHAT-10 — stamp the machine-readable refusal UNCONDITIONALLY.
         # refusal_payload used to be set only by repair_stage2 behind
@@ -1689,7 +1802,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         # with a "conf 0.10" pill, and RefusalPanel never rendered. This
         # does not touch the flag's own behaviour (terminal repair
         # strategies still stamp only when it is on).
-        response.refusal_payload = build_refusal_payload()
+        response.refusal_payload = build_refusal_payload(narrowed_out=_narrowed_out)
         return {"response": response, **_fold_token_usage(state)}
 
     # Plan §3 — when CONTEXT_PREP_ENABLED is set, run the EvidencePacket
@@ -1984,6 +2097,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         redis_client=getattr(state.deps, "redis_client", None),
         pg_pool=getattr(state.deps, "pg_pool", None),
     )
+    # Read in THIS node: the adapter's note is a contextvar, and the next node
+    # runs in a Task that got a copy of the context from before this one.
+    from app.agent.llm_common import take_truncated_generation  # noqa: PLC0415
+
+    generation_truncated = take_truncated_generation()
 
     # Audit item 2 (2026-10-04): the adapters return BUDGET_EXHAUSTED_FALLBACK
     # -- operator wording about token budgets -- when the model produced no
@@ -1992,17 +2110,22 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # confidence = mean retrieval relevance. Replace it with plain user text,
     # floor the confidence, stamp the refusal and drop the retrieved
     # citations (nothing was claimed, so nothing is cited).
+    #
+    # Audit 2026-10 finding 6: only Cohere returned that string. The Bedrock,
+    # Anthropic and vLLM paths return "" when the model says nothing, and
+    # assemble_response("") builds GeoRAGResponse(text="") (min_length=1) and
+    # raises ValidationError, which the user saw as INTERNAL_ERROR. Empty
+    # counts as no content here, for every backend.
     from app.agent.hallucination.refusals import (  # noqa: PLC0415
         MODEL_NO_OUTPUT_MESSAGE,
         MODEL_NO_OUTPUT_TEXT,
-        is_budget_exhausted_text,
         make_refusal_payload,
     )
 
-    if is_budget_exhausted_text(text):
+    if _model_returned_nothing(text):
         logger.error(
             "agentic_retrieval.assemble: the model returned no content "
-            "(BUDGET_EXHAUSTED_FALLBACK) -- replacing with a plain "
+            "(empty or BUDGET_EXHAUSTED_FALLBACK) -- replacing with a plain "
             "model_no_output refusal"
         )
         no_output = assemble_response(MODEL_NO_OUTPUT_TEXT, [])
@@ -2028,6 +2151,8 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         rendered_results,
         map_payload=map_payload,
         viz_payload=viz_payload,
+        intent=state.effective_intent or state.intent,
+        query=state.query,
     )
 
     # Step 2.4 — surface unspecified envelope fields in the OIUR
@@ -2041,6 +2166,8 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     )
     response = _with_retrieval_failures(response, state.retrieval_failures)
     update: dict[str, Any] = {"response": response, **_fold_token_usage(state)}
+    if generation_truncated:
+        update["generation_truncated"] = generation_truncated
     # Audit AGT-5: the in-place `state.X = ...` writes above are visible to
     # the rest of THIS node only. LangGraph rebuilds the state for the next
     # node from channels, so anything persist_node reads has to be in the
@@ -2052,6 +2179,29 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
     if rendered_results is not state.tool_results:
         update["tool_results"] = rendered_results
     return update
+
+
+#: validate_node's warning for an answer the model did not finish. Deliberately
+#: carries no "Layer N" prefix: it is not a guard finding, so it must not be
+#: filed under a guard code or counted by the demoter.
+_TRUNCATED_ANSWER_WARNING = (
+    "Generation truncated: the model stopped at its output limit "
+    "(finish_reason={reason}); the answer may be incomplete."
+)
+
+
+def _model_returned_nothing(text: str | None) -> bool:
+    """True when an LLM call produced no usable answer text.
+
+    Empty or whitespace-only (what the Bedrock, Anthropic and vLLM adapters
+    return) or the operator-facing BUDGET_EXHAUSTED_FALLBACK (what Cohere
+    returns, and what the other adapters return for a reasoning-only reply).
+    One predicate for every site that assembles a user-facing answer from model
+    text, so the backends cannot disagree about what "nothing" looks like.
+    """
+    from app.agent.hallucination.refusals import is_budget_exhausted_text  # noqa: PLC0415
+
+    return not (text or "").strip() or is_budget_exhausted_text(text)
 
 
 def _with_retrieval_failures(
@@ -2153,6 +2303,7 @@ def _build_chat_card_payloads(
                     "status":      c.status,
                     "azimuth":     c.azimuth,
                     "dip":         c.dip,
+                    "orientation": c.orientation,
                     "trace_points": _round_trace_points_for_card(c.trace_points),
                 }
                 for c in result.collars
@@ -2256,6 +2407,7 @@ def _build_chat_card_payloads(
                         "image_base64": result.image_base64,
                         "projection": result.projection,
                         "structure_count": result.count,
+                        "unoriented_count": result.unoriented_count,
                         "points": stereo_points,
                         "project_id": result.project_id,
                     },
@@ -2619,6 +2771,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     shouldn't make a query unanswerable — it only ensures the answer is
     never silently presented as fully checked when it wasn't.
     """
+    from app.agent.guards import VALIDATION_RAISED_WARNING  # noqa: PLC0415
     from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
         enforce_claim_citations,
         validate_and_repair,
@@ -2713,12 +2866,9 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "floored, warning banner applied) instead of shipping it as "
             "cleanly validated"
         )
-        _unverified_warning = (
-            "Layer 3/4/6: post-assembly validation raised an exception "
-            "before numeric grounding, entity resolution, and constraint "
-            "checks could complete — this answer is UNVERIFIED, not "
-            "confirmed clean."
-        )
+        # The text is shared with persist_node (app.agent.guards), which reads
+        # it back to record that the chain did not run.
+        _unverified_warning = VALIDATION_RAISED_WARNING
         response = _floor_confidence_with_warning_banner(
             response,
             "automated fact-checking could not complete due to an "
@@ -2783,6 +2933,21 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "floored to %.2f and warning banner prepended. warnings=%s",
             float(getattr(response, "confidence", 0.2) or 0.2),
             warnings,
+        )
+
+    # Audit 2026-10 finding 4 -- the model stopped at its output cap (or errored)
+    # with text already delivered. The guards judge what is there, and what is
+    # there reads as a finished answer, so say it is not: warn, floor the
+    # confidence, put a caveat in the text, and let validation_state read
+    # "flagged". Nothing is thrown away; see llm_common "Cut-off generations".
+    if state.generation_truncated:
+        warnings = [
+            *warnings,
+            _TRUNCATED_ANSWER_WARNING.format(reason=state.generation_truncated),
+        ]
+        response = _floor_confidence_with_warning_banner(
+            response,
+            "the answer was cut off at the model's output limit and may be incomplete",
         )
 
     # L909 — the state the UI actually branches on. `confidence` is a
@@ -3402,13 +3567,17 @@ async def _reissue_llm_only(
     # first pass. A repair attempt that produced nothing is no improvement
     # on an answer that already passed the guards: raise, and the caller
     # restores the checkpoint so the validated answer ships unchanged.
-    from app.agent.hallucination.refusals import (  # noqa: PLC0415
-        is_budget_exhausted_text,
-    )
+    from app.agent.llm_common import take_truncated_generation  # noqa: PLC0415
 
-    if is_budget_exhausted_text(text):
+    # A repair attempt that was cut off is no better than one that said
+    # nothing: it would replace an answer that already passed the guards with a
+    # fragment. (Also clears the note so it cannot leak into a later read.)
+    truncated = take_truncated_generation()
+    if _model_returned_nothing(text) or truncated:
         raise RepairReissueNoOutputError(
             "repair re-issue (LLM-only): the model returned no content"
+            if not truncated
+            else f"repair re-issue (LLM-only): the answer was cut off ({truncated})"
         )
 
     # Same card payloads and envelope notes assemble_node attaches — a
@@ -3418,7 +3587,12 @@ async def _reissue_llm_only(
         tool_results=state.tool_results,
     )
     new_response = assemble_response(
-        text, rendered_results, map_payload=map_payload, viz_payload=viz_payload,
+        text,
+        rendered_results,
+        map_payload=map_payload,
+        viz_payload=viz_payload,
+        intent=state.effective_intent or state.intent,
+        query=state.query,
     )
     new_response = _attach_envelope_notes_to_uncertainty(
         new_response,
@@ -3429,6 +3603,47 @@ async def _reissue_llm_only(
     state.response = _with_retrieval_failures(new_response, state.retrieval_failures)
 
 
+def _apply_state_mutation(current: Any, update: dict[str, Any], *, field: str) -> Any:
+    """Return ``current`` with a Stage 4 strategy's field updates applied.
+
+    ``state.retrieval_profile`` is a Pydantic model, but
+    ``state.retrieval_filters`` is a FROZEN DATACLASS
+    (``preprocessor.RetrievalFilters``) and has no ``model_copy``. Calling it
+    raised AttributeError, which a broad ``except`` logged at debug level, so
+    every filter mutation (LOOSEN_FILTERS in particular) silently did nothing
+    and the loop re-ran retrieval with the filters it already had (audit 2026-10
+    finding 20).
+
+    Only declared fields are applied, for either kind of object, and a key that
+    is not declared (some strategies emit fields that do not exist yet) is
+    ignored and said so, rather than looking applied. A container a dataclass
+    declares keeps its type: LOOSEN_FILTERS writes ``[]`` where the field is a
+    ``frozenset``.
+    """
+    is_dataclass = dataclasses.is_dataclass(current) and not isinstance(current, type)
+    declared = (
+        {f.name for f in dataclasses.fields(current)}
+        if is_dataclass
+        else set(type(current).model_fields)
+    )
+    ignored = sorted(set(update) - declared)
+    if ignored:
+        logger.warning(
+            "repair_loop: %s has no field(s) %s; those mutations are ignored",
+            field, ", ".join(ignored),
+        )
+    known = {key: value for key, value in update.items() if key in declared}
+    if not is_dataclass:
+        return current.model_copy(update=known)
+    for key, value in known.items():
+        existing = getattr(current, key)
+        if isinstance(existing, frozenset) and isinstance(value, (list, tuple, set)):
+            known[key] = frozenset(value)
+        elif isinstance(existing, tuple) and isinstance(value, (list, set, frozenset)):
+            known[key] = tuple(value)
+    return dataclasses.replace(current, **known)
+
+
 async def _reissue_retrieval(
     state: AgenticRetrievalState,
     mutations: dict[str, Any],
@@ -3436,31 +3651,21 @@ async def _reissue_retrieval(
     """Stage 4 — merge the strategy's state mutations + re-run
     execute_node + assemble_node. Caller wraps in try/except.
 
-    The mutations dict is a `model_copy(update=...)` payload for the
-    matching state field (retrieval_profile / retrieval_filters).
+    The mutations dict carries the field updates for the matching state value
+    (retrieval_profile / retrieval_filters); see :func:`_apply_state_mutation`.
+    A mutation that cannot be applied raises, so the caller restores its
+    checkpoint instead of paying for a second retrieval and LLM call that
+    would be identical to the first.
     """
-    # Apply mutations.
     if "retrieval_filters" in mutations and state.retrieval_filters is not None:
-        try:
-            state.retrieval_filters = state.retrieval_filters.model_copy(
-                update=mutations["retrieval_filters"]
-            )
-        except Exception:
-            logger.debug(
-                "repair_loop: retrieval_filters model_copy failed",
-                exc_info=True,
-            )
+        state.retrieval_filters = _apply_state_mutation(
+            state.retrieval_filters, mutations["retrieval_filters"], field="retrieval_filters",
+        )
 
     if "retrieval_profile" in mutations and state.retrieval_profile is not None:
-        try:
-            state.retrieval_profile = state.retrieval_profile.model_copy(
-                update=mutations["retrieval_profile"]
-            )
-        except Exception:
-            logger.debug(
-                "repair_loop: retrieval_profile model_copy failed",
-                exc_info=True,
-            )
+        state.retrieval_profile = _apply_state_mutation(
+            state.retrieval_profile, mutations["retrieval_profile"], field="retrieval_profile",
+        )
 
     # Re-run execute then assemble on a copy with the SSE callbacks removed:
     # assemble_node forwards token_callback into _call_llm, and a second
@@ -3691,6 +3896,42 @@ def _embedding_model_for_run(state: AgenticRetrievalState) -> str | None:
         return None
 
 
+# answer_runs.user_id and answer_runs.trace_id (audit 2026-10 finding 24).
+# Both columns have existed since the table was created and nothing wrote
+# them, so a row could be joined neither to the person who asked nor to the
+# Laravel / FastAPI log lines for the same request (usage.usage_events, written
+# by the same node, already carries the trace id).
+_ANSWER_RUN_TRACE_ID_MAX_LEN = 64  # answer_runs.trace_id is VARCHAR(64)
+_BIGINT_MAX = 2**63 - 1
+
+
+def _answer_run_user_id(deps: Any) -> int | None:
+    """``public.users.id`` of the asker for ``answer_runs.user_id``, or None.
+
+    ``AgentDeps.user_id`` is the JWT ``sub`` claim, and Laravel mints it from
+    ``public.users.id`` (``FastApiJwtMinter``), so it is a decimal string. Anything
+    else (no JWT, an eval/service identity, a number too large for BIGINT)
+    records NULL: the column is nullable, and a value that cannot be a user id
+    must not turn into an error that costs the run its row.
+    """
+    raw = getattr(deps, "user_id", None)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not (text.isascii() and text.isdecimal()):
+        return None
+    value = int(text)
+    return value if 0 < value <= _BIGINT_MAX else None
+
+
+def _answer_run_trace_id(deps: Any) -> str | None:
+    """The request's W3C trace id for ``answer_runs.trace_id``, or None."""
+    raw = getattr(deps, "trace_id", None)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()[:_ANSWER_RUN_TRACE_ID_MAX_LEN]
+
+
 def _classify_persist_guards(
     state: AgenticRetrievalState, citation_state: str,
 ) -> list[Any]:
@@ -3739,19 +3980,35 @@ def _classify_persist_guards(
         return []
 
 
-def _build_guard_results(guard_failure_codes: list[str]) -> dict[str, Any]:
+def _build_guard_results(
+    guard_failure_codes: list[str], *, validation_incomplete: bool = False,
+) -> dict[str, Any]:
     """Envelope for ``silver.answer_runs.hallucination_guard_results``.
 
     Shape per migration 2026_05_20_020000: ``schema_version`` / ``guards``
     / ``captured_at``. ``guards`` is keyed by :class:`GuardErrorCode`
     value; an empty object means the chain ran and nothing fired. NULL
     (never written here) means the chain did not run.
+
+    ``validation_incomplete`` is the one entry that is not a GuardErrorCode:
+    validate_node's Layer 3/4/6 pass raised, the answer shipped floored and
+    bannered as unverified, and no guard produced a verdict. Without this key
+    that run was written as ``{"guards": {}}``, the column's own spelling of
+    "the chain ran clean". Its status is "fail" so a reader that only checks
+    for failures cannot read it as a pass.
     """
     from datetime import UTC, datetime  # noqa: PLC0415
+
+    from app.agent.guards import VALIDATION_UNVERIFIED_KEY  # noqa: PLC0415
 
     guards: dict[str, dict[str, str]] = {}
     for code in guard_failure_codes:
         guards[code] = {"status": "notice" if code == "CONFLICTING_SOURCES" else "fail"}
+    if validation_incomplete:
+        guards[VALIDATION_UNVERIFIED_KEY] = {
+            "status": "fail",
+            "reason": "post_assembly_validation_raised",
+        }
     return {
         "schema_version": 1,
         "guards": guards,
@@ -4002,10 +4259,15 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     ).workspace_id
 
     try:
+        from uuid import UUID  # noqa: PLC0415
+
         from app.agent.lineage import build_lineage_payload  # noqa: PLC0415
+
+        _session = getattr(state.deps, "session_id", None)
         lineage = build_lineage_payload(
             response=state.response,
             fused_candidates=(),  # the agentic execute_node doesn't surface a fused list
+            session_id=UUID(_session) if _session else None,
         )
         cols = lineage.to_db_columns()
     except Exception:
@@ -4073,13 +4335,22 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         getattr(state.response, "llm_model", None) or _settings.effective_llm_model
     )
     _backend_label = _normalize_backend(getattr(_settings, "LLM_BACKEND", None))
+    _asker_user_id = _answer_run_user_id(state.deps)
+    _request_trace_id = _answer_run_trace_id(state.deps)
     _answer_run_id: str | None = None
 
     # §04i guard outcomes + refusal reason (2026-09-07 — see the helpers
     # above). Computed once here; the trace below reuses the codes.
     _guard_codes: list[Any] = _classify_persist_guards(state, citation_state)
     _guard_failure_codes: list[str] = [c.value for c in _guard_codes]
-    _guard_results_json = _json.dumps(_build_guard_results(_guard_failure_codes))
+    from app.agent.guards import validation_did_not_complete  # noqa: PLC0415
+
+    _guard_results_json = _json.dumps(
+        _build_guard_results(
+            _guard_failure_codes,
+            validation_incomplete=validation_did_not_complete(state.validation_warnings),
+        )
+    )
     _rejection_reason = _build_rejection_reason(
         state, citation_state, _guard_failure_codes,
     )
@@ -4134,6 +4405,10 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 _guard_results_json,
                 _reranker_version_for_run(state),
                 _embedding_model_for_run(state),
+                # $21, $22 — appended after the original twenty so the
+                # positional indices the callers and tests rely on hold.
+                _asker_user_id,
+                _request_trace_id,
             )
     except TimeoutError:
         _report_persist_failure(
@@ -4217,6 +4492,7 @@ _ANSWER_RUN_INSERT_SQL = """
         query_text,
         query_class,
         workspace_data_version_at_query,
+        project_data_version_at_query,
         citation_lifecycle_state,
         model_name,
         backend_used,
@@ -4233,6 +4509,8 @@ _ANSWER_RUN_INSERT_SQL = """
         hallucination_guard_results,
         reranker_version,
         embedding_model,
+        user_id,
+        trace_id,
         citation_mode
     ) VALUES (
         $1::uuid,
@@ -4240,9 +4518,28 @@ _ANSWER_RUN_INSERT_SQL = """
         -- column is nullable, ON DELETE SET NULL). Replaces the separate
         -- SELECT 1 pre-check round-trip that used to precede this INSERT.
         (SELECT p.project_id FROM silver.projects p WHERE p.project_id = $2::uuid),
-        $3, $4, 0, $5, $6, $7, $8::uuid,
+        $3, $4,
+        -- Audit 2026-10 finding 24: this was the literal 0, so every row
+        -- claimed to have been answered against data version zero and the
+        -- staleness comparison (recorded vs current data_version) could
+        -- never fire. Read inside the INSERT, so no extra round trip: it is
+        -- the version at PERSIST time, seconds after retrieval, which makes
+        -- a bump that lands mid-run count as seen by this run. COALESCE
+        -- keeps the NOT NULL column satisfied if the row is not visible.
+        COALESCE(
+            (SELECT w.data_version FROM silver.workspaces w WHERE w.workspace_id = $1::uuid),
+            0
+        ),
+        -- NULL when the project does not resolve, like project_id above.
+        (SELECT p.data_version FROM silver.projects p WHERE p.project_id = $2::uuid),
+        $5, $6, $7, $8::uuid,
         $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
         $17, $18::jsonb, $19, $20,
+        -- FK-safe, same as project_id: answer_runs.user_id references
+        -- public.users with ON DELETE RESTRICT, and a violation would cost
+        -- the run its whole row. An id that does not resolve lands as NULL.
+        (SELECT u.id FROM public.users u WHERE u.id = $21::bigint),
+        $22,
         -- Audit RAG-22: never written before, so always NULL. CLAUDE.md
         -- rule 4: citation_mode is always posthoc_span_resolution.
         'posthoc_span_resolution'
@@ -4557,6 +4854,12 @@ async def _enqueue_persist_trace(
                     exc_info=True,
                 )
 
+        # Layer 3/4/6 raised: nothing established that the numbers or the
+        # entities are grounded, so the trace must not say they passed.
+        from app.agent.guards import validation_did_not_complete  # noqa: PLC0415
+
+        _checks_ran = not validation_did_not_complete(state.validation_warnings)
+
         trace = RetrievalTrace(
             workspace_id=workspace_id,
             project_id=project_id,
@@ -4587,8 +4890,12 @@ async def _enqueue_persist_trace(
             selected_context_groups=selected_groups or None,
             evidence_types_in_context=evidence_types,
             guard_results=GuardResults(
-                numeric_grounding=GuardErrorCode.NUMERIC_GROUNDING_FAILED not in guard_codes,
-                entity_grounding=GuardErrorCode.ENTITY_NOT_FOUND not in guard_codes,
+                numeric_grounding=(
+                    _checks_ran and GuardErrorCode.NUMERIC_GROUNDING_FAILED not in guard_codes
+                ),
+                entity_grounding=(
+                    _checks_ran and GuardErrorCode.ENTITY_NOT_FOUND not in guard_codes
+                ),
                 citation_completeness=GuardErrorCode.CITATION_INCOMPLETE not in guard_codes,
                 refusal_triggered=citation_state == "rejected",
             ),

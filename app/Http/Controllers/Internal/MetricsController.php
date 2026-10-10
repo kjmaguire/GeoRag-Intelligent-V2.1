@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Internal;
 
 use App\Http\Controllers\Controller;
+use App\Support\AuthorizationAuditLogger;
 use Illuminate\Http\Response;
+use Illuminate\Queue\RedisQueue;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Horizon\Contracts\MetricsRepository;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -56,37 +59,37 @@ final class MetricsController extends Controller
         try {
             $lines = array_merge($lines, $this->horizonQueueDepth());
         } catch (Throwable $e) {
-            $lines[] = '# warning: horizon_queue_depth unavailable: '.$e->getMessage();
+            $lines[] = '# warning: horizon_queue_depth unavailable: '.$this->oneLine($e->getMessage());
         }
 
         try {
             $lines = array_merge($lines, $this->octaneWorkers());
         } catch (Throwable $e) {
-            $lines[] = '# warning: octane_workers unavailable: '.$e->getMessage();
+            $lines[] = '# warning: octane_workers unavailable: '.$this->oneLine($e->getMessage());
         }
 
         try {
             $lines = array_merge($lines, $this->pulseExceptions());
         } catch (Throwable $e) {
-            $lines[] = '# warning: pulse_exception_total unavailable: '.$e->getMessage();
+            $lines[] = '# warning: pulse_exception_total unavailable: '.$this->oneLine($e->getMessage());
         }
 
         try {
             $lines = array_merge($lines, $this->pulseSlowQueries());
         } catch (Throwable $e) {
-            $lines[] = '# warning: slow_queries_total unavailable: '.$e->getMessage();
+            $lines[] = '# warning: slow_queries_total unavailable: '.$this->oneLine($e->getMessage());
         }
 
         try {
             $lines = array_merge($lines, $this->pulseCacheHitRatio());
         } catch (Throwable $e) {
-            $lines[] = '# warning: cache_hit_ratio unavailable: '.$e->getMessage();
+            $lines[] = '# warning: cache_hit_ratio unavailable: '.$this->oneLine($e->getMessage());
         }
 
         try {
             $lines = array_merge($lines, $this->authzAuditCounter());
         } catch (Throwable $e) {
-            $lines[] = '# warning: laravel_authz_deny_total unavailable: '.$e->getMessage();
+            $lines[] = '# warning: laravel_authz_deny_total unavailable: '.$this->oneLine($e->getMessage());
         }
 
         // V1.5-08 — Reverb broadcast volume via Pulse aggregates (cache_set
@@ -96,7 +99,7 @@ final class MetricsController extends Controller
         try {
             $lines = array_merge($lines, $this->reverbBroadcastCounter());
         } catch (Throwable $e) {
-            $lines[] = '# warning: reverb_broadcasts_total unavailable: '.$e->getMessage();
+            $lines[] = '# warning: reverb_broadcasts_total unavailable: '.$this->oneLine($e->getMessage());
         }
 
         $lines[] = '# EOF';
@@ -128,11 +131,19 @@ final class MetricsController extends Controller
             '# TYPE horizon_queue_depth gauge',
         ];
 
-        foreach ($this->horizonQueueNames() as $queue) {
+        foreach ($this->horizonQueues() as ['connection' => $connection, 'queue' => $queue]) {
             try {
-                $depth = (int) Redis::connection('horizon')->llen("queues:{$queue}");
-            } catch (Throwable) {
-                $depth = 0;
+                $depth = $this->pendingJobs($connection, $queue);
+            } catch (Throwable $e) {
+                // NO sample for a queue that could not be read. This used to
+                // catch and report 0, which is indistinguishable from an empty
+                // queue -- and 0 is what it reported for every queue, always
+                // (see pendingJobs()). A missing series is what an absent()
+                // alert exists to catch; a zero is what it can never catch.
+                $lines[] = '# warning: '.sprintf('horizon_queue_depth{queue="%s"}', $queue)
+                    .' unavailable: '.$this->oneLine($e->getMessage());
+
+                continue;
             }
             $lines[] = sprintf('horizon_queue_depth{queue="%s"} %d', $queue, $depth);
         }
@@ -141,7 +152,36 @@ final class MetricsController extends Controller
     }
 
     /**
-     * Every queue any Horizon supervisor is configured to consume.
+     * Jobs waiting on one queue, read through the queue's OWN connection.
+     *
+     * The old read was `Redis::connection('horizon')->llen("queues:{$queue}")`,
+     * which could never see a job. Horizon's `horizon` Redis connection is a
+     * copy of the default one with its key prefix REPLACED by horizon.prefix
+     * (Laravel\Horizon\Horizon::configureStandaloneConnection) because it holds
+     * Horizon's own bookkeeping; the jobs live under the prefix of the Redis
+     * connection the queue connection names (`queue.connections.*.connection`,
+     * REDIS_QUEUE_CONNECTION), with that connection's own prefix. So the key it
+     * counted, `<horizon prefix>queues:default`, does not exist, llen of a
+     * missing key is 0, and the gauge sat at 0 while the `llm` queue backed up.
+     *
+     * The queue connection knows its Redis connection, prefix and (on Redis
+     * Cluster) hash-tagged key, so ask it: Queue::connection()->pendingSize()
+     * is llen on exactly the list workers pop from.
+     */
+    private function pendingJobs(string $connection, string $queue): int
+    {
+        $driver = Queue::connection($connection);
+
+        if (! $driver instanceof RedisQueue) {
+            throw new RuntimeException("queue connection [{$connection}] is not a Redis queue");
+        }
+
+        return (int) $driver->pendingSize($queue);
+    }
+
+    /**
+     * Every queue any Horizon supervisor is configured to consume, with the
+     * queue connection it consumes it on.
      *
      * `horizon.defaults` is keyed by SUPERVISOR NAME, so `defaults.queue`
      * is not a path that exists — the real ones are
@@ -153,37 +193,55 @@ final class MetricsController extends Controller
      * backs up, because a stuck LLM stream holds its worker for the full
      * 300-second job timeout.
      *
-     * Derived rather than listed so adding a supervisor to config/horizon.php
-     * is enough; there is no second copy here to forget.
+     * The connection matters as much as the name: `llm` is consumed on
+     * `redis-llm`, not `redis`. Derived rather than listed so adding a
+     * supervisor to config/horizon.php is enough; there is no second copy
+     * here to forget.
      *
-     * @return list<string>
+     * @return list<array{connection: string, queue: string}>
      */
-    private function horizonQueueNames(): array
+    private function horizonQueues(): array
     {
-        $queues = [];
+        $defaults = (array) config('horizon.defaults', []);
+        $found = [];
 
-        foreach ((array) config('horizon.defaults', []) as $supervisor) {
-            foreach ((array) ($supervisor['queue'] ?? []) as $queue) {
-                if (is_string($queue) && $queue !== '') {
-                    $queues[] = $queue;
+        $collect = static function (string $supervisorName, array $supervisor) use (&$found, $defaults): void {
+            // An environment block names only what it overrides; the rest is
+            // the same supervisor's entry in `defaults`.
+            $connection = $supervisor['connection'] ?? $defaults[$supervisorName]['connection'] ?? 'redis';
+            $queues = $supervisor['queue'] ?? $defaults[$supervisorName]['queue'] ?? [];
+
+            foreach ((array) $queues as $queue) {
+                if (is_string($connection) && is_string($queue) && $queue !== '') {
+                    $found["{$connection}\0{$queue}"] = ['connection' => $connection, 'queue' => $queue];
                 }
             }
+        };
+
+        foreach ($defaults as $supervisorName => $supervisor) {
+            $collect((string) $supervisorName, (array) $supervisor);
         }
 
         // Environment blocks may add supervisors the defaults don't declare.
         foreach ((array) config('horizon.environments', []) as $supervisors) {
-            foreach ((array) $supervisors as $supervisor) {
-                foreach ((array) ($supervisor['queue'] ?? []) as $queue) {
-                    if (is_string($queue) && $queue !== '') {
-                        $queues[] = $queue;
-                    }
-                }
+            foreach ((array) $supervisors as $supervisorName => $supervisor) {
+                $collect((string) $supervisorName, (array) $supervisor);
             }
         }
 
-        $queues = array_values(array_unique($queues));
+        return $found === []
+            ? [['connection' => 'redis', 'queue' => 'default']]
+            : array_values($found);
+    }
 
-        return $queues === [] ? ['default'] : $queues;
+    /**
+     * A message safe to put on one `# warning:` line of the exposition: an
+     * exception message with a newline in it would otherwise end the comment
+     * and let the rest be read as a sample.
+     */
+    private function oneLine(string $message): string
+    {
+        return trim((string) preg_replace('/\s+/', ' ', $message));
     }
 
     /** @return list<string> */
@@ -324,19 +382,24 @@ final class MetricsController extends Controller
             '# TYPE laravel_authz_deny_total counter',
         ];
 
-        $reasons = ['no_pivot_row', 'cross_workspace', 'unauthenticated', 'cross_user', 'admin_only'];
-        $emitted = false;
-        foreach ($reasons as $reason) {
-            $count = (int) Cache::get("metrics:authz_deny:{$reason}", 0);
-            if ($count > 0 || $reason === 'no_pivot_row') {
-                // Always emit no_pivot_row even when zero so dashboards have
-                // a stable series.
-                $lines[] = sprintf('laravel_authz_deny_total{reason="%s"} %d', $reason, $count);
-                $emitted = true;
-            }
-        }
-        if (! $emitted) {
-            $lines[] = 'laravel_authz_deny_total{reason="none"} 0';
+        // The reasons the application actually writes
+        // (AuthorizationAuditLogger::REASONS, held to the call sites by a
+        // test), each emitted even at zero so a dashboard has a stable series
+        // -- and `increase()` sees the first deny rather than a series that
+        // starts at 1.
+        //
+        // This used to be a hand-kept list of five, three of which nothing
+        // emits (cross_workspace, unauthenticated, cross_user, admin_only
+        // were the retired ChatConversation / column-mapping gates), and it
+        // omitted `not_project_owner`, which ProjectController writes on
+        // every owner-only denial: those were counted in the cache and never
+        // exported.
+        foreach (AuthorizationAuditLogger::REASONS as $reason) {
+            $lines[] = sprintf(
+                'laravel_authz_deny_total{reason="%s"} %d',
+                $reason,
+                (int) Cache::get("metrics:authz_deny:{$reason}", 0),
+            );
         }
 
         return $lines;

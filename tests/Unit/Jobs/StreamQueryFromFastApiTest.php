@@ -106,6 +106,30 @@ class StreamQueryFromFastApiTest extends TestCase
         });
     }
 
+    public function test_a_hibernated_project_is_reported_as_such_not_as_a_retryable_error(): void
+    {
+        Event::fake([QueryStreamEvent::class]);
+
+        // FastAPI refuses a hibernated project with 403 before it streams.
+        $this->makeJob(json_encode(['detail' => 'project_hibernated']), 403)->handle();
+
+        Event::assertDispatched(QueryStreamEvent::class, function (QueryStreamEvent $e): bool {
+            return ($e->eventType ?? null) === 'failed'
+                && ($e->payload['code'] ?? null) === 'PROJECT_HIBERNATED'
+                && ! str_contains((string) ($e->payload['error'] ?? ''), 'try again');
+        });
+    }
+
+    public function test_a_past_due_project_is_reported_as_such(): void
+    {
+        Event::fake([QueryStreamEvent::class]);
+
+        $this->makeJob(json_encode(['detail' => 'project_past_due']), 402)->handle();
+
+        Event::assertDispatched(QueryStreamEvent::class, fn (QueryStreamEvent $e): bool => ($e->eventType ?? null) === 'failed'
+            && ($e->payload['code'] ?? null) === 'PROJECT_PAST_DUE');
+    }
+
     public function test_handle_wraps_plain_string_data_in_text_key(): void
     {
         Event::fake([QueryStreamEvent::class]);

@@ -25,6 +25,27 @@
 --   WITH CHECK (...same...)
 --
 -- Idempotent. Re-run-safe.
+--
+-- AS BUILT (database audit 2026-10) -- the "strict policy form" above is what
+-- this file CREATES, not what a table enforces. On a cluster built `migrate`
+-- THEN `db:apply-raw` (the ECS migrate task) these tables also carry a fail-open
+-- sibling the migration chain installed earlier, this file drops only the policy
+-- names it knows (<t>_workspace_isolation, <t>_project_scope, <t>_owner_access),
+-- and permissive policies are OR-ed, so an UNBOUND session still reads and writes
+-- every tenant's rows (a bound session is clamped):
+--
+--   silver.projects              silver_projects_workspace_isolation_v2           (2026_05_25_175214)
+--   silver.geological_formations silver_geological_formations_workspace_isolation_v2 (2026_05_25_175214)
+--   silver.review_queue          silver_review_queue_workspace_isolation_v2       (2026_05_25_175214)
+--   silver.drill_traces          tenant_isolation, fail-open                      (2026_05_30_010000)
+--   silver.lithology_logs        lithology_logs_workspace_isolation_v2            (2026_05_25_184630)
+--   silver.raster_layers         raster_layers_workspace_isolation_v2             (2026_05_25_184630)
+--
+-- Only silver.historic_workings and silver.project_boundaries are strict among
+-- the Tier B tables. It is left as is pending a decision (silver.projects is the
+-- bootstrap table every workspace lookup reads; the others feed a cross-tenant
+-- materialized view and unbound sweeps): see
+-- docs/architecture/manual/11-tenancy-and-rls.md section 4.1.
 -- =============================================================================
 
 BEGIN;

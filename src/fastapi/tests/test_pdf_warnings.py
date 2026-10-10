@@ -225,24 +225,116 @@ class TestPdfPlumberPartialExtractionWarning:
 
 
 # ---------------------------------------------------------------------------
-# Tests: existing fixture PDF (if available)
+# Tests: a multi-page report-shaped PDF, generated here
 # ---------------------------------------------------------------------------
+#
+# This class used to read tests/fixtures/reports/PLS-2024-Technical-Report.pdf,
+# a client report that is not in the repo (the repo-root copy is gitignored),
+# behind a skipif on its existence: it skipped on every run, so nothing ran the
+# parser over a real multi-page document. The PDF is now built here, byte for
+# byte, with correct xref offsets, so it runs everywhere and the page text it
+# carries is known.
 
-_FIXTURE_PDF = (
-    Path(__file__).parent / "fixtures" / "reports" / "PLS-2024-Technical-Report.pdf"
-)
+_REPORT_PAGES: list[list[str]] = [
+    [
+        "NI 43-101 TECHNICAL REPORT",
+        "Pine Lake South Uranium Project, Saskatchewan",
+        "1.0 SUMMARY",
+        "The Pine Lake South project hosts unconformity-related uranium mineralisation.",
+    ],
+    [
+        "2.0 INTRODUCTION",
+        "This report was prepared for Example Resources Inc. by an independent qualified person.",
+    ],
+    [
+        "4.0 GEOLOGICAL SETTING",
+        "Basement gneiss is overlain by Athabasca Group sandstone.",
+        "Hole PLS-23-04 from 412.0 m to 416.5 m returned 1.20 percent U3O8.",
+    ],
+]
 
 
-@pytest.mark.skipif(
-    not _FIXTURE_PDF.is_file(),
-    reason="Fixture PDF not found — skipping fixture-based warnings test",
-)
-class TestFixturePdfWarnings:
-    def test_fixture_pdf_returns_warnings_list(self):
-        """The existing fixture PDF must return a result.warnings that is a list."""
-        # Primary-leg mock dropped — the real fitz leg parses this fixture.
-        result = parse_pdf_report(str(_FIXTURE_PDF))
+def _build_pdf(pages: list[list[str]]) -> bytes:
+    """A valid text PDF: one Helvetica line per entry, one page per list, a correct xref table."""
+    objects: list[bytes] = []
 
-        assert isinstance(result.warnings, list), (
-            "parse_pdf_report must always return warnings as a list"
+    def add(body: bytes) -> int:
+        objects.append(body)
+        return len(objects)
+
+    catalog = add(b"")
+    pages_obj = add(b"")
+    font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    kids: list[int] = []
+    for lines in pages:
+        ops = ["BT", "/F1 12 Tf", "14 TL", "72 720 Td"]
+        for line in lines:
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            ops.append(f"({escaped}) Tj T*")
+        ops.append("ET")
+        stream = "\n".join(ops).encode("latin-1")
+        content = add(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
+        kids.append(
+            add(
+                (
+                    f"<< /Type /Page /Parent {pages_obj} 0 R /MediaBox [0 0 612 792] "
+                    f"/Contents {content} 0 R /Resources << /Font << /F1 {font} 0 R >> >> >>"
+                ).encode()
+            )
         )
+    objects[catalog - 1] = f"<< /Type /Catalog /Pages {pages_obj} 0 R >>".encode()
+    objects[pages_obj - 1] = (
+        f"<< /Type /Pages /Kids [{' '.join(f'{k} 0 R' for k in kids)}] /Count {len(kids)} >>".encode()
+    )
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root {catalog} 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+@pytest.fixture()
+def report_pdf(tmp_path: Path) -> Path:
+    path = tmp_path / "report.pdf"
+    path.write_bytes(_build_pdf(_REPORT_PAGES))
+    return path
+
+
+class TestGeneratedReportPdfWarnings:
+    def test_builder_writes_a_pdf_with_every_page(self, report_pdf: Path):
+        """The builder is the premise of the class: if it wrote a broken file the
+        assertions below would be about the wrong thing."""
+        import pdfplumber
+
+        with pdfplumber.open(report_pdf) as pdf:
+            assert len(pdf.pages) == len(_REPORT_PAGES)
+            assert "PLS-23-04" in (pdf.pages[2].extract_text() or "")
+
+    def test_report_pdf_returns_warnings_list(self, report_pdf: Path):
+        """A real multi-page PDF returns warnings as a list of structured entries."""
+        result = parse_pdf_report(str(report_pdf))
+
+        assert isinstance(result.warnings, list), "parse_pdf_report must always return warnings as a list"
+        assert all(isinstance(w, dict) and w.get("code") for w in result.warnings), (
+            f"every warning must be a structured entry with a code; got {result.warnings!r}"
+        )
+
+    def test_every_page_of_the_report_reaches_the_result(self, report_pdf: Path):
+        """The parse covers the whole document: text from the last page is in the
+        sections and the last page is accounted for (a parse that stops after
+        page one, or drops pages without a warning, fails this)."""
+        result = parse_pdf_report(str(report_pdf))
+
+        text = " ".join(section.text for section in result.sections)
+        for needle in ("TECHNICAL REPORT", "INTRODUCTION", "GEOLOGICAL SETTING", "PLS-23-04"):
+            assert needle in text, f"{needle!r} (page text) is missing from the parsed sections"
+        assert max(section.page_last for section in result.sections) == len(_REPORT_PAGES)

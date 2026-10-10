@@ -27,8 +27,11 @@ resource "aws_secretsmanager_secret" "app" {
 #
 #   APP_KEY                  Laravel encryption key (rotation: ops/runbooks)
 #   FASTAPI_SERVICE_KEY      the X-Service-Key both sides check on every
-#                            internal hop; rotation accepts the previous
-#                            value on both sides simultaneously
+#                            internal hop. During a rotation FastAPI, the
+#                            Laravel bridge and the sparse sidecar also
+#                            accept the previous value, but only once
+#                            restarted on the new slots: restart receivers
+#                            (sparse, fastapi) before the callers
 #   FASTAPI_SERVICE_KEY_KID  the kid Laravel mints with ("primary")
 #   FASTAPI_SERVICE_KEY_PREVIOUS, FASTAPI_SERVICE_KEY_PREVIOUS_KID
 #                            the outgoing key and its kid during a rotation
@@ -86,13 +89,19 @@ locals {
   # them; the container never sees the ARN, only the value.
   #
   # The three FASTAPI_SERVICE_KEY_* rotation slots joined on 2026-09-29 (audit
-  # AWS-20). Both sides already accept a previous key during an overlap
-  # (app/services/auth.py, VerifyServiceKey.php) but nothing injected it, so
-  # rotating the service key was a hard cut: 401s on every internal hop until
-  # every task had restarted. Steady state: _KID = "primary", _PREVIOUS and
-  # _PREVIOUS_KID = "" (FastAPI and Laravel both read empty as "no rotation
-  # in progress"). ECS refuses to start a task whose referenced key is ABSENT,
-  # so all three must be written to georag/app BEFORE the apply that adds them.
+  # AWS-20). FastAPI (app/services/auth.py) and the Laravel bridge
+  # (VerifyServiceKey.php) already accepted a previous key during an overlap,
+  # but nothing injected it, so rotating the service key was a hard cut: 401s
+  # on every internal hop until every task had restarted. The sparse sidecar
+  # was not covered even then: app/sidecar_auth.py read only the primary, so
+  # it 401'd every caller on the other key until it restarted. It accepts the
+  # previous key too since 2026-10-10. A task only does so once it has
+  # RESTARTED on the new slots, so a rotation restarts receivers (sparse,
+  # fastapi) before their callers. Steady state: _KID = "primary", _PREVIOUS
+  # and _PREVIOUS_KID = "" (FastAPI and Laravel both read empty as "no
+  # rotation in progress"). ECS refuses to start a task whose referenced key
+  # is ABSENT, so all three must be written to georag/app BEFORE the apply
+  # that adds them.
   _secret_ref = { for key in [
     "APP_KEY",
     "FASTAPI_SERVICE_KEY",

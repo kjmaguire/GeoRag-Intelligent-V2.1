@@ -58,8 +58,13 @@ _PIPELINE: tuple[tuple[str, Any], ...] = (
     # at graph-build time but is a no-op when REPAIR_LOOP_SHADOW_ENABLED=False
     # (the default). When the flag flips, it stamps repair_codes_observed +
     # repair_strategy_history + repair_terminal_reason onto state for the
-    # persist node + trace writer to pick up. NEVER mutates the response.
-    # See docs/architecture/repair_loop_spec.md §8 Stage 1 for the rollout.
+    # persist node + trace writer to pick up; in shadow mode alone it leaves
+    # the response untouched. It is NOT read-only once the later-stage flags
+    # are on (all default False): REPAIR_LOOP_TERMINAL_ENABLED stamps a
+    # refusal_payload, and REPAIR_LOOP_LOWCOST_ENABLED / _FULL_ENABLED may
+    # replace the response (and retrieval_filters / retrieval_profile) with a
+    # re-issue that has itself been validated and demoted. See the node's
+    # docstring, and docs/architecture/repair_loop_spec.md §8 for the rollout.
     ("repair_shadow", repair_shadow_node),
     # Phase 4 follow-up — write the answer_runs lineage row. Best-effort;
     # failures are logged but don't fail the answer (the response has
