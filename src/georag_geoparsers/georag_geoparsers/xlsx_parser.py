@@ -1,9 +1,10 @@
-"""Excel Parser — handles both .xlsx/.xlsm (via Polars/openpyxl) and .xls (via xlrd).
+"""Excel Parser — handles both .xlsx/.xlsm (via openpyxl) and .xls (via xlrd).
 
 Accepts an Excel file path (.xlsx, .xlsm, or .xls), a sheet name, and a sheet
 type.  The file is loaded via the appropriate backend:
 
-  .xlsx / .xlsm — polars.read_excel (openpyxl / fastexcel backend)
+  .xlsx / .xlsm — openpyxl, the whole sheet (not polars.read_excel, which reads
+                  only the first Excel Table when the sheet has one)
   .xls          — xlrd 1.x (the only free library that reads the legacy BIFF OLE
                   format; xlrd >= 2.0 explicitly dropped .xls support)
 
@@ -24,7 +25,13 @@ Legacy-format behaviours:
   - .xlsx is read through openpyxl explicitly. polars' default Excel engine is
     calamine, which needs ``fastexcel`` - a package no lockfile in this repo
     installs - so the default read raised ModuleNotFoundError for every
-    .xlsx sheet.
+    .xlsx sheet. (Audit finding 7: it is now openpyxl directly rather than
+    ``pl.read_excel(engine="openpyxl")``, which read only the first Excel
+    Table's range when the sheet had one.)
+  - Every cell becomes text BY TYPE on both paths (``cell_text`` /
+    ``_xls_cell_text``): whole numbers lose their ``.0``, dates are ISO, Excel
+    error values are blanked with an ``excel_error_cells`` warning, a repeated
+    header is kept under a distinct name.
   - Formula cells: xlrd returns cached values only (live formulas unavailable).
     This is logged at debug level and is not an error.
   - xls_legacy_format_detected info warning is emitted for all .xls files.
@@ -37,9 +44,11 @@ Dagster 1.13 Config classes use Pydantic for type introspection and that import
 breaks runtime annotation evaluation.
 """
 
+import datetime
 import hashlib
 import io
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -78,11 +87,280 @@ _FORWARDED_PARSER_WARNINGS = frozenset({
     "mineralization_value_unassigned",
     "alteration_style_in_notes",
     "alteration_value_unassigned",
+    # Collar sheets (audit findings 6 and 15): a repeated hole, and a drill
+    # date left empty because it was unreadable or day/month-ambiguous.
+    "duplicate_hole_id",
+    "date_unparseable",
+    "date_ambiguous",
+    "date_convention_inferred",
 })
 
 # Extension sets for routing to the correct read backend.
 _XLSX_EXTS = frozenset({".xlsx", ".xlsm"})
 _XLS_EXTS = frozenset({".xls"})
+
+
+# ---------------------------------------------------------------------------
+# Cell values -> text (audit findings 2 and 7)
+# ---------------------------------------------------------------------------
+#
+# Both readers hand the CSV parsers TEXT, so what a cell becomes as text is the
+# whole contract. The .xls path used to ``str()`` xlrd's raw values:
+#
+#   * an ERROR cell is an int code, so ``#N/A`` became "42" and ``#DIV/0!``
+#     became "7" - read as a real elevation / depth;
+#   * a numeric hole id is stored as a float, so 1001 became "1001.0", which
+#     ``_hole_id.canonicalize`` turns into "10010" (the same key as a different
+#     hole 10010);
+#   * a date was its float serial ("45021.0");
+#   * a boolean was "1".
+#
+# These helpers are shared by the .xls and .xlsx paths so the two cannot drift.
+
+#: What Excel shows for a cell that holds an error.
+_EXCEL_ERROR_TEXTS = frozenset({
+    "#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A",
+})
+
+#: Cells quoted in an excel_error_cells / duplicate-header warning.
+_NOTE_EXAMPLES = 5
+
+
+def _a1(row0: int, col0: int) -> str:
+    """Excel's A1 name for a 0-based (row, column)."""
+    letters = ""
+    col = col0 + 1
+    while col:
+        col, rem = divmod(col - 1, 26)
+        letters = chr(65 + rem) + letters
+    return f"{letters}{row0 + 1}"
+
+
+def _number_text(value: float) -> str:
+    """A number as the text a person would have typed.
+
+    An integral float is its integer ("1001", not "1001.0"); anything else is
+    the shortest round-trip repr. NaN is empty.
+    """
+    if value != value:  # NaN
+        return ""
+    if math.isfinite(value) and value == int(value) and abs(value) < 1e15:
+        return str(int(value))
+    return repr(value)
+
+
+def cell_text(value: Any) -> str:
+    """One spreadsheet value as the text the CSV parsers read.
+
+    ``datetime`` at midnight is its ISO date, with a time its ISO date-time
+    (``csv_collar``'s ``DateReader`` reads both); booleans are ``true`` /
+    ``false``; ``None`` is empty.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return _number_text(value)
+    if isinstance(value, datetime.datetime):
+        if value.time() == datetime.time(0, 0):
+            return value.date().isoformat()
+        return value.isoformat()
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    return str(value)
+
+
+@dataclass
+class _CellNotes:
+    """What the cell conversion had to blank or could not convert."""
+
+    #: ``(A1 ref, error text)`` - an Excel error value, stored as an empty cell.
+    errors: list = field(default_factory=list)
+    #: ``(A1 ref, number)`` - a date-formatted number xlrd could not convert.
+    bad_dates: list = field(default_factory=list)
+    #: ``(original header, name used)`` for each header made unique.
+    renamed: list = field(default_factory=list)
+
+    def warnings(self, sheet: str) -> list:
+        out: list = []
+        if self.errors:
+            shown = ", ".join(
+                f"{ref} ({text})" for ref, text in self.errors[:_NOTE_EXAMPLES]
+            )
+            more = len(self.errors) - min(len(self.errors), _NOTE_EXAMPLES)
+            out.append({
+                "row": None,
+                "code": "excel_error_cells",
+                "message": (
+                    f"sheet '{sheet}': {len(self.errors)} cell(s) hold Excel "
+                    f"errors and were left empty"
+                ),
+                "detail": (
+                    f"Sheet '{sheet}' has {len(self.errors)} cell(s) that Excel "
+                    f"shows as errors (#N/A, #DIV/0!, ...): {shown}"
+                    f"{f' and {more} more' if more else ''}. An error carries "
+                    f"no value, so each was read as an empty cell - never as "
+                    f"the number its error code happens to be. Fix the "
+                    f"formulas and upload the file again if these values matter."
+                )[:900],
+                "context": {
+                    "sheet": sheet, "count": len(self.errors),
+                    "cells": [
+                        {"cell": ref, "error": text}
+                        for ref, text in self.errors[:20]
+                    ],
+                },
+            })
+        if self.bad_dates:
+            shown = ", ".join(
+                f"{ref} ({number})" for ref, number in self.bad_dates[:_NOTE_EXAMPLES]
+            )
+            out.append({
+                "row": None,
+                "code": "excel_date_unconverted",
+                "message": (
+                    f"sheet '{sheet}': {len(self.bad_dates)} date cell(s) could "
+                    f"not be converted and were kept as numbers"
+                ),
+                "detail": (
+                    f"These cells are date-formatted but hold a number Excel's "
+                    f"calendar cannot convert: {shown}. They were kept as the "
+                    f"plain number."
+                )[:900],
+                "context": {"sheet": sheet, "count": len(self.bad_dates)},
+            })
+        if self.renamed:
+            shown = ", ".join(f"{old!r} -> {new!r}" for old, new in self.renamed[:_NOTE_EXAMPLES])
+            out.append({
+                "row": None,
+                "code": "duplicate_header_renamed",
+                "severity": "info",
+                "message": (
+                    f"sheet '{sheet}': {len(self.renamed)} column header(s) were "
+                    f"repeated and renamed so no column is lost"
+                ),
+                "detail": (
+                    f"Sheet '{sheet}' uses the same header for more than one "
+                    f"column ({shown}). Each column was kept under a distinct "
+                    f"name; before this, only the last column of each name "
+                    f"survived."
+                ),
+                "context": {"sheet": sheet, "renamed": self.renamed[:20]},
+            })
+        return out
+
+
+def _dedupe_headers(texts: list, notes: "_CellNotes") -> list:
+    """Unique, non-blank column names: a blank is ``col_N``, a repeat ``name_N``.
+
+    The rule ``_promote_header`` always applied to .xlsx; the .xls path built a
+    dict keyed by header, so a repeated header silently kept only the LAST
+    column of that name (two ``Au`` columns - fire assay and ICP - became one).
+    """
+    names: list = []
+    for i, raw in enumerate(texts):
+        name = str(raw).strip() or f"col_{i}"
+        original = name
+        while name in names:
+            name = f"{name}_{i}"
+        if name != original:
+            notes.renamed.append((original, name))
+        names.append(name)
+    return names
+
+
+def _is_error_text(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() in _EXCEL_ERROR_TEXTS
+
+
+def _xls_cell_text(cell: Any, datemode: int, notes: "_CellNotes", row0: int, col0: int) -> str:
+    """One xlrd ``Cell`` as text, branching on its TYPE (finding 2)."""
+    import xlrd
+
+    ctype, value = cell.ctype, cell.value
+    if ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+        return ""
+    if ctype == xlrd.XL_CELL_TEXT:
+        return str(value)
+    if ctype == xlrd.XL_CELL_NUMBER:
+        return _number_text(float(value))
+    if ctype == xlrd.XL_CELL_BOOLEAN:
+        return "true" if value else "false"
+    if ctype == xlrd.XL_CELL_ERROR:
+        notes.errors.append(
+            (_a1(row0, col0), xlrd.error_text_from_code.get(value, f"#ERR{value}")),
+        )
+        return ""
+    if ctype == xlrd.XL_CELL_DATE:
+        try:
+            converted = xlrd.xldate.xldate_as_datetime(value, datemode)
+        except (xlrd.xldate.XLDateError, ValueError, OverflowError):
+            notes.bad_dates.append((_a1(row0, col0), _number_text(float(value))))
+            return _number_text(float(value))
+        if 0 <= value < 1:        # a time of day, not a date
+            return converted.time().isoformat()
+        return cell_text(converted)
+    return str(value)
+
+
+def _xlsx_cell_text(value: Any, notes: "_CellNotes", row0: int, col0: int) -> str:
+    """One openpyxl value as text; an Excel error string is blanked and noted."""
+    if _is_error_text(value):
+        notes.errors.append((_a1(row0, col0), str(value).strip()))
+        return ""
+    return cell_text(value)
+
+
+def _read_xlsx_rows(path: str, sheet_name: str = "") -> tuple:
+    """Every row of one sheet as openpyxl values - the whole sheet.
+
+    ``(rows, resolved sheet name)``. Read through openpyxl directly, NOT
+    ``pl.read_excel``: with the openpyxl engine Polars reads only the first
+    Excel Table's ``ref`` when the sheet has one (verified on 1.44.2: a table
+    A1:D4 over six data rows yields three), so rows below or beside a Table -
+    a re-export that appended data past the Table's last row, a second block -
+    vanished with no sign, while ``enumerate_sheets`` (which counts every row)
+    still said the sheet had them. Rows are padded to the sheet's widest.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
+        try:
+            # A <dimension> some exporters write wrongly would cut rows or
+            # columns off; without it openpyxl reads what is actually there.
+            ws.reset_dimensions()
+        except AttributeError:
+            logger.debug("xlsx_parser: sheet has no reset_dimensions()", exc_info=True)
+        rows = [tuple(row) for row in ws.iter_rows(values_only=True)]
+        title = ws.title
+    finally:
+        wb.close()
+    width = max((len(r) for r in rows), default=0)
+    return [r + (None,) * (width - len(r)) for r in rows], title
+
+
+def _text_frame(
+    header_cells: list, data_rows: list, notes: "_CellNotes", *, drop_empty_columns: bool,
+) -> pl.DataFrame:
+    """A text-only frame from converted header cells and data rows."""
+    names = _dedupe_headers(header_cells, notes)
+    width = len(names)
+    columns = [
+        [row[i] if i < len(row) else "" for row in data_rows] for i in range(width)
+    ]
+    if drop_empty_columns:
+        kept = [i for i in range(width) if any(c.strip() for c in columns[i])]
+        names = [names[i] for i in kept]
+        columns = [columns[i] for i in kept]
+    return pl.DataFrame(
+        {name: values for name, values in zip(names, columns, strict=True)},
+        schema={name: pl.Utf8 for name in names},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,17 +562,39 @@ def read_sheet_rows(path: str, sheet_name: str = "") -> list[dict[str, Any]]:
     ext = Path(path).suffix.lower()
     if ext == ".xls":
         df, _resolved, _warnings = _xls_to_polars_df(path, sheet_name, header_row=0)
-    elif ext in _XLSX_EXTS:
-        df = (
-            pl.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
-            if sheet_name else pl.read_excel(path, engine="openpyxl")
-        )
-    else:
-        raise ValueError(
-            f"read_sheet_rows: unsupported extension '{ext}' for '{path}'. "
-            f"Expected one of: .xlsx, .xlsm, .xls"
-        )
-    return df.to_dicts()
+        return df.to_dicts()
+    if ext in _XLSX_EXTS:
+        return _xlsx_native_rows(path, sheet_name)
+    raise ValueError(
+        f"read_sheet_rows: unsupported extension '{ext}' for '{path}'. "
+        f"Expected one of: .xlsx, .xlsm, .xls"
+    )
+
+
+def _xlsx_native_rows(path: str, sheet_name: str) -> list:
+    """The whole sheet as dicts of the cells' own Python values.
+
+    The first non-blank row names the columns (a repeated name is made unique
+    as in the typed path); fully blank rows and columns are dropped; an Excel
+    error cell is None. Values keep their native type - the attribute-table
+    copy stores numbers as numbers.
+    """
+    rows, _title = _read_xlsx_rows(path, sheet_name)
+    header_at = next(
+        (i for i, row in enumerate(rows) if any(v is not None and str(v).strip() for v in row)),
+        None,
+    )
+    if header_at is None:
+        return []
+    notes = _CellNotes()
+    names = _dedupe_headers([cell_text(v) for v in rows[header_at]], notes)
+    data = [
+        [None if _is_error_text(v) else v for v in row]
+        for row in rows[header_at + 1:]
+        if any(v is not None and str(v).strip() for v in row)
+    ]
+    kept = [i for i in range(len(names)) if any(row[i] is not None for row in data)]
+    return [{names[i]: row[i] for i in kept} for row in data]
 
 
 def read_xls_sheets(path: str) -> list[tuple[str, str]]:
@@ -326,13 +626,22 @@ def read_xls_sheets(path: str) -> list[tuple[str, str]]:
         for name in book.sheet_names():
             sheet = book.sheet_by_name(name)
             lines = []
+            notes = _CellNotes()
             for r in range(sheet.nrows):
+                # By cell TYPE, like the typed path (finding 2): "1001" not
+                # "1001.0", a date as a date, and an Excel error as nothing
+                # rather than as its numeric code ("42" for #N/A).
                 cells = [
-                    "" if v is None else str(v).strip()
-                    for v in sheet.row_values(r)
+                    _xls_cell_text(cell, book.datemode, notes, r, c).strip()
+                    for c, cell in enumerate(sheet.row(r))
                 ]
                 if any(cells):
                     lines.append("\t".join(cells))
+            if notes.errors:
+                logger.info(
+                    "xlsx_parser: %d Excel error cell(s) read as empty in sheet %r of %s",
+                    len(notes.errors), name, path,
+                )
             if lines:
                 out.append((name, "\n".join(lines)))
         return out
@@ -482,33 +791,41 @@ def _xls_to_polars_df(
     if header_row:
         xls_warnings.append(_header_row_warning(resolved_name, header_row))
 
-    # Extract header row
-    header = [
-        str(v) if v != "" else f"col_{i}"
-        for i, v in enumerate(sheet.row_values(header_row))
-    ]
-
-    # Extract data rows — xlrd returns cached cell values; formulas show computed result
+    # Extract the cells BY TYPE (audit finding 2) - xlrd returns cached values,
+    # formulas show their computed result. ``str()`` of the raw value turned an
+    # Excel error into its numeric code ("42" for #N/A, read as an elevation),
+    # an integral hole id into "1001.0" (canonical "10010", the key of a
+    # different hole) and a date into its float serial.
     logger.debug(
         "xlsx_parser: xlrd reads cached values for formula cells in '%s'", path
     )
+    notes = _CellNotes()
+
+    def _row_texts(ridx: int) -> list[str]:
+        return [
+            _xls_cell_text(cell, wb.datemode, notes, ridx, cidx)
+            for cidx, cell in enumerate(sheet.row(ridx))
+        ]
+
+    # Extract header row. A repeated header is made unique, not collapsed.
+    header = _dedupe_headers(_row_texts(header_row), notes)
 
     rows_data: list[list[str]] = []
     for ridx in range(header_row + 1, nrows):
-        row_vals = sheet.row_values(ridx)
-        rows_data.append([
-            "" if (v is None or (isinstance(v, float) and str(v) == "nan")) else str(v)
-            for v in row_vals
-        ])
+        texts = _row_texts(ridx)
+        if any(t.strip() for t in texts):       # a formatted-but-empty row is not data
+            rows_data.append(texts)
 
     # Build Polars DataFrame from string columns
-    if not rows_data:
-        df = pl.DataFrame({col: pl.Series(col, [], dtype=pl.Utf8) for col in header})
-    else:
-        col_data = {header[i]: [row[i] if i < len(row) else "" for row in rows_data]
-                    for i in range(ncols)}
-        df = pl.DataFrame(col_data, schema={k: pl.Utf8 for k in col_data})
+    df = pl.DataFrame(
+        {
+            name: [row[i] if i < len(row) else "" for row in rows_data]
+            for i, name in enumerate(header)
+        },
+        schema={name: pl.Utf8 for name in header},
+    )
 
+    xls_warnings.extend(notes.warnings(resolved_name))
     return df, resolved_name, xls_warnings
 
 
@@ -530,44 +847,29 @@ def _header_row_warning(sheet_name: str, header_row: int) -> dict:
     }
 
 
-def _xlsx_sheet_head(path: str, sheet_name: str) -> list[tuple]:
-    """The first rows of an .xlsx sheet, for header detection."""
-    import openpyxl
+def _xlsx_text_frame(rows: list, header_row: int) -> tuple:
+    """``(text frame, notes)`` from the sheet's rows, row *header_row* the header.
 
-    from georag_geoparsers._sheet_classifier import HEADER_SCAN_ROWS
+    Every cell is converted by TYPE (:func:`cell_text`; an Excel error string
+    is blanked and noted); fully blank data rows and columns are dropped, as
+    ``pl.read_excel`` did. A repeated header is made unique, a blank one
+    ``col_N``.
+    """
+    notes = _CellNotes()
 
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    try:
-        ws = wb[sheet_name] if sheet_name else wb[wb.sheetnames[0]]
-        head: list[tuple] = []
-        for row in ws.iter_rows(values_only=True):
-            head.append(tuple(row))
-            if len(head) >= HEADER_SCAN_ROWS:
-                break
-        return head
-    finally:
-        wb.close()
+    def texts(row_idx: int) -> list:
+        return [
+            _xlsx_cell_text(value, notes, row_idx, col_idx)
+            for col_idx, value in enumerate(rows[row_idx])
+        ]
 
-
-def _promote_header(raw: pl.DataFrame, header_row: int) -> pl.DataFrame:
-    """A header-less frame with row *header_row* made the column names."""
-    rows = raw.rows()
-    names: list[str] = []
-    for i, value in enumerate(rows[header_row] if header_row < len(rows) else []):
-        name = str(value).strip() if value is not None else ""
-        name = name or f"col_{i}"
-        while name in names:
-            name = f"{name}_{i}"
-        names.append(name)
+    header_cells = texts(header_row) if header_row < len(rows) else []
     data = [
-        ["" if v is None else str(v) for v in row]
-        for row in rows[header_row + 1:]
-        if any(v is not None and str(v).strip() for v in row)
+        converted
+        for converted in (texts(i) for i in range(header_row + 1, len(rows)))
+        if any(cell.strip() for cell in converted)
     ]
-    return pl.DataFrame(
-        {name: [row[i] if i < len(row) else "" for row in data] for i, name in enumerate(names)},
-        schema={name: pl.Utf8 for name in names},
-    )
+    return _text_frame(header_cells, data, notes, drop_empty_columns=True), notes
 
 
 def _classifier_map(sheet_type: str, vendor_aliases: dict | None) -> dict | None:
@@ -596,7 +898,7 @@ def parse_xlsx_sheet(
     """Parse a single sheet of an Excel file (.xlsx, .xlsm, or .xls) as the given sheet_type.
 
     Routing:
-      .xlsx / .xlsm → polars.read_excel (openpyxl / fastexcel backend)
+      .xlsx / .xlsm → openpyxl, every row of the sheet (see ``_read_xlsx_rows``)
       .xls          → xlrd 1.x (legacy BIFF OLE; xlrd >= 2 does not support .xls)
 
     After loading, both paths serialise to an in-memory CSV buffer and delegate
@@ -670,56 +972,49 @@ def parse_xlsx_sheet(
         file_format: Literal["xlsx", "xls", "xlsm"] = "xls"
 
     elif ext in _XLSX_EXTS:
-        # --- Modern .xlsx / .xlsm path (Polars / openpyxl) ---
-        header_row = 0
+        # --- Modern .xlsx / .xlsm path (openpyxl, the WHOLE sheet) ---
+        #
+        # Read through openpyxl directly rather than pl.read_excel: with the
+        # openpyxl engine Polars reads only the first Excel Table's ref when
+        # the sheet has one, so rows past it were dropped silently (audit
+        # finding 7). Every cell is converted to text by TYPE (cell_text), the
+        # same contract the .xls path honours.
         try:
-            from georag_geoparsers._sheet_classifier import detect_header_row
-
-            header_row = detect_header_row(
-                _xlsx_sheet_head(path_str, sheet_name),
-                column_map=_classifier_map(sheet_type, vendor_aliases),
-            )
-        except Exception:
-            # Detection is an improvement, never a new way to fail: an
-            # unreadable head leaves the header on row 0, as before.
-            logger.debug(
-                "xlsx_parser: header-row detection failed for %s", path_str,
-                exc_info=True,
-            )
-        try:
-            if header_row:
-                raw_df = pl.read_excel(
-                    path_str, sheet_name=sheet_name or None, engine="openpyxl",
-                    has_header=False, drop_empty_rows=False,
-                    infer_schema_length=0,
+            rows, resolved_sheet_name = _read_xlsx_rows(path_str, sheet_name)
+            header_row = 0
+            try:
+                from georag_geoparsers._sheet_classifier import (
+                    HEADER_SCAN_ROWS,
+                    detect_header_row,
                 )
-                # Re-detected on the frame itself: its row numbering is what
-                # the header is promoted from.
-                from georag_geoparsers._sheet_classifier import detect_header_row
 
                 header_row = detect_header_row(
-                    raw_df.rows()[:15],
+                    rows[:HEADER_SCAN_ROWS],
                     column_map=_classifier_map(sheet_type, vendor_aliases),
                 )
-                df = _promote_header(raw_df, header_row)
-                resolved_sheet_name = sheet_name or "Sheet1"
-                if header_row:
-                    extra_warnings.append(
-                        _header_row_warning(resolved_sheet_name, header_row),
-                    )
-            elif sheet_name:
-                df = pl.read_excel(path_str, sheet_name=sheet_name, engine="openpyxl")
-                resolved_sheet_name = sheet_name
+            except Exception:
+                # Detection is an improvement, never a new way to fail: an
+                # unreadable head leaves the header on row 0, as before.
+                logger.debug(
+                    "xlsx_parser: header-row detection failed for %s", path_str,
+                    exc_info=True,
+                )
+            if header_row:
+                extra_warnings.append(
+                    _header_row_warning(resolved_sheet_name, header_row),
+                )
             else:
-                df = pl.read_excel(path_str, engine="openpyxl")
-                resolved_sheet_name = "Sheet1"
-                try:
-                    import openpyxl
-                    wb = openpyxl.load_workbook(path_str, read_only=True, data_only=True)
-                    resolved_sheet_name = wb.sheetnames[0]
-                    wb.close()
-                except Exception:
-                    pass  # openpyxl unavailable or unreadable — placeholder is fine
+                # Leading blank rows are not a title: the header is the first
+                # row with anything in it, as pl.read_excel took it.
+                header_row = next(
+                    (
+                        i for i, row in enumerate(rows)
+                        if any(v is not None and str(v).strip() for v in row)
+                    ),
+                    0,
+                )
+            df, cell_notes = _xlsx_text_frame(rows, header_row)
+            extra_warnings.extend(cell_notes.warnings(resolved_sheet_name))
         except Exception as exc:
             logger.error(
                 "xlsx_parser: failed to load Excel from '%s' (sheet=%r): %s",

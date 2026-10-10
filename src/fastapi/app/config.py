@@ -160,6 +160,17 @@ class Settings(BaseSettings):
     # 1 MiB is generous for our largest legitimate body (~10 KB chat query).
     MAX_REQUEST_BODY_BYTES: int = 1_048_576  # 1 MiB
 
+    # ingest_tabular (CSV / Excel / dBASE / Access) — largest file the workflow
+    # will download and parse, in bytes. A refusal BEFORE the download, with the
+    # reason on the run. The text path decodes the whole file and the parsers
+    # hold the result alongside copies of it (measured at about 9x the file on
+    # a delimited upload), and the ingest worker has 8 GiB, so the ceiling for
+    # tabular files is well below the 512 MiB every upload is admitted under
+    # (GEORAG_MAX_UPLOAD_BYTES, which also covers rasters and Geosoft grids that
+    # do not go through here). 150 MiB is a drill-hole table of several million
+    # rows. Raise it only together with the worker's memory.
+    INGEST_TABULAR_MAX_BYTES: int = 150 * 1024 * 1024
+
     # FastAPI review #2 — global per-request timeout backstop.
     # Enforced by `_GlobalTimeout` middleware. SSE stream endpoints opt
     # out via the Accept header check (they own their own deadline via

@@ -15,19 +15,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
-from io import StringIO
 from pathlib import Path
 from typing import IO, Any, Union
-
-import polars as pl
 
 from georag_geoparsers._csv_io import (
     DEFAULT_NULL_VALUES,
     detect_delimiter,
     open_csv_with_encoding,
+    read_csv_checked,
     transform_decimal_comma,
 )
+from georag_geoparsers._dates import DateReader
 from georag_geoparsers._depth_units import convert_feet_columns, feet_coordinate_warning
 from georag_geoparsers._dip_convention import DipConvention, normalize_dip, resolve_dip_convention
 from georag_geoparsers._drill_schema import (
@@ -38,9 +36,15 @@ from georag_geoparsers._drill_schema import (
     coordinate_family_conflict,
     detect_coordinate_mode,
 )
-from georag_geoparsers._encoding import is_utf8_compatible
+from georag_geoparsers._encoding import decode_warnings, is_utf8_compatible
 from georag_geoparsers._header_match import build_column_map
-from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._hole_id import (
+    canonicalize,
+    duplicate_hole_skip_entry,
+    duplicate_hole_warning,
+    split_duplicate_holes,
+    suggest_collisions,
+)
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
@@ -140,19 +144,6 @@ def _build_column_map(
     return build_column_map(csv_columns, aliases if aliases is not None else COLUMN_ALIASES)
 
 
-def _parse_date(value: str | None) -> date | None:
-    """Try a handful of common date formats; return None on failure."""
-    if value is None or str(value).strip() == "":
-        return None
-    raw = str(value).strip()
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d", "%d-%b-%Y"):
-        try:
-            return date.fromisoformat(raw) if fmt == "%Y-%m-%d" else __import__("datetime").datetime.strptime(raw, fmt).date()
-        except ValueError:
-            continue
-    return None  # unparseable — not a rejection-worthy failure
-
-
 def _cast_float(value) -> float | None:
     """Return float or None; never raises."""
     if value is None:
@@ -170,6 +161,7 @@ def _validate_row(
     column_map: dict[str, str],
     dip_convention: DipConvention,
     coord_bounds: dict[str, tuple[float, float]],
+    date_reader: DateReader | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Validate a single raw row dict (keyed by canonical names).
 
@@ -222,7 +214,11 @@ def _validate_row(
                 }
             record[canonical] = casted
         elif canonical == "drill_date":
-            record[canonical] = _parse_date(raw_val)
+            # The reader decides the file's day/month order across the whole
+            # column and reports what it could not read (audit finding 15);
+            # a row validated on its own has no column to learn from.
+            reader = date_reader if date_reader is not None else DateReader([raw_val])
+            record[canonical] = reader.read(row_num, raw_val)
         else:
             record[canonical] = str(raw_val).strip() if raw_val is not None else None
 
@@ -310,16 +306,8 @@ def parse_csv_collars(
         stream, detected_encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         raw_content = stream.getvalue()
 
+        global_warnings.extend(decode_warnings(detected_encoding, raw_content))
         if not is_utf8_compatible(detected_encoding):
-            global_warnings.append({
-                "row": None,
-                "code": _CODE_ENCODING_NON_UTF8,
-                "message": (
-                    f"detected encoding '{detected_encoding}' (not UTF-8) — "
-                    f"decoded with replacement"
-                ),
-                "context": {"encoding": detected_encoding},
-            })
             logger.info("csv_collar: detected encoding '%s'", detected_encoding)
 
         # 2026-05-23 CSV audit gap #1 — auto-detect delimiter so semicolon/
@@ -338,13 +326,10 @@ def parse_csv_collars(
             })
             logger.info("csv_collar: detected delimiter %r", detected_delim)
 
-        df = pl.read_csv(
-            StringIO(raw_content),
-            separator=detected_delim,
-            infer_schema=False,
-            null_values=all_nulls,
-            truncate_ragged_lines=True,
+        df, ragged = read_csv_checked(
+            raw_content, separator=detected_delim, null_values=all_nulls,
         )
+        global_warnings.extend(ragged.warnings())
 
         # 2026-05-23 CSV audit gap #2 — column-aware decimal-comma transform
         # (replaces the previous warn-only path). Per-column gate: only
@@ -352,6 +337,7 @@ def parse_csv_collars(
         # comma pattern get rewritten. Hole-ID columns, text columns, and
         # mixed-format columns are left alone.
         df, transformed_cols = transform_decimal_comma(df)
+        global_warnings.extend(transformed_cols.ambiguity_warnings())
         if transformed_cols:
             global_warnings.append({
                 "row": None,
@@ -545,8 +531,18 @@ def parse_csv_collars(
         "context": {"mode": coord_mode},
     })
 
+    # --- Drill dates: one day/month order for the whole file (finding 15) ---
+    date_reader = DateReader(
+        [r.get("drill_date") for r in rows_as_dicts] if "drill_date" in column_map else [],
+        first_row=2,
+    )
+
     for i, raw in enumerate(rows_as_dicts, start=2):  # row 1 = header, data starts at 2
-        record, skip_entry = _validate_row(i, raw, column_map, dip_convention, coord_bounds)
+        if ragged.skip(i, skipped):
+            continue
+        record, skip_entry = _validate_row(
+            i, raw, column_map, dip_convention, coord_bounds, date_reader,
+        )
         if record is not None:
             records.append(record)
         else:
@@ -561,6 +557,22 @@ def parse_csv_collars(
                 skip_entry.get("code"),
             )
             skipped.append(skip_entry)
+
+    global_warnings.extend(date_reader.warnings())
+
+    # --- Repeated hole ids (audit finding 6) ---
+    # Two rows for one hole reach the database as two upserts onto one
+    # collar, and the LAST silently replaced the first's position. The first
+    # is kept deliberately, the repeats are skipped, and the warning names
+    # both rows and their coordinates.
+    records, duplicate_rows = split_duplicate_holes(records)
+    skipped.extend(duplicate_hole_skip_entry(dup) for dup in duplicate_rows)
+    duplicate_warning = duplicate_hole_warning(duplicate_rows)
+    if duplicate_warning is not None:
+        global_warnings.append(duplicate_warning)
+        logger.warning(
+            "csv_collar: %d repeated hole id row(s) skipped", len(duplicate_rows),
+        )
 
     valid_rows = len(records)
     skipped_rows = len(skipped)

@@ -86,12 +86,15 @@ def las_result(**overrides: Any) -> SimpleNamespace:
 
 
 class FakeConn:
-    def __init__(self, replaced: int = 0) -> None:
+    def __init__(self, replaced: int = 0, stored: list[dict] | None = None) -> None:
         self.executed: list[tuple] = []
         #: (sql, args) of every fetchval — the workflow's only one is the
         #: replace-delete, and WHAT IT MATCHES is the thing worth pinning.
         self.fetchvals: list[tuple[str, tuple]] = []
         self.replaced = replaced
+        #: Rows ``fetch`` answers with: the curves the hole already holds
+        #: (las_curve_conflicts.fetch_stored_curves), none by default.
+        self.stored = stored or []
         self.closed = False
         self.transactions = 0
 
@@ -101,6 +104,9 @@ class FakeConn:
     async def fetchval(self, sql: str, *args: Any) -> Any:
         self.fetchvals.append((sql, args))
         return self.replaced
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict]:
+        return [r for r in self.stored if r["curve_name"] in args[1]]
 
     def transaction(self):  # noqa: ANN201 - mirrors asyncpg
         conn = self
@@ -337,6 +343,91 @@ class TestGoodFixture:
         assert out.las_version == "3.0"
         assert out.parse_quality_pct == 91.5
         assert out.curves_skipped == 2
+
+
+def stored_curve(name: str, source_file: str | None, lo: float, hi: float,
+                 unit: str | None = "m") -> dict:
+    return {
+        "curve_name": name, "source_file": source_file,
+        "min_depth": lo, "max_depth": hi, "depth_unit": unit,
+    }
+
+
+class TestSameNamedCurveFromAnotherFile:
+    """Audit finding 5: one hole holds one curve per name, and two tool runs
+    both carry GAMMA. The second used to replace the first, silently."""
+
+    async def test_an_overlapping_curve_replaces_and_says_so(self) -> None:
+        conn = FakeConn(replaced=1, stored=[
+            stored_curve("GR", "20260901_100000_run1.las", 0.0, 250.0)])
+        harness = Harness(parse=las_result(), conn=conn)   # GR 0-300 m
+
+        out = await run(harness)
+
+        assert out.curves_written == 1 and out.curves_replaced == 1
+        (note,) = [w for w in out.warnings if w["code"] == "curve_replaced_from_other_file"]
+        assert "'run1.las'" in note["detail"] and "'EAGLE_PT_1.las'" in note["detail"]
+        assert "0-250 m" in note["detail"] and "0-300 m" in note["detail"]
+        assert note["curves"] == ["GR"]
+        assert harness.completed.await_args.kwargs["warnings"] == out.warnings
+
+    async def test_a_shorter_replacement_states_the_coverage_it_gave_up(self) -> None:
+        conn = FakeConn(replaced=1, stored=[
+            stored_curve("GR", "run1.las", 0.0, 500.0)])
+        harness = Harness(parse=las_result(), conn=conn)   # GR 0-300 m
+
+        out = await run(harness)
+
+        note = next(w for w in out.warnings if w["code"] == "curve_replaced_from_other_file")
+        assert "covers less depth" in note["detail"]
+
+    async def test_a_complementary_run_is_refused_and_the_stored_curve_kept(self) -> None:
+        conn = FakeConn(stored=[stored_curve("GR", "run1.las", 400.0, 700.0)])
+        harness = Harness(
+            parse=las_result(curves=[curve("GR"), curve("RES")], total_curves_in_file=2),
+            conn=conn,
+        )                                                   # GR 0-300 m: no overlap
+
+        out = await run(harness)
+
+        assert out.curves_written == 1 and out.curves_skipped == 1
+        assert [c[2] for c in conn.executed] == ["RES"]      # GR never inserted
+        assert conn.fetchvals[0][1][1] == ["RES"]            # ... and never deleted
+        (note,) = [w for w in out.warnings if w["code"] == "curve_replacement_refused"]
+        assert "GR" in note["detail"] and "'run1.las'" in note["detail"]
+        assert "400-700 m" in note["detail"] and "complementary" in note["detail"]
+        assert not [w for w in out.warnings if w["code"] == "curve_replaced_from_other_file"]
+
+    async def test_a_reupload_of_the_same_file_stays_silent(self) -> None:
+        """The upload timestamp differs on every upload; the file is the same."""
+        conn = FakeConn(replaced=1, stored=[
+            stored_curve("GR", "20260901_100000_EAGLE_PT_1.las", 0.0, 300.0)])
+        harness = Harness(parse=las_result(), conn=conn)
+
+        out = await run(harness, minio_key="uploads/eagle/20260929_081500_EAGLE_PT_1.las")
+
+        assert out.curves_written == 1 and out.curves_replaced == 1
+        assert out.warnings == []
+
+    async def test_a_legacy_row_with_no_recorded_unit_is_replaced_with_a_warning(self) -> None:
+        conn = FakeConn(replaced=1, stored=[stored_curve("GR", "old.las", 0.0, 900.0, unit=None)])
+        harness = Harness(parse=las_result(), conn=conn)
+
+        out = await run(harness)
+
+        note = next(w for w in out.warnings if w["code"] == "curve_replaced_from_other_file")
+        assert "unrecorded depth range" in note["detail"]
+        assert out.curves_written == 1
+
+    async def test_a_feet_row_is_compared_in_metres(self) -> None:
+        # 1000-1500 ft is 304.8-457.2 m: disjoint from a 0-300 m curve.
+        conn = FakeConn(stored=[stored_curve("GR", "run1.las", 1000.0, 1500.0, unit="ft")])
+        harness = Harness(parse=las_result(), conn=conn)
+
+        out = await run(harness)
+
+        assert out.curves_written == 0
+        assert [w["code"] for w in out.warnings] == ["curve_replacement_refused"]
 
 
 # ---------------------------------------------------------------------------

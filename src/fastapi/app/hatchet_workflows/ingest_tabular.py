@@ -70,6 +70,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import datetime as _dt
+import io
 import json
 import logging
 import math
@@ -282,16 +283,31 @@ INSERT INTO silver.collars (
 ON CONFLICT (project_id, hole_id_canonical) WHERE hole_id_canonical IS NOT NULL
 DO UPDATE SET
     hole_id_canonical = EXCLUDED.hole_id_canonical,
+    -- This file's coordinates and CRS replace the stored ones, so everything
+    -- that DESCRIBES the position follows them (audit finding 3): the
+    -- georef_method of THIS file's CRS decision, and the uncertainty derived
+    -- from it. spatial_uncertainty_* are reset to NULL because the BEFORE
+    -- trigger derive_collar_spatial_uncertainty only fills them while NULL
+    -- (2026_07_02_000000); left alone, a hole re-uploaded with a declared
+    -- CRS kept the 'assumed' method and its 175 m forever.
     easting     = EXCLUDED.easting,
     northing    = EXCLUDED.northing,
-    elevation   = EXCLUDED.elevation,
-    -- Optional (§04e): a file without a depth keeps the stored one.
+    georef_method = COALESCE(EXCLUDED.georef_method, silver.collars.georef_method),
+    spatial_uncertainty_m      = NULL,
+    spatial_uncertainty_method = NULL,
+    -- Every attribute below is OPTIONAL in the file: a file that does not
+    -- carry one keeps what an earlier file stored instead of erasing it.
+    -- (Elevation / azimuth / dip / drill_date were overwritten with NULL by
+    -- a later collar file that merely had no such column.)
+    elevation   = COALESCE(EXCLUDED.elevation, silver.collars.elevation),
     total_depth = COALESCE(EXCLUDED.total_depth, silver.collars.total_depth),
-    azimuth     = EXCLUDED.azimuth,
-    dip         = EXCLUDED.dip,
-    hole_type   = EXCLUDED.hole_type,
-    drill_date  = EXCLUDED.drill_date,
-    status      = EXCLUDED.status,
+    azimuth     = COALESCE(EXCLUDED.azimuth, silver.collars.azimuth),
+    dip         = COALESCE(EXCLUDED.dip, silver.collars.dip),
+    -- 'unknown' is the writer's stand-in for "the file said nothing"
+    -- (silver_row_guard.UNKNOWN), never a value to put over a stored one.
+    hole_type   = COALESCE(NULLIF(EXCLUDED.hole_type, 'unknown'), silver.collars.hole_type),
+    drill_date  = COALESCE(EXCLUDED.drill_date, silver.collars.drill_date),
+    status      = COALESCE(NULLIF(EXCLUDED.status, 'unknown'), silver.collars.status),
     -- Only ever the overflow of a too-long hole_type / status (PG-10), so a
     -- row that did not overflow keeps whatever an earlier writer stored.
     drill_type  = COALESCE(EXCLUDED.drill_type, silver.collars.drill_type),
@@ -407,15 +423,19 @@ INSERT INTO silver.mineralization (
 #: nl_summaries passages derived from them do not churn. ON CONFLICT
 #: handles the same natural key appearing twice WITHIN one file (last
 #: row wins, matching the interval tables' replace semantics).
+#:
+#: qaqc_flag is written explicitly: NULL (not evaluated) or a control-sample
+#: marker (``_ASSAY_QAQC_FLAGS``). The column used to default to 'pass', so
+#: every row said "QA/QC: pass" with nothing having evaluated it.
 _ASSAYS_V2_SQL = """
 INSERT INTO silver.assays_v2 (
     id, workspace_id, collar_id, sample_id, from_depth, to_depth,
     element, value, unit, value_ppm, detection_limit,
     over_detection, under_detection, half_dl_substituted, lab_name,
-    source_file, source_file_sha256
+    qaqc_flag, source_file, source_file_sha256
 ) VALUES (
     $1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+    $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 )
 ON CONFLICT (id) DO UPDATE SET
     value               = EXCLUDED.value,
@@ -426,6 +446,7 @@ ON CONFLICT (id) DO UPDATE SET
     under_detection     = EXCLUDED.under_detection,
     half_dl_substituted = EXCLUDED.half_dl_substituted,
     lab_name            = EXCLUDED.lab_name,
+    qaqc_flag           = EXCLUDED.qaqc_flag,
     -- Last writer owns the row, so a later same-file replace finds it.
     source_file         = EXCLUDED.source_file,
     source_file_sha256  = EXCLUDED.source_file_sha256
@@ -454,18 +475,24 @@ ON CONFLICT (id) DO UPDATE SET
 #: coordinates: the column is geometry(Point,4326) and every map layer reads
 #: it as such. A UTM easting written straight in would place the sample at
 #: longitude 394,240.
+#:
+#: $10..$12 are the row's lineage (source_file, source_file_sha256, row_index;
+#: migration 2026_10_10_110000) - appended so the nine placeholders before them
+#: keep their numbers.
 _GEOCHEM_SQL = """
 INSERT INTO silver.geochemistry (
     geochem_id, workspace_id, project_id,
     sample_id, sample_type, geom,
     assay_element_codes, assay_values_ppm,
-    created_at, updated_at
+    created_at, updated_at,
+    source_file, source_file_sha256, row_index
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid,
     $3, $4,
     ST_Transform(ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), $7::int), 4326),
     $8::text[], $9::jsonb,
-    NOW(), NOW()
+    NOW(), NOW(),
+    $10, $11, $12
 )
 -- The WHERE is REQUIRED, not decoration. uq_geochemistry_project_sample is a
 -- PARTIAL index (WHERE sample_id IS NOT NULL), and Postgres will not infer a
@@ -479,6 +506,11 @@ DO UPDATE SET
     geom                = EXCLUDED.geom,
     assay_element_codes = EXCLUDED.assay_element_codes,
     assay_values_ppm    = EXCLUDED.assay_values_ppm,
+    -- Last writer owns the row. A sample number reused by a DIFFERENT file
+    -- replaces the earlier row, and _write_surface_geochem says so first.
+    source_file         = EXCLUDED.source_file,
+    source_file_sha256  = EXCLUDED.source_file_sha256,
+    row_index           = EXCLUDED.row_index,
     updated_at          = NOW()
 """
 
@@ -828,20 +860,70 @@ def _sample_type_of(raw: Any) -> str:
 _UNIT_TO_PPM = {"ppm": 1.0, "ppb": 0.001, "pct": 10000.0}
 
 
+#: ``silver.assays_v2.qaqc_flag`` for a row of a QA/QC CONTROL sample, keyed on
+#: the sample's ``qaqc_type`` (the parser's vocabulary: Primary / Duplicate /
+#: Blank / Standard). The column has no CHECK and no defined vocabulary
+#: (``CsvAssaysExporter`` asks the SME to confirm one); these values only say
+#: WHAT the row is - a blank, a standard, a duplicate - and are prefixed so
+#: they cannot be read as a pass/fail outcome. A Primary or unreadable type
+#: stays NULL: nothing at ingest has evaluated any row, so 'pass' (the old
+#: column default, rendered by nl_summaries as "QA/QC: pass") was a claim
+#: nobody made.
+_ASSAY_QAQC_FLAGS: dict[str, str] = {
+    "blank": "control_blank",
+    "standard": "control_standard",
+    "duplicate": "control_duplicate",
+}
+
+
+def _assay_qaqc_flag(qaqc_type: Any) -> str | None:
+    """``qaqc_flag`` for a sample row of *qaqc_type*: a control marker, or NULL."""
+    return _ASSAY_QAQC_FLAGS.get(str(qaqc_type or "").strip().lower())
+
+
+def _derived_sample_id(
+    rec: dict[str, Any], bounds: tuple[float, float], seen: dict[str, int],
+) -> str:
+    """A sample id for a sample row that has none, from its hole and interval.
+
+    ``silver.assays_v2.sample_id`` is NOT NULL, and an interval composite
+    file ("Hole, From, To, Au_ppm") has no sample column. Dropping those rows
+    left every such assay out of the one table all assay readers query; this
+    keeps them, under an id that is self-evidently derived (``DH-1 10-12 m (no
+    sample id)``), deterministic (the same file writes the same ids, so the
+    nl_summaries passages keyed on them do not churn) and unique within the
+    sheet - a second row for the same hole and interval gets ``#2``, so one
+    never overwrites the other. ``seen`` carries the per-sheet counts.
+    """
+
+    def _fmt(depth: float) -> str:
+        return f"{depth:.3f}".rstrip("0").rstrip(".")
+
+    base = (
+        f"{str(rec.get('hole_id') or '').strip()} "
+        f"{_fmt(bounds[0])}-{_fmt(bounds[1])} m (no sample id)"
+    )
+    seen[base] = seen.get(base, 0) + 1
+    return base if seen[base] == 1 else f"{base} #{seen[base]}"
+
+
 def derive_assay_v2_rows(
     rec: dict[str, Any],
     *,
     workspace_id: str,
     collar_id: str,
     element_ref: dict[str, str],
+    fallback_sample_id: str | None = None,
+    skipped_log: list[tuple[str, str]] | None = None,
 ) -> tuple[list[tuple], int]:
     """Explode one sample record's commodity_assays into assays_v2 params.
 
-    Returns ``(rows, skipped)``. A row is skipped — counted, never silently
-    dropped — when the record has no lab sample number (the column is NOT
-    NULL and inventing one would break the "same file, same ids" property),
-    when the interval is missing or inverted, or when a value is negative
-    (the table CHECK rejects it and one bad cell must not sink the batch).
+    Returns ``(rows, skipped)``. A value is skipped — counted, never silently
+    dropped — when the record has no sample id and the caller supplied no
+    ``fallback_sample_id`` (the column is NOT NULL), when the interval is
+    missing or inverted, or when a value is negative (the table CHECK rejects
+    it and one bad cell must not sink the batch). ``skipped_log`` receives
+    ``(element key, reason)`` for each, so the caller can name them.
 
     A below-detection cell with an unknown threshold ("BDL") still becomes a
     row: value NULL + under_detection TRUE is the difference between "below
@@ -851,9 +933,10 @@ def derive_assay_v2_rows(
     ``element_ref`` maps element symbol → default unit
     (silver.element_reference) for headers that named only the element.
     """
-    sample_id = str(rec.get("sample_id") or "").strip()
+    sample_id = str(rec.get("sample_id") or "").strip() or (fallback_sample_id or "")
     from_depth = _num(rec.get("from_depth"))
     to_depth = _num(rec.get("to_depth"))
+    qaqc_flag = _assay_qaqc_flag(rec.get("qaqc_type"))
 
     assays: dict[str, Any] = rec.get("commodity_assays") or {}
     flags: dict[str, Any] = rec.get("commodity_assay_flags") or {}
@@ -866,12 +949,20 @@ def derive_assay_v2_rows(
     if not keys:
         return [], 0
 
-    if (
-        not sample_id
-        or from_depth is None
-        or to_depth is None
-        or to_depth <= from_depth
-    ):
+    def _skip(key: str, reason: str) -> None:
+        if skipped_log is not None:
+            skipped_log.append((key, reason))
+
+    unusable = None
+    if not sample_id:
+        unusable = "no sample id"
+    elif from_depth is None or to_depth is None:
+        unusable = "no readable from/to depth"
+    elif to_depth <= from_depth:
+        unusable = "to depth is not below from depth"
+    if unusable is not None:
+        for key in sorted(keys):
+            _skip(key, unusable)
         return [], len(keys)
 
     from georag_geoparsers._assay_columns import split_assay_key  # noqa: PLC0415
@@ -884,6 +975,7 @@ def derive_assay_v2_rows(
             # Not an assay key the parser could have produced — counted,
             # never raised.
             skipped += 1
+            _skip(key, "not a recognisable element column")
             continue
         element, suffix = parsed
         unit = suffix or element_ref.get(element) or "unspecified"
@@ -891,6 +983,7 @@ def derive_assay_v2_rows(
         value = assays.get(key)
         if value is not None and value < 0:
             skipped += 1
+            _skip(key, f"negative value {value:g} (the assay table stores 0 or more)")
             continue
         factor = _UNIT_TO_PPM.get(unit)
         value_ppm = value * factor if value is not None and factor else None
@@ -917,7 +1010,7 @@ def derive_assay_v2_rows(
             from_depth, to_depth,
             element, value, unit, value_ppm, detection_limit,
             over_detection, under_detection, half_dl,
-            rec.get("lab_id"),
+            rec.get("lab_id"), qaqc_flag,
         ))
     return rows, skipped
 
@@ -1099,9 +1192,44 @@ def _normalize_trace_dips(
     ]
 
 
+def _geochem_replaced_warning(
+    replaced: list[tuple[str, str]], unknown_source: int, *, source_file: str,
+) -> dict[str, Any]:
+    """The warning for samples this file's upsert took over from ANOTHER file."""
+    shown = ", ".join(
+        f"{sample!r} (from {earlier!r})" for sample, earlier in replaced[:5]
+    )
+    more = len(replaced) - min(len(replaced), 5)
+    detail = (
+        f"{len(replaced)} sample number(s) in {source_file} were already stored "
+        f"from a DIFFERENT file, and one project holds one row per sample "
+        f"number, so this file's rows replaced them: {shown}"
+        + (f" and {more} more" if more else "")
+        + ". If the two files describe different samples that happen to share "
+        "numbers, rename one set and upload it again; if this file is the "
+        "newer version, nothing more is needed."
+    )
+    if unknown_source:
+        detail += (
+            f" {unknown_source} further replaced row(s) were written before the "
+            f"source file was recorded, so they may have come from this same file."
+        )
+    return {
+        "code": "geochemistry_sample_replaced_from_other_file",
+        "message": (
+            f"{len(replaced)} geochemistry sample(s) stored from another file "
+            f"were replaced by {source_file}"
+        ),
+        "detail": detail[:900],
+        "samples": [sample for sample, _earlier in replaced[:20]],
+    }
+
+
 async def _write_surface_geochem(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
+    source_file: str | None = None, source_file_sha256: str | None = None,
+    warnings_out: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Land surface samples in silver.geochemistry.
 
@@ -1114,13 +1242,22 @@ async def _write_surface_geochem(
     coordinate pair — a survey file routinely carries a trailing blank row or
     a legend line, and refusing the other 853 samples over it would be
     absurd. The count comes back so the caller can report it.
+
+    Every row records where it came from (``source_file`` - the LOGICAL name,
+    no upload timestamp - ``source_file_sha256`` and ``row_index``, the same
+    index as the attribute_tables copy). The table is unique on
+    ``(project_id, sample_id)``, so a sample number reused by a different file
+    replaces the earlier row; that is reported in ``warnings_out`` as
+    ``geochemistry_sample_replaced_from_other_file`` instead of happening in
+    silence (audit finding 21). A row whose earlier source was never recorded
+    is counted separately: it may be this same file's earlier upload.
     """
     located = shape["located"]
     assays: dict[str, str] = shape["assays"]
 
     params = []
     skipped = 0
-    for row in rows:
+    for row_index, row in enumerate(rows):
         sample_id = str(row.get(located["sample_id"], "") or "").strip()
         easting = _num(row.get(located["easting"]))
         northing = _num(row.get(located["northing"]))
@@ -1146,7 +1283,25 @@ async def _write_surface_geochem(
             workspace_id, project_id, sample_id, sample_type,
             easting, northing, source_epsg,
             sorted(values), json.dumps(values),
+            source_file, source_file_sha256, row_index,
         ))
+
+    if source_file is not None and params and warnings_out is not None:
+        earlier_rows = await conn.fetch(
+            "SELECT sample_id, source_file FROM silver.geochemistry "
+            "WHERE project_id = $1::uuid AND sample_id = ANY($2::text[])",
+            project_id, sorted({p[2] for p in params}),
+        )
+        replaced = sorted(
+            (r["sample_id"], r["source_file"]) for r in earlier_rows
+            if r["source_file"] is not None
+            and r["source_file"].lower() != source_file.lower()
+        )
+        unknown_source = sum(1 for r in earlier_rows if r["source_file"] is None)
+        if replaced:
+            warnings_out.append(
+                _geochem_replaced_warning(replaced, unknown_source, source_file=source_file)
+            )
 
     written = 0
     for start in range(0, len(params), _INSERT_BATCH):
@@ -1256,12 +1411,21 @@ async def _write_collars(
     ``issues`` collects what was blanked, skipped and merged so the caller
     can turn it into the run's warnings.
     """
-    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+    from georag_geoparsers._hole_id import canonicalize, duplicate_of  # noqa: PLC0415
 
     issues = issues if issues is not None else RowIssues()
     skipped_before = len(issues.skipped)
+    duplicates_before = len(issues.duplicates)
     existing = await _existing_collars_by_canonical(conn, project_id)
     existing_ids = {stored for stored, _td in existing.values()}
+
+    #: The first row of each hole that passed the guard, by canonical id. A
+    #: later row for the same hole is NOT upserted: it would land on the same
+    #: collar (ON CONFLICT (project_id, hole_id_canonical)) and the last row
+    #: would silently replace the first's position (audit finding 6). Rows the
+    #: guard rejected are not registered, so a hole whose first row was
+    #: unusable can still be written from its second.
+    first_in_file: dict[str, dict] = {}
 
     rows = []
     for rec in records:
@@ -1274,6 +1438,10 @@ async def _write_collars(
             # All separators ("--", "./"): no canonical key, so no collar the
             # canonical-key upsert could land on — reported, not sent.
             issues.skip(rec, f"hole id {hole_id!r} has no letters or digits")
+            continue
+        earlier = first_in_file.get(str(canon).upper()) if canon else None
+        if earlier is not None:
+            issues.duplicates.append(duplicate_of(rec, earlier))
             continue
         match = existing.get(str(canon).upper()) if canon else None
         existing_td: float | None = None
@@ -1288,6 +1456,8 @@ async def _write_collars(
         values = guard_collar(rec, issues, existing_total_depth=existing_td)
         if values is None:
             continue
+        if canon:
+            first_in_file[str(canon).upper()] = rec
         if canon and match is None:
             # A second spelling of the same hole LATER IN THIS FILE lands on
             # the collar this row creates, not on a ghost of its own.
@@ -1314,7 +1484,10 @@ async def _write_collars(
             written += len(chunk)
     return {
         "written": written,
-        "skipped": len(issues.skipped) - skipped_before,
+        "skipped": (
+            len(issues.skipped) - skipped_before
+            + len(issues.duplicates) - duplicates_before
+        ),
         "orphaned": 0,
     }
 
@@ -1432,6 +1605,13 @@ async def _write_intervals(
     skipped, an out-of-range optional value (RQD / recovery / abundance
     outside 0..100) or an over-width text value is blanked, and both are
     recorded in ``issues``.
+
+    For ``sample`` sheets the element values are also written, one row each,
+    to silver.assays_v2. A sample row with assays but no sample id is kept
+    there under an id derived from its hole and interval
+    (``_derived_sample_id``), and an element value the table cannot hold (a
+    negative, an unrecognisable column) is left out; both are recorded in
+    ``issues`` (``assay_sample_id_derived`` / ``assay_values_skipped``).
     """
     issues = issues if issues is not None else RowIssues()
     skipped_before = len(issues.skipped)
@@ -1448,6 +1628,8 @@ async def _write_intervals(
     rows = []
     assay_rows: list[tuple] = []
     assay_skipped = 0
+    #: derived sample id -> how many sample rows of this sheet were given it
+    derived_seen: dict[str, int] = {}
     orphaned = 0
     for rec in records:
         collar_id = _resolve_collar(index, rec.get("hole_id"))
@@ -1553,12 +1735,28 @@ async def _write_intervals(
                     if rec.get("commodity_assay_flags") else None
                 ),
             ))
+            # A row with assays but no sample id (an interval composite) is
+            # kept under an id derived from its hole and interval and the run
+            # says so; the alternative was leaving its assays out of
+            # assays_v2, the table every assay reader queries.
+            fallback_sample_id = None
+            if not str(rec.get("sample_id") or "").strip() and (
+                rec.get("commodity_assays") or rec.get("commodity_assay_flags")
+            ):
+                fallback_sample_id = _derived_sample_id(rec, bounds, derived_seen)
+            assay_skip_log: list[tuple[str, str]] = []
             exploded, exploded_skipped = derive_assay_v2_rows(
                 rec,
                 workspace_id=workspace_id,
                 collar_id=collar_id,
                 element_ref=element_ref,
+                fallback_sample_id=fallback_sample_id,
+                skipped_log=assay_skip_log,
             )
+            if fallback_sample_id is not None and exploded:
+                issues.derived_sample_id(rec, fallback_sample_id)
+            for key, reason in assay_skip_log:
+                issues.skip_assay(rec, key, reason)
             assay_rows.extend(exploded)
             assay_skipped += exploded_skipped
 
@@ -1972,6 +2170,52 @@ def _csv_preamble_warning(path: str, filename: str) -> dict[str, Any] | None:
     }
 
 
+#: How much of a delimited file the header row is looked for in. The header is
+#: the first non-blank row; this is only a bound on how far past a long title
+#: block it is searched for (1 Mi characters, thousands of columns' worth).
+_HEADER_SCAN_CHARS = 1 << 20
+
+
+async def _declared_object_size(store: Any, key: str) -> int | None:
+    """The object's size from a HEAD, or None when the backend will not say.
+
+    None means "download and check the real size": a HEAD that fails is not
+    itself a reason to refuse an upload (``ingest_pdf._declared_object_size``
+    makes the same call).
+    """
+    try:
+        meta = await asyncio.to_thread(store.head, Bucket.BRONZE, key)
+        size = meta.get("size") if isinstance(meta, dict) else None
+        return int(size) if size is not None else None
+    except Exception as exc:  # noqa: BLE001 - see above; the post-download check still applies
+        log.info("ingest_tabular: HEAD failed for %s (%s)", key, exc)
+        return None
+
+
+def _oversize_refusal(size: int | None, *, filename: str) -> str | None:
+    """Why a tabular file is too big to ingest, or None (audit finding 16).
+
+    The CSV path decodes the whole file and holds the result beside several
+    copies of it (about nine times the file, measured), the worker has 8 GiB,
+    and no limit applied to tabular files at all beyond the 512 MiB every
+    upload is admitted under. ``INGEST_TABULAR_MAX_BYTES`` is that limit; this
+    is checked against the object's declared size BEFORE it is downloaded and
+    again against what arrived.
+    """
+    from app.config import settings  # noqa: PLC0415
+    from app.services.ingest.upload_limits import human_bytes  # noqa: PLC0415
+
+    limit = int(settings.INGEST_TABULAR_MAX_BYTES)
+    if size is None or size <= limit:
+        return None
+    return (
+        f"'{filename}' is {human_bytes(size)}, over the {human_bytes(limit)} limit "
+        f"for tabular files (INGEST_TABULAR_MAX_BYTES). Nothing was read. Split "
+        f"the table into smaller files (for example one per year or area) and "
+        f"upload them separately."
+    )
+
+
 def _csv_headers(path: str) -> list[str]:
     """Read a CSV's header row, honouring its real encoding and delimiter.
 
@@ -1980,6 +2224,10 @@ def _csv_headers(path: str) -> list[str]:
     Latin-1 from Windows survey software and semicolon-delimited from
     European labs, and a header row split on the wrong delimiter classifies
     as 'unknown' and silently routes the whole file to nothing.
+
+    Reads a bounded prefix, not the whole decoded file: this used to
+    ``splitlines()`` all of a 150 MB upload into millions of line objects just
+    to look at the first of them (audit finding 16).
     """
     import csv  # noqa: PLC0415
 
@@ -1989,9 +2237,9 @@ def _csv_headers(path: str) -> list[str]:
     )
 
     stream, _encoding, _sha, _size = open_csv_with_encoding(path)
-    content = stream.read()
-    delimiter = detect_delimiter(content)
-    for row in csv.reader(content.splitlines(), delimiter=delimiter):
+    prefix = stream.read(_HEADER_SCAN_CHARS)
+    delimiter = detect_delimiter(prefix)
+    for row in csv.reader(io.StringIO(prefix, newline=""), delimiter=delimiter):
         if any((cell or "").strip() for cell in row):
             return [(cell or "").strip() for cell in row]
     return []
@@ -2273,17 +2521,27 @@ async def _stamp_crs_confidence(
     MVT's crs_confidence was NULL for every tabular collar. Flagged
     (implausible) collars get 0.1. Best-effort in a savepoint: a failure
     here must not undo collars that are already written.
+
+    Collars are matched by ``hole_id_canonical``, not by the file's spelling:
+    ``_write_collars`` lands a variant spelling (``SRE09_6`` for a stored
+    ``SRE09-6``) on the EXISTING collar and keeps the stored spelling, so a
+    match on ``hole_id`` skipped exactly those collars and left them with the
+    previous upload's confidence (audit finding 3).
     """
-    if not hole_ids:
+    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+
+    canonical = sorted({c for c in map(canonicalize, hole_ids) if c})
+    if not canonical:
         return
+    flagged_canonical = sorted({c for c in map(canonicalize, flagged) if c})
     try:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE silver.collars SET crs_confidence = CASE "
-                "WHEN hole_id = ANY($3::text[]) THEN LEAST($4::real, 0.1::real) "
+                "WHEN hole_id_canonical = ANY($3::text[]) THEN LEAST($4::real, 0.1::real) "
                 "ELSE $4::real END "
-                "WHERE project_id = $1::uuid AND hole_id = ANY($2::text[])",
-                project_id, hole_ids, sorted(flagged), confidence,
+                "WHERE project_id = $1::uuid AND hole_id_canonical = ANY($2::text[])",
+                project_id, canonical, flagged_canonical, confidence,
             )
     except Exception as exc:  # noqa: BLE001 — best-effort; the collars are already written
         log.warning(
@@ -2508,8 +2766,12 @@ def _read_delimited_rows(path: str) -> list[dict[str, Any]]:
 
     stream, _encoding, _sha, _size = open_csv_with_encoding(path)
     content = stream.read()
+    # io.StringIO(newline="") is the csv module's own contract for text it did
+    # not open itself: a quoted cell with a line break in it stays one cell.
+    # ``content.splitlines()`` cut it at the break and glued the pieces to the
+    # neighbouring rows (audit finding 18).
     reader = csv.DictReader(
-        content.splitlines(), delimiter=detect_delimiter(content),
+        io.StringIO(content, newline=""), delimiter=detect_delimiter(content),
     )
     return [dict(row) for row in reader]
 
@@ -3101,11 +3363,27 @@ async def run_ingest_tabular(
         if run_id:
             await _progress.mark_stage_started(run_id=run_id, stage="preflight")
 
+        # Refused on the object's DECLARED size, before a byte is downloaded.
+        oversize = _oversize_refusal(
+            await _declared_object_size(store, input.minio_key), filename=filename,
+        )
+        if oversize:
+            raise ValueError(oversize)
+
         with tempfile.TemporaryDirectory(prefix="georag_tabular_") as tmpdir:
             local = str(Path(tmpdir) / filename)
             await asyncio.to_thread(
                 store.get_file, Bucket.BRONZE, input.minio_key, local,
             )
+            # ... and again on what arrived: HEAD is metadata, and an object
+            # can be replaced between the two.
+            try:
+                arrived = Path(local).stat().st_size
+            except OSError:
+                arrived = None      # nothing to measure; the reader reports a missing file
+            oversize = _oversize_refusal(arrived, filename=filename)
+            if oversize:
+                raise ValueError(oversize)
             #: Lineage + replace key stamped on every drill row this run
             #: writes (see _write_intervals): the logical file name scopes
             #: the per-hole replace to THIS file, the hash records which
@@ -4088,6 +4366,9 @@ async def run_ingest_tabular(
                                 shape=geochem_shape,
                                 rows=attribute_rows,
                                 source_epsg=geo_decision.epsg,
+                                source_file=source_name,
+                                source_file_sha256=source_sha,
+                                warnings_out=warnings,
                             )
                         sheets.append({
                             "sheet": filename,

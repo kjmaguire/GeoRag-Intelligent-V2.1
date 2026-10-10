@@ -29,7 +29,10 @@ For every passage row in `silver.document_passages` where
      ``embed_model`` names the model that produced the dense vector, so a
      collection holding two vector spaces can be detected from the data
      (ADR-0025 migration step 6).
-  4. Update `silver.document_passages.embedding_id` with the Qdrant point ID
+  4. Update `silver.document_passages.embedding_id` with the Qdrant point ID -
+     only while the row's contextualized_content is still the one that was
+     encoded (``_WRITEBACK_SQL``); an enrichment that landed meanwhile has
+     cleared embedding_id on purpose and keeps it cleared.
 
 Collection schema (post 2026-06-03 Qwen3-Embedding swap):
   - vectors_config: {'': VectorParams(size=1024, distance=Cosine)}
@@ -37,10 +40,18 @@ Collection schema (post 2026-06-03 Qwen3-Embedding swap):
   Re-create via scripts/init_qdrant.py with GEORAG_VECTOR_SIZE=1024.
 
 Section fields:
-  Passages from PDFs/XLSX don't carry true §15 section structure, so
-  we use:
-    section_number = ordinal (passage index within document)
-    section_title  = parent report.title
+  PDF passages DO come from a section-aware chunker (pdf_report._split_into_
+  sections detects NI 43-101 headings and numbers them per chunk), but
+  silver.document_passages has no section columns, so what the parser detected
+  is kept only in silver.reports.sections_text and is NOT available here.
+  The payload therefore carries:
+    section_number = ordinal (passage index within the document) - an
+                     ORDINAL, not the report's section number ("14")
+    section_title  = parent report.title - the REPORT's title, not the
+                     heading of the section the passage sits in
+  Anything that reads these as the report's own section reads the wrong thing;
+  persisting the real number and title takes new document_passages columns and
+  a re-embed (audit finding 22, a recorded decision, not implemented).
 
 This matches the orchestrator's payload-extraction logic in
 `tools.search_documents`.
@@ -66,6 +77,23 @@ log = logging.getLogger("georag.ingest.passage_embedder")
 
 
 _QDRANT_COLLECTION = "georag_chunks"
+
+#: The embedding_id writeback, CONDITIONAL on the content that was encoded
+#: (audit finding 19). The sweep encodes COALESCE(contextualized_content, text)
+#: as read at fetch time; context_enricher can rewrite contextualized_content
+#: and clear embedding_id while the batch is in flight, and an unconditional
+#: UPDATE then stamped the row "embedded" with a vector made from the OLD
+#: content - undoing the enricher's reset, so the enrichment was never
+#: embedded. With the guard the writeback of a raced row matches nothing,
+#: embedding_id stays NULL, and the next sweep encodes the new content.
+#: (`passages_embedded` counts attempted writebacks; a raced row is simply
+#: re-embedded on the next sweep.) $3 is the value read at fetch, NULL included.
+_WRITEBACK_SQL = (
+    "UPDATE silver.document_passages "
+    "   SET embedding_id = $1, updated_at = NOW() "
+    " WHERE passage_id = $2::uuid "
+    "   AND contextualized_content IS NOT DISTINCT FROM $3"
+)
 
 # Payload keys retrieval reads at app/agent/tools.py:1731-1743. A point
 # missing any of these effectively disappears from chat — empty text →
@@ -714,6 +742,10 @@ async def embed_pending_passages(
             # text for the vector.
             points: list[PointStruct] = []
             point_passage_ids: list[str] = []
+            #: Parallel to `points`: the contextualized_content each vector was
+            #: ENCODED from (NULL = the bare text). The writeback is conditional
+            #: on it still being the row's content (see _WRITEBACK_SQL).
+            point_encoded: list[str | None] = []
             for idx, row in enumerate(batch):
                 dv = dense_by_idx.get(idx)
                 if dv is None:
@@ -798,6 +830,7 @@ async def embed_pending_passages(
                     id=point_id, vector=vector_dict, payload=payload,
                 ))
                 point_passage_ids.append(row["passage_id"])
+                point_encoded.append(row["contextualized_content"])
 
             # Upsert. wait only on the first batch (needed for the verify
             # read below); later batches return as soon as Qdrant accepts
@@ -862,8 +895,10 @@ async def embed_pending_passages(
             # executemany round-trip; falls back to per-row on failure so a
             # single bad row can't lose the whole batch's writeback.
             _wb = [
-                (point.id, passage_id)
-                for point, passage_id in zip(points, point_passage_ids, strict=True)
+                (point.id, passage_id, encoded)
+                for point, passage_id, encoded in zip(
+                    points, point_passage_ids, point_encoded, strict=True,
+                )
             ]
             try:
                 # pg_conn is a single shared asyncpg connection — one
@@ -871,26 +906,18 @@ async def embed_pending_passages(
                 # writebacks (they're the cheapest stage, so this doesn't
                 # bottleneck the pipeline).
                 async with pg_lock:
-                    await pg_conn.executemany(
-                        "UPDATE silver.document_passages "
-                        "   SET embedding_id = $1, updated_at = NOW() "
-                        " WHERE passage_id = $2::uuid",
-                        _wb,
-                    )
+                    await pg_conn.executemany(_WRITEBACK_SQL, _wb)
                 result.passages_embedded += len(_wb)
             except Exception as batch_exc:
                 log.warning(
                     "embed_pending.pg_update_batch_failed err=%s — per-row fallback",
                     batch_exc,
                 )
-                for point_id, passage_id in _wb:
+                for point_id, passage_id, encoded in _wb:
                     try:
                         async with pg_lock:
                             await pg_conn.execute(
-                                "UPDATE silver.document_passages "
-                                "   SET embedding_id = $1, updated_at = NOW() "
-                                " WHERE passage_id = $2::uuid",
-                                point_id, passage_id,
+                                _WRITEBACK_SQL, point_id, passage_id, encoded,
                             )
                         result.passages_embedded += 1
                     except Exception as e:

@@ -7,19 +7,25 @@ legible colour geological map and an underground mine plan. Refusing them as
 """
 
 import io
+import os
 from pathlib import Path
 
 import pytest
 
 from georag_geoparsers.erdas_rrd import read_rrd_levels, rrd_to_tiff_bytes
 
-ROOT = Path(r"C:\Users\GeoRAG\Desktop\RedStar")
+#: GEORAG_REDSTAR_DIR points at the RedStar delivery when it is mounted
+#: somewhere else.
+ROOT = Path(os.environ.get("GEORAG_REDSTAR_DIR", r"C:\Users\GeoRAG\Desktop\RedStar"))
 UNGA = ROOT / "Unga Regional (inc)" / "Geology" / "Digital Data" / "Geologic Map Unga 1982 color utm.rrd"
 APOLLO = ROOT / "Apollo Sitka" / "UG Workings" / "Apollo-Sitka maps" / "acad etc" / "Apollo plan utm.rrd"
 NO_PIXELS = ROOT / "Apollo Sitka" / "UG Workings" / "Apollo-Sitka maps" / "acad etc" / "Sitka Apollo drilling utm2.aux"
 
-pytestmark = pytest.mark.skipif(
-    not UNGA.exists(), reason="RedStar delivery not present on this machine",
+#: Per class, not per module: a module-level skip also skipped the refusal
+#: test that never reads the delivery (audit finding 24).
+needs_redstar = pytest.mark.skipif(
+    not UNGA.exists(),
+    reason="RedStar delivery not present on this machine (set GEORAG_REDSTAR_DIR)",
 )
 
 
@@ -29,6 +35,7 @@ def _open(data: bytes):
     return Image.open(io.BytesIO(data))
 
 
+@needs_redstar
 class TestFinestLevelIsTaken:
     """Anything but the largest level discards resolution that exists nowhere else."""
 
@@ -51,6 +58,7 @@ class TestFinestLevelIsTaken:
         assert _open(rrd_to_tiff_bytes(UNGA)).size not in others
 
 
+@needs_redstar
 class TestTheImageIsReal:
     """A silently black image is worse than a refusal."""
 

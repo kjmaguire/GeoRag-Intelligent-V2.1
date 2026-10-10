@@ -43,10 +43,14 @@ class _Conn:
         by_hole_id: str | None = None,
         by_canonical: str | None = None,
         project_crs: Any = None,
+        stored_curves: list[dict[str, Any]] | None = None,
     ) -> None:
         self.by_hole_id = by_hole_id
         self.by_canonical = by_canonical
         self.project_crs = project_crs
+        #: Curves the hole already holds, as the stored-curve read returns them
+        #: (curve_name, source_file, min_depth, max_depth, depth_unit).
+        self.stored_curves = stored_curves or []
         self.collar_insert: tuple[Any, ...] | None = None
         self.curve_writes = 0
         self.provenance_writes = 0
@@ -55,6 +59,11 @@ class _Conn:
         if "crs_epsg" in sql:
             return self.project_crs
         return None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "FROM silver.well_log_curves" in sql:
+            return [r for r in self.stored_curves if r["curve_name"] in args[1]]
+        return []
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, str] | None:
         flat = " ".join(sql.split())

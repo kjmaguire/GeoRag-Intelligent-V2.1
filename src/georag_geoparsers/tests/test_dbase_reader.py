@@ -17,6 +17,7 @@ The four target files were chosen to cover the two ways the naive
 * alteration_riehle.dbf — ASCII dBASE with real decimals
 """
 
+import os
 import struct
 from pathlib import Path
 
@@ -24,7 +25,10 @@ import pytest
 
 from georag_geoparsers.dbase_reader import DbaseTable, read_dbase
 
-REDSTAR = Path("C:/Users/GeoRAG/Desktop/RedStar")
+#: The RedStar delivery these files were measured against. GEORAG_REDSTAR_DIR
+#: points at a copy anywhere else; without the delivery only the tests that do
+#: not read it run (they build their own bytes, or probe the failure modes).
+REDSTAR = Path(os.environ.get("GEORAG_REDSTAR_DIR", "C:/Users/GeoRAG/Desktop/RedStar"))
 
 SITKA_TRENCH = REDSTAR / "Apollo Sitka" / "Trench" / "Sitka_tr" / "Sitka_trD.DAT"
 SITKA_LEGEND = REDSTAR / "Apollo Sitka" / "Trench" / "Sitka_tr" / "Sitka_tr_Legend.DAT"
@@ -35,10 +39,17 @@ SOILS = (
 MISC_POINTS = REDSTAR / "Unga Regional (inc)" / "Geology" / "2005" / "MiscPoints_2005.dbf"
 ALTERATION = REDSTAR / "Unga Regional (inc)" / "Geology" / "Digital Data" / "alteration_riehle.dbf"
 
-pytestmark = pytest.mark.skipif(
+#: Per test, not per module: a module-level skip also skipped the tests that
+#: never touch the delivery (audit finding 24).
+needs_redstar = pytest.mark.skipif(
     not REDSTAR.is_dir(),
-    reason="RedStar delivery not mounted on this machine",
+    reason="RedStar delivery not mounted on this machine (set GEORAG_REDSTAR_DIR)",
 )
+
+
+def _require_redstar() -> None:
+    if not REDSTAR.is_dir():
+        pytest.skip("RedStar delivery not mounted on this machine (set GEORAG_REDSTAR_DIR)")
 
 
 def _field(table: DbaseTable, name: str):
@@ -51,16 +62,19 @@ def _column(table: DbaseTable, name: str) -> list:
 
 @pytest.fixture(scope="module")
 def sitka() -> DbaseTable:
+    _require_redstar()
     return read_dbase(SITKA_TRENCH)
 
 
 @pytest.fixture(scope="module")
 def soils() -> DbaseTable:
+    _require_redstar()
     return read_dbase(SOILS)
 
 
 @pytest.fixture(scope="module")
 def misc_points() -> DbaseTable:
+    _require_redstar()
     return read_dbase(MISC_POINTS)
 
 
@@ -167,6 +181,7 @@ def test_sitka_all_empty_columns_are_reported_as_text(sitka: DbaseTable) -> None
 # Sitka_tr_Legend.DAT — the 0x2A deleted-record flag
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_legend_counts_deleted_records_without_returning_them() -> None:
     """23 declared, 7 delete-flagged, 16 live — all three numbers matter.
 
@@ -318,6 +333,7 @@ def test_misc_points_ldid_0x57_does_not_change_the_result(misc_points: DbaseTabl
 # alteration_riehle.dbf — ASCII dBASE with decimals
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_alteration_shape_and_decimal_fields() -> None:
     table = read_dbase(ALTERATION)
     assert table.record_count == 10
@@ -360,6 +376,7 @@ GCP_DAT = REDSTAR / "Apollo Sitka" / "Trench" / "TR002" / "TR002.3" / "tr002.3-g
 GCP_TAB = REDSTAR / "Apollo Sitka" / "Trench" / "TR006" / "tr006.4-geology_gcp.TAB"
 
 
+@needs_redstar
 def test_gcp_sidecar_still_declares_the_schema_this_test_was_written_against() -> None:
     """Guard the oracle itself — the test below is worthless if the .TAB moved."""
     declaration = GCP_TAB.read_text(encoding="latin-1")
@@ -368,6 +385,7 @@ def test_gcp_sidecar_still_declares_the_schema_this_test_was_written_against() -
     assert "Image_X Integer ;" in declaration
 
 
+@needs_redstar
 def test_blind_decode_reproduces_the_types_mapinfo_declared() -> None:
     """Ten of ten, on a table the decode rule was never tuned against.
 
@@ -385,6 +403,7 @@ def test_blind_decode_reproduces_the_types_mapinfo_declared() -> None:
     assert recovered == GCP_DECLARED_TYPES
 
 
+@needs_redstar
 def test_gcp_values() -> None:
     table = read_dbase(GCP_DAT)
     assert len(table.rows) == 3
@@ -398,6 +417,7 @@ def test_gcp_values() -> None:
     assert all(abs(v) < 10 for v in _column(table, "RMS"))
 
 
+@needs_redstar
 def test_logical_column_decodes_true_as_one() -> None:
     """MapInfo writes 0x01, not 'T'."""
     table = read_dbase(GCP_DAT)
@@ -421,6 +441,7 @@ def _gcp_with_use_byte(tmp_path: Path, value: int) -> Path:
     return target
 
 
+@needs_redstar
 def test_logical_false_is_zero_not_missing(tmp_path: Path) -> None:
     """0x00 means false here, and must not be swallowed as padding.
 
@@ -433,6 +454,7 @@ def test_logical_false_is_zero_not_missing(tmp_path: Path) -> None:
     assert _column(table, "Use") == [0, 1, 1]
 
 
+@needs_redstar
 def test_logical_unknown_is_none(tmp_path: Path) -> None:
     table = read_dbase(_gcp_with_use_byte(tmp_path, 0x20))
     assert _column(table, "Use") == [None, 1, 1]
@@ -441,6 +463,7 @@ def test_logical_unknown_is_none(tmp_path: Path) -> None:
     assert _column(ascii_form, "Use") == [0, 1, 1]
 
 
+@needs_redstar
 def test_undefined_logical_byte_demotes_the_column_to_text(tmp_path: Path) -> None:
     """An unrecognised flag costs the column its type, never its content."""
     table = read_dbase(_gcp_with_use_byte(tmp_path, ord("Z")))
@@ -452,6 +475,7 @@ def test_undefined_logical_byte_demotes_the_column_to_text(tmp_path: Path) -> No
 # Failure modes
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_truncated_file_is_refused_by_name(tmp_path: Path) -> None:
     """Half a table that looks whole is the worst possible return value."""
     truncated = tmp_path / "Sitka_trD_cut.DAT"
