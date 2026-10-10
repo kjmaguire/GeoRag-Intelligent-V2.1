@@ -59,7 +59,7 @@ from georag_geoparsers._csv_io import (
     open_csv_with_encoding,
     transform_decimal_comma,
 )
-from georag_geoparsers._encoding import is_utf8_compatible
+from georag_geoparsers._encoding import decode_warnings
 from georag_geoparsers._header_match import build_column_map
 
 logger = logging.getLogger(__name__)
@@ -573,13 +573,7 @@ def parse_csv_geochronology(
     stream, detected_encoding, sha256_hex, _ = open_csv_with_encoding(source)
     raw_content = stream.getvalue()
 
-    if not is_utf8_compatible(detected_encoding):
-        global_warnings.append({
-            "row": None,
-            "code": CODE_ENCODING_NON_UTF8,
-            "message": f"detected encoding {detected_encoding!r} (not UTF-8)",
-            "context": {"encoding": detected_encoding},
-        })
+    global_warnings.extend(decode_warnings(detected_encoding, raw_content))
 
     detected_delim = detect_delimiter(raw_content, default=",")
     df = pl.read_csv(

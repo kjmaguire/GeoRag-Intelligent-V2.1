@@ -61,6 +61,7 @@ from georag_geoparsers._csv_io import (
     transform_decimal_comma,
 )
 from georag_geoparsers._depth_units import convert_feet_columns
+from georag_geoparsers._encoding import decode_warnings
 from georag_geoparsers._geology_columns import (
     FAMILY_ALTERATION,
     FAMILY_MINERALIZATION,
@@ -757,15 +758,11 @@ def parse_family(
     try:
         stream, encoding, sha256_hex, _byte_count = open_csv_with_encoding(source)
         content = stream.getvalue()
-        if encoding.lower().replace("-", "") not in ("utf8", "utf-8", "ascii"):
-            warnings.append({
-                "row": None, "code": _CODE_ENCODING_NON_UTF8,
-                "message": (
-                    f"detected encoding '{encoding}' (not UTF-8) — decoded with "
-                    f"replacement"
-                ),
-                "context": {"encoding": encoding},
-            })
+        # decode_warnings, not the inline `name.replace("-", "")` test this
+        # used to carry: charset-normalizer's "utf_8" never matched it, so a
+        # UTF-8 file with one accented letter was reported as not UTF-8 (the
+        # five drill parsers were fixed for that on 2026-09-29; this was not).
+        warnings.extend(decode_warnings(encoding, content))
         delimiter = detect_delimiter(content, default=",")
         if delimiter != ",":
             warnings.append({
