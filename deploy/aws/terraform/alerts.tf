@@ -698,15 +698,15 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
   alarm_name        = "${local.name}-maintenance-window"
   alarm_description = <<-EOT
     In ALARM while the platform is intentionally stopped, suppressing the
-    dead-air alarm.
+    dead-air alarms.
 
     The signal is "the shutdown sweep reported complete within the window's
     own length", which is true from the moment the platform goes down until
     the moment it comes back up and false the rest of the day. The period is
-    DERIVED from the two cron expressions (local.maintenance_window_minutes)
-    rather than written out again: the window was already spelled out in
-    three places on Azure and did not need a fourth, which is the same
-    reason the parity checker verified the cron against the DST guard.
+    DERIVED, not written out again: the two cron expressions
+    (local.maintenance_window_minutes) plus an hour of DST slack
+    (local.dst_slack_minutes), because the night the clocks fall back is an
+    hour longer than the schedule says.
 
     The period must cover the WHOLE window, not most of it. Any shortfall
     lands at the end, where the marker ages out while the platform is still
@@ -714,12 +714,6 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
     page arrives every morning until someone silences the channel. That is
     why the derivation counts minutes: startup moved to 08:30 on 2026-09-16
     and an hour-granular window would have been thirty minutes short.
-
-    Counting minutes is not enough on the two nights the clocks change. The
-    fall-back night is an hour LONGER than the schedule says (16h30m, not
-    15h30m), and a fixed period measured from the completion marker would let
-    go before the platform was asked to start. So the period is the window
-    plus local.dst_slack_minutes (scheduler.tf), sized for the longest night.
   EOT
 
   namespace           = "GeoRAG/Markers"
