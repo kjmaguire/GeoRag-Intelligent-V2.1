@@ -108,6 +108,9 @@ tests/test_ingest_constraint_rows_integration.py
 # stamped by canonical hole id, and an assay with no sample id lands in
 # assays_v2 with an explicit qaqc_flag.
 tests/test_ingest_tabular_upsert_integration.py
+# ingest_spatial's re-upload replace is scoped to the layers the run rewrites,
+# and a feature off the planet is not stored (audit finding 4).
+tests/test_ingest_spatial_replace_integration.py
 # §04e schema decisions (SME-approved 2026-09-29): up-holes traced upward,
 # NULL total depth traced to the deepest interval, the database-derived
 # canonical hole id and the canonical-key upsert.
