@@ -309,6 +309,11 @@ def _usable_position(lon: float, lat: float) -> bool:
     return math.isfinite(lon) and math.isfinite(lat) and -90.0 <= lat <= 90.0 and -180.0 <= lon < 360.0
 
 
+def _wrap_lon(lon: float) -> float:
+    """Fold a longitude into [-180, 180), the range the rasters are in."""
+    return lon if not math.isfinite(lon) else ((lon + 180.0) % 360.0) - 180.0
+
+
 def sample_elevations_sync(
     points: Sequence[tuple[float, float]],
     config: DemConfig,
@@ -333,10 +338,12 @@ def sample_elevations_sync(
     ``lookup_elevations``, never directly from async code.
     """
     import rasterio  # noqa: PLC0415 — keeps app import time free of GDAL
-    from rasterio.errors import RasterioIOError  # noqa: PLC0415
 
     out: dict[int, float | None] = {}
     by_tile: dict[str, list[int]] = defaultdict(list)
+    # 0..360 longitudes are common; the tile name and the sample both need the
+    # -180..180 value the raster uses.
+    points = [(_wrap_lon(lon), lat) for lon, lat in points]
     for index, (lon, lat) in enumerate(points):
         if not _usable_position(lon, lat):
             # Not retryable: recording it keeps one bad position from
@@ -364,7 +371,7 @@ def sample_elevations_sync(
             location = config.url_template.format(tile=tile)
             try:
                 src = rasterio.open(location)
-            except RasterioIOError as exc:
+            except Exception as exc:  # noqa: BLE001 — one bad tile must not discard the batch
                 if _is_not_found(exc):
                     for index in indexes:
                         out[index] = None
@@ -391,9 +398,11 @@ def sample_elevations_sync(
                             break
                         lon, lat = points[index]
                         out[index] = _bilinear(src, lon, lat)
-            except RasterioIOError as exc:
+            except Exception as exc:  # noqa: BLE001 — what was read stands; see below
                 # What was read before the failure stands; the failing point
-                # and the ones after it were never added.
+                # and the ones after it were never added. A non-IO error
+                # (e.g. a CRS transform) is handled the same way, so it
+                # cannot take the other tiles' results with it.
                 log.warning(
                     "dem_elevation: reading tile %s failed (%s); its remaining collars are left for the next promotion",
                     tile,

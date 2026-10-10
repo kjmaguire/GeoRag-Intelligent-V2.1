@@ -728,8 +728,9 @@ UPDATE silver.collars c
 #: Collars the terrain fallback applies to (no file elevation, a position):
 #: how many in all, and how many still need a lookup.
 _TERRAIN_SCOPE = """
-SELECT count(*)                                         AS candidates,
-       count(*) FILTER (WHERE c.elevation_dem_geom IS NULL) AS pending
+SELECT count(*)                                              AS candidates,
+       count(*) FILTER (WHERE c.elevation_dem_geom IS NULL)  AS pending,
+       count(*) FILTER (WHERE c.elevation_dem_geom IS NOT NULL) AS held
   FROM silver.collars c
  WHERE c.project_id = $1::uuid
    AND c.elevation IS NULL
@@ -826,12 +827,20 @@ async def _fill_terrain_elevations(
     """
     config = dem_elevation.config_from_env()
     if not config.enabled:
+        # Off (privacy, air-gap): withdraw any height an earlier run stored, so
+        # readers stop drawing it as a terrain value. Nothing is looked up.
+        try:
+            await conn.execute(_TERRAIN_CLEAR_ALL, project_id)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            log.warning("promote.terrain: project %s could not clear its terrain heights (%s)", project_id, exc)
         return
     try:
         await conn.execute(_TERRAIN_CLEAR_STALE, project_id, config.source)
         scope = await conn.fetchrow(_TERRAIN_SCOPE, project_id)
         if scope is None or not scope["candidates"]:
             return
+        if not scope["pending"] and not scope["held"]:
+            return  # nothing to fill and nothing to withdraw: no remote reads
         if not budget.usable:
             log.warning(
                 "promote.terrain: project %s skipped; the run's terrain budget is "
