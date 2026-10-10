@@ -1578,12 +1578,21 @@ jobs:
         working-directory: src/fastapi
         run: uv sync --extra dev
 
+      # test_rls_after_raw.py is the post-`db:apply-raw` assertion for RLS
+      # layering and the audit grants (database audit 2026-10): it is here, and
+      # not in integration-postgres or the PHP suites, because this is the only
+      # job that builds the database the way the ECS migrate task does -- migrate
+      # THEN db:apply-raw. A raw file has the last word on every policy it touches
+      # (phase0/95 re-created five fail-closed policies fail-open on every deploy
+      # and nothing saw it), so a policy test that only sees the migrate-only state
+      # cannot catch that class.
       - name: Run the sweeps as georag_app
         working-directory: src/fastapi
         run: |
           uv run pytest -v --tb=short -m integration -p no:randomly \
             tests/test_cron_sweeps_under_app_role.py \
-            tests/test_citation_feedback_integration.py
+            tests/test_citation_feedback_integration.py \
+            tests/test_rls_after_raw.py
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:

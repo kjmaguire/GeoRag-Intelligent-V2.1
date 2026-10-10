@@ -65,8 +65,20 @@ async def _emit_n(
     return ids
 
 
+# audit.audit_ledger is append-only (2026_10_10_100200): a BEFORE UPDATE OR
+# DELETE trigger refuses every row change, for the owner and superusers too.
+# This fixture connects as a superuser and removes its own rows with ordinary
+# triggers switched off for that one transaction -- the same break-glass an
+# operator would use. SET LOCAL, so it cannot leak past the transaction.
+async def _break_glass(conn: asyncpg.Connection, sql: str, *args: object) -> str:
+    async with conn.transaction():
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        return await conn.execute(sql, *args)
+
+
 async def _cleanup(conn: asyncpg.Connection, tag: str) -> None:
-    await conn.execute(
+    await _break_glass(
+        conn,
         "DELETE FROM audit.audit_ledger WHERE target_id LIKE $1",
         f"{tag}-%",
     )
@@ -127,7 +139,10 @@ async def test_chain_verify_detects_tampered_previous_hash(
         ids = await _emit_n(pg_conn, 4, tag)
         # Tamper row index 2's previous_hash to break the chain.
         bad_id = ids[2]
-        await pg_conn.execute(
+        # Forging a link is exactly what the append-only trigger forbids, so
+        # the fixture plays the insider who has switched triggers off.
+        await _break_glass(
+            pg_conn,
             "UPDATE audit.audit_ledger SET previous_hash = E'\\\\xdeadbeef' "
             "WHERE id = $1::uuid",
             bad_id,

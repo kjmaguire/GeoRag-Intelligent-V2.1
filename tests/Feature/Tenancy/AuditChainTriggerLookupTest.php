@@ -25,6 +25,16 @@ use Tests\TestCase;
  *
  * Postgres only (the audit schema and its trigger do not exist on SQLite). All
  * rows are written inside a transaction that is rolled back.
+ *
+ * Since 2026_10_10_100100 the trigger ASSIGNS created_at (clock_timestamp(), after
+ * the chain lock) and ignores whatever the INSERT carries, so the explicit
+ * timestamps passed below no longer reach the table: rows chain in insertion
+ * order, and two rows can no longer share a created_at through an INSERT. The
+ * cases still hold (the chain they assert is the chain the trigger writes), but
+ * the tie in claim 2 can no longer be produced through the trigger: it survives
+ * only as the `ORDER BY ... created_at DESC, id DESC` the third case pins in the
+ * function text. The behaviour that replaced it is covered by
+ * AuditHashTriggerCreatedAtTest.
  */
 final class AuditChainTriggerLookupTest extends TestCase
 {
@@ -141,6 +151,8 @@ final class AuditChainTriggerLookupTest extends TestCase
     #[Test]
     public function rows_sharing_a_created_at_are_ordered_by_id_as_before(): void
     {
+        // The timestamp below is ignored since 2026_10_10_100100 (see the class
+        // docblock): the rows are chained in insertion order whatever it says.
         $at = '2031-02-01 00:00:00+00';
         $low = $this->insertRow(self::WS_A, 'tie.test', $at, '00000000-0000-4000-8000-000000000001');
         $high = $this->insertRow(self::WS_A, 'tie.test', $at, '00000000-0000-4000-8000-000000000002');

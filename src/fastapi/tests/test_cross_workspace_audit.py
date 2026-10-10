@@ -89,20 +89,27 @@ async def _count_alerts(
     ))
 
 
+# audit.audit_ledger is append-only (2026_10_10_100200): a BEFORE UPDATE OR
+# DELETE trigger refuses every row change, for the owner and superusers too.
+# This fixture connects as a superuser and removes its own rows with ordinary
+# triggers switched off for that one transaction -- the same break-glass an
+# operator would use. SET LOCAL, so it cannot leak past the transaction.
 async def _cleanup(
     conn: asyncpg.Connection,
     target_workspace_id: UUID,
     actor_id: int,
 ) -> None:
-    await conn.execute(
-        """
-        DELETE FROM audit.audit_ledger
-         WHERE action_type = 'security.cross_workspace_access.alert'
-           AND target_id = $1
-           AND actor_id = $2
-        """,
-        str(target_workspace_id), actor_id,
-    )
+    async with conn.transaction():
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        await conn.execute(
+            """
+            DELETE FROM audit.audit_ledger
+             WHERE action_type = 'security.cross_workspace_access.alert'
+               AND target_id = $1
+               AND actor_id = $2
+            """,
+            str(target_workspace_id), actor_id,
+        )
 
 
 @pytest.mark.asyncio

@@ -207,13 +207,17 @@ async def test_idempotency_suppresses_recent_alert(
         )
         assert has_after is False
     finally:
-        # Cleanup audit rows
-        await pg_conn.execute(
-            """
-            DELETE FROM audit.audit_ledger
-             WHERE workspace_id = $1::uuid
-               AND action_type IN ('cost.burn.alert', 'cost.burn.alert.acknowledged')
-               AND target_table = 'usage_events'
-            """,
-            workspace_id,
-        )
+        # Cleanup audit rows. The ledger is append-only (2026_10_10_100200):
+        # this superuser fixture removes its own rows with ordinary triggers
+        # switched off for the one transaction (SET LOCAL).
+        async with pg_conn.transaction():
+            await pg_conn.execute("SET LOCAL session_replication_role = replica")
+            await pg_conn.execute(
+                """
+                DELETE FROM audit.audit_ledger
+                 WHERE workspace_id = $1::uuid
+                   AND action_type IN ('cost.burn.alert', 'cost.burn.alert.acknowledged')
+                   AND target_table = 'usage_events'
+                """,
+                workspace_id,
+            )
