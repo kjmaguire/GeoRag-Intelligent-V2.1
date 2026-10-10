@@ -247,6 +247,44 @@ describe('Foundry chat', () => {
         expect(screen.getByText('unverified')).toBeInTheDocument();
     });
 
+    it('says which sources were unavailable for an answer (degraded_sources)', async () => {
+        renderChat();
+        await ask('How deep is PLS-22-08?');
+
+        await act(async () => {
+            handler!({
+                event: 'completed',
+                text: 'It is 412 m deep.',
+                citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }],
+                confidence: 0.9,
+                validation_state: 'clean',
+                degraded_sources: ['Documents (temporarily unavailable)'],
+            });
+        });
+
+        expect(screen.getByTestId('degraded-sources-note')).toHaveTextContent(
+            /could not be searched for this answer: Documents \(temporarily unavailable\)/,
+        );
+    });
+
+    it('shows no unavailable-sources note when every source answered', async () => {
+        renderChat();
+        await ask('How deep is PLS-22-08?');
+
+        await act(async () => {
+            handler!({
+                event: 'completed',
+                text: 'It is 412 m deep.',
+                citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }],
+                confidence: 0.9,
+                validation_state: 'clean',
+                degraded_sources: [],
+            });
+        });
+
+        expect(screen.queryByTestId('degraded-sources-note')).toBeNull();
+    });
+
     it('Stop asks the server to cancel the job (CHAT-18)', async () => {
         renderChat();
         await ask('How deep is PLS-22-08?');

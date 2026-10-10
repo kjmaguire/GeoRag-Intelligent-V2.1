@@ -147,6 +147,11 @@ interface ChatMessage {
     // CHAT-5 — the job slimmed an oversized `completed` frame and these
     // fields (e.g. viz_payload) were left out of it.
     truncatedFields?: string[] | null;
+    // Retrieval surfaces that failed while this answer was built
+    // (GeoRAGResponse.degraded_sources: "Documents (temporarily
+    // unavailable)", "Document ranking (temporarily unavailable)"). The
+    // answer was assembled without them, so the reader is told which.
+    degradedSources?: string[] | null;
     // M2 P5 visualization payloads — backend emits these on the completed
     // SSE event (src/fastapi/app/agent/agentic_retrieval/nodes.py:_build_chat_card_payloads).
     // Both null until the completed handler captures them. InlineViz no-ops
@@ -757,6 +762,9 @@ export default function FoundryChat({
         const citationsMissing = isUncitedAnswer(finalCitations, finalRefusalPayload);
         if (citationsMissing) finalValidationState = 'unverified';
         const truncatedFields = Array.isArray(event.truncated_fields) ? (event.truncated_fields as string[]) : null;
+        const degradedSources = Array.isArray(event.degraded_sources)
+            ? (event.degraded_sources as unknown[]).filter((s): s is string => typeof s === 'string' && s.trim() !== '')
+            : [];
 
         // Built from the ref snapshot (not inside the state updater) so the
         // fire-and-forget persistence below is NOT a side effect of a React
@@ -782,6 +790,7 @@ export default function FoundryChat({
                       refusalPayload: finalRefusalPayload,
                       citationsMissing,
                       truncatedFields: event.payload_truncated ? truncatedFields : null,
+                      degradedSources: degradedSources.length > 0 ? degradedSources : null,
                   }
                 : m,
         );
@@ -1646,6 +1655,20 @@ const MessageBubble = memo(function MessageBubble({
                     >
                         No citations were returned for this answer — treat it as unverified. Nothing above is backed by
                         a source the system could point to.
+                    </div>
+                )}
+                {/* A retrieval surface failed while this answer was built
+                    (a document-search timeout, the reranker down). The
+                    answer stands, but it was made without that source. */}
+                {!isUser && !m.isStreaming && m.degradedSources && m.degradedSources.length > 0 && (
+                    <div
+                        role="status"
+                        data-testid="degraded-sources-note"
+                        className="mt-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
+                        style={{ borderColor: 'var(--warn, #d97706)', color: 'var(--warn, #d97706)' }}
+                    >
+                        Some sources could not be searched for this answer: {m.degradedSources.join(', ')}. It may be
+                        missing information they hold; asking again later may give a fuller answer.
                     </div>
                 )}
                 {/* CHAT-5 — the completed frame was too large for the
