@@ -20,6 +20,7 @@ import importlib
 
 import pytest
 from fastapi import HTTPException
+from pydantic import BaseModel
 
 import app.sidecar_auth as sidecar_auth
 
@@ -251,6 +252,168 @@ def test_client_headers_fall_back_to_settings_when_env_unset(monkeypatch) -> Non
     finally:
         monkeypatch.undo()
         importlib.reload(sidecar_auth)
+
+
+# ---------------------------------------------------------------------------
+# install_body_size_limit — chunked bodies are capped too
+#
+# The cap used to look at Content-Length alone, so a chunked body (no length
+# header) or one that lied about its length sailed past it. FastAPI reads and
+# parses the body BEFORE it resolves dependencies, i.e. before
+# require_service_key runs, so an unauthenticated chunked POST was buffered in
+# full: a straightforward way to OOM the sparse task, which holds the SPLADE++
+# model in the same memory and has no hosted replacement to fail over to. The
+# main app closed the same hole in API-8 (tests/test_router_audit_regressions.py);
+# these pin it on the sidecars.
+# ---------------------------------------------------------------------------
+
+
+class _SparseReq(BaseModel):
+    # Module level on purpose: under `from __future__ import annotations` FastAPI
+    # resolves the route's annotations in module globals, so a class defined
+    # inside the factory below would be read as a query parameter (422).
+    texts: list[str]
+
+
+def _sidecar_app(max_bytes: int):
+    from fastapi import Depends, FastAPI
+
+    app = FastAPI()
+    sidecar_auth.install_body_size_limit(app, max_bytes=max_bytes)
+    reached: list[int] = []
+
+    @app.post("/sparse", dependencies=[Depends(sidecar_auth.require_service_key)])
+    async def sparse(req: _SparseReq) -> dict:
+        reached.append(len(req.texts))
+        return {"n": len(req.texts)}
+
+    app.state.reached = reached
+    return app
+
+
+def _json_chunks(n_chunks: int, chunk_bytes: int):
+    """A JSON body delivered as a generator, i.e. with no Content-Length."""
+
+    def gen():
+        yield b'{"texts": ["'
+        for _ in range(n_chunks):
+            yield b"x" * chunk_bytes
+        yield b'"]}'
+
+    return gen()
+
+
+def test_a_declared_length_over_the_cap_is_413(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", "s3cr3t")
+    app = _sidecar_app(1024)
+    resp = TestClient(app).post(
+        "/sparse", json={"texts": ["x" * 4096]}, headers={"X-Service-Key": "s3cr3t"}
+    )
+    assert resp.status_code == 413
+    assert app.state.reached == []
+
+
+def test_a_chunked_body_over_the_cap_is_413(monkeypatch) -> None:
+    """No Content-Length: this is the one that got through."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", "s3cr3t")
+    app = _sidecar_app(1024)
+    resp = TestClient(app).post(
+        "/sparse",
+        content=_json_chunks(64, 64),
+        headers={"content-type": "application/json", "X-Service-Key": "s3cr3t"},
+    )
+    assert resp.status_code == 413
+    assert app.state.reached == []
+
+
+def test_an_unauthenticated_chunked_body_over_the_cap_is_413_not_401(monkeypatch) -> None:
+    """The body is read before the key is checked, so the cap has to answer
+    first -- that ordering is the whole reason it must cover chunked bodies."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", "s3cr3t")
+    resp = TestClient(_sidecar_app(1024)).post(
+        "/sparse",
+        content=_json_chunks(64, 64),
+        headers={"content-type": "application/json"},
+    )
+    assert resp.status_code == 413
+
+
+def test_a_body_that_lies_about_its_length_is_still_capped(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", "s3cr3t")
+    app = _sidecar_app(1024)
+    body = b'{"texts": ["' + b"x" * 4096 + b'"]}'
+    resp = TestClient(app).post(
+        "/sparse",
+        content=body,
+        headers={
+            "content-type": "application/json",
+            "content-length": "10",
+            "X-Service-Key": "s3cr3t",
+        },
+    )
+    assert resp.status_code == 413
+    assert app.state.reached == []
+
+
+def test_a_chunked_body_under_the_cap_passes(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(sidecar_auth, "_SERVICE_KEY", "s3cr3t")
+    app = _sidecar_app(1024)
+    resp = TestClient(app).post(
+        "/sparse",
+        content=_json_chunks(2, 16),
+        headers={"content-type": "application/json", "X-Service-Key": "s3cr3t"},
+    )
+    assert resp.status_code == 200
+    assert app.state.reached == [1]
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_body_is_cut_off_at_the_cap_not_read_to_the_end() -> None:
+    """Counting after the body is buffered would reject it and still have paid
+    for it. The cap must stop pulling chunks once it is crossed."""
+    app = _sidecar_app(1024)
+    chunk, total = b"x" * 512, 200
+    pulled = 0
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        nonlocal pulled
+        pulled += 1
+        return {"type": "http.request", "body": chunk, "more_body": pulled < total}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/sparse",
+        "raw_path": b"/sparse",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+    }
+    await app(scope, receive, send)
+
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 413
+    assert pulled < total, f"read {pulled} of {total} chunks before refusing"
+    assert app.state.reached == []
 
 
 # ---------------------------------------------------------------------------

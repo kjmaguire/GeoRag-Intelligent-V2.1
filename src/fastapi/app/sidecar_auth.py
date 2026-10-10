@@ -165,34 +165,25 @@ _MAX_BODY_BYTES = int(os.environ.get("SIDECAR_MAX_BODY_BYTES", str(16 * 1024 * 1
 
 
 def install_body_size_limit(app, max_bytes: int = _MAX_BODY_BYTES) -> None:
-    """Reject oversized request bodies by Content-Length (HTTP 413).
+    """Reject oversized request bodies (HTTP 413), chunked ones included.
 
     ``enforce_batch_limits`` runs only AFTER pydantic has parsed the JSON body,
     which means a multi-GB body is fully read and decoded before any guard
-    fires. This middleware refuses on the declared Content-Length header
-    before the route handler ever reads the body. Bodies without the header
-    (chunked) fall through to the post-parse guards.
-    """
-    from starlette.responses import JSONResponse  # noqa: PLC0415
+    fires. FastAPI also reads the body BEFORE it resolves dependencies, so
+    ``require_service_key`` has not run either: an unauthenticated POST is
+    buffered whole.
 
-    @app.middleware("http")
-    async def _body_size_limit(request, call_next):  # noqa: ANN001, ANN202
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                declared = int(content_length)
-            except ValueError:
-                return JSONResponse(
-                    status_code=400, content={"detail": "invalid Content-Length"}
-                )
-            if declared > max_bytes:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": f"request body of {declared} B exceeds {max_bytes} B"
-                    },
-                )
-        return await call_next(request)
+    This used to refuse on the declared Content-Length alone, so a chunked
+    body (no header) or one that lied about its length went straight through.
+    It now delegates to the main app's ``BodySizeLimitMiddleware``, which also
+    wraps ``receive`` and counts bytes as they arrive, stopping at the first
+    chunk that crosses the cap. Reused, not copied: it imports only
+    starlette, so the sidecars stay as lean as they were, and the two
+    services cannot drift apart again.
+    """
+    from app.middleware import BodySizeLimitMiddleware  # noqa: PLC0415
+
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=max_bytes)
 
 
 def _client_service_key() -> str:
