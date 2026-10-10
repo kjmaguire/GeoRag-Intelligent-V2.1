@@ -73,8 +73,12 @@ from app.services.visualizations.additional_charts import (  # noqa: E402
     render_chart,
 )
 
-
 # ─── Real-data fetchers ──────────────────────────────────────────────
+#: How many holes one long section draws. A project with more is cut at this
+#: many (ordered by hole_id) and the figure says so (GIS audit 2026-10, #12).
+LONG_SECTION_MAX_HOLES = 100
+
+
 async def _fetch_long_section_collars(
     *, pg_pool, workspace_id: str, project_id: UUID,
     reference_azimuth_deg: float | None = None,
@@ -88,6 +92,12 @@ async def _fetch_long_section_collars(
     and so cannot be plotted against each other. azimuth/dip are passed
     through as NULL when unrecorded; the figure labels those holes instead
     of inventing a vertical one.
+
+    GIS audit 2026-10 (#12): at most LONG_SECTION_MAX_HOLES holes are drawn, and
+    ``holes_total`` carries how many qualified, so the figure can say it cut the
+    rest instead of passing a first-100-by-name subset off as the project. An
+    explicit ``reference_azimuth_deg`` of 0 (a north-south section) is kept;
+    only ``None`` falls back to the 90 deg default.
     """
     async with scoped_connection(
         pg_pool, workspace_id=workspace_id, site="viz._fetch_long_section_collars"
@@ -99,13 +109,14 @@ async def _fetch_long_section_collars(
             WITH c AS (
                 SELECT c.hole_id, c.geom_4326, {EFFECTIVE_ELEVATION_SQL} AS elevation,
                        {EFFECTIVE_TOTAL_DEPTH_SQL} AS total_depth,
-                       c.azimuth, c.dip
+                       c.azimuth, c.dip,
+                       count(*) OVER () AS holes_total
                   FROM silver.collars c
                  WHERE c.project_id = $1::uuid
                    AND {EFFECTIVE_TOTAL_DEPTH_SQL} > 0
                    AND c.geom_4326 IS NOT NULL
                  ORDER BY c.hole_id
-                 LIMIT 100
+                 LIMIT {LONG_SECTION_MAX_HOLES}
             ), frame AS (
                 SELECT CASE WHEN ST_Y(ST_Centroid(ST_Collect(geom_4326))) >= 0
                             THEN 32600 ELSE 32700 END
@@ -120,15 +131,18 @@ async def _fetch_long_section_collars(
                    COALESCE(c.elevation, 0) AS elevation,
                    c.total_depth,
                    c.azimuth,
-                   c.dip AS inclination
+                   c.dip AS inclination,
+                   c.holes_total
               FROM c CROSS JOIN frame
              ORDER BY c.hole_id
             """,
             project_id,
         )
+    holes_total = max((int(r["holes_total"]) for r in rows), default=0)
     return {
-        "collars": [dict(r) for r in rows],
-        "reference_azimuth_deg": reference_azimuth_deg or 90.0,
+        "collars": [{k: v for k, v in dict(r).items() if k != "holes_total"} for r in rows],
+        "reference_azimuth_deg": 90.0 if reference_azimuth_deg is None else reference_azimuth_deg,
+        "holes_total": holes_total,
     }
 
 

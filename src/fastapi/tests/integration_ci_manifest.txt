@@ -128,3 +128,8 @@ tests/test_promote_gis_pg.py
 # the intersects-not-contains counting and the 54000 refusal of an unbounded
 # extent only exist when it runs against a migrated PostGIS.
 tests/test_coverage_density_pg.py
+
+# ── Long-section chart query (GIS audit 2026-10) ────────────────────────
+# The hole count is a window function evaluated ahead of LIMIT, and the metres
+# come out of one local UTM frame: only a database proves either.
+tests/test_viz_long_section_pg.py
