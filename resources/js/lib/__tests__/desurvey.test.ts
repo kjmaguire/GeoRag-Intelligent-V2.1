@@ -7,10 +7,15 @@ import {
     desurveyHole,
     positionAtDepth,
     buildScene3D,
+    hasLonLat,
+    localFrameFor,
     sceneZAxisTitle,
     worldAtDepth,
     worldPathBetween,
+    EAST_AXIS_TITLE,
+    NORTH_AXIS_TITLE,
 } from '@/lib/desurvey';
+import { metresPerDegree } from '@/lib/localEnu';
 
 const close = (a: number, b: number, tol = 1e-6) => expect(Math.abs(a - b)).toBeLessThan(tol);
 
@@ -137,9 +142,20 @@ describe('desurveyHole — minimum curvature', () => {
 });
 
 describe('placed holes (FE-9)', () => {
+    // Collar 'a' is the only one with a position, so it is the frame origin.
     const collars = [
-        { collar_id: 'a', easting: 500000, northing: 6000000, elevation: 400, azimuth: 45, dip: -50, total_depth: 400 },
-        { collar_id: 'b', easting: null, northing: null, elevation: null, azimuth: 0, dip: -90, total_depth: 100 },
+        {
+            collar_id: 'a',
+            lng: -105,
+            lat: 58,
+            easting: 500000,
+            northing: 6000000,
+            elevation: 400,
+            azimuth: 45,
+            dip: -50,
+            total_depth: 400,
+        },
+        { collar_id: 'b', lng: null, lat: null, elevation: null, azimuth: 0, dip: -90, total_depth: 100 },
     ];
 
     it('places an interval at 300 m MD off the collar, not straight beneath it', () => {
@@ -148,8 +164,9 @@ describe('placed holes (FE-9)', () => {
         const a = holes.get('a')!;
         const p = worldAtDepth(a, 300);
         const horiz = 300 * Math.cos((50 * Math.PI) / 180);
-        close(p.x - 500000, horiz * Math.SQRT1_2, 1e-6);
-        close(p.y - 6000000, horiz * Math.SQRT1_2, 1e-6);
+        // The frame origin is the collar itself, so east/north are the offsets.
+        close(p.x, horiz * Math.SQRT1_2, 1e-6);
+        close(p.y, horiz * Math.SQRT1_2, 1e-6);
         close(p.z, 400 - 300 * Math.sin((50 * Math.PI) / 180), 1e-6);
     });
 
@@ -178,7 +195,7 @@ describe('placed holes (FE-9)', () => {
 });
 
 describe('z-axis title and terrain heights', () => {
-    const base = { easting: 500000, northing: 6000000, azimuth: 0, dip: -90, total_depth: 50 };
+    const base = { lng: -105, lat: 58, easting: 500000, northing: 6000000, azimuth: 0, dip: -90, total_depth: 50 };
 
     it('plain title when every elevation is a surveyed one', () => {
         const scene = buildScene3D([{ collar_id: 'a', ...base, elevation: 400, elevation_source: 'file' }], []);
@@ -206,5 +223,154 @@ describe('z-axis title and terrain heights', () => {
             [],
         );
         expect(sceneZAxisTitle(scene)).toBe('Elevation (m · some from terrain model · collars without one at 0)');
+    });
+});
+
+// ── One frame for every collar (GIS audit 2026-10, finding 3) ───────────────
+//
+// silver.collars.easting/northing are stored in the CRS and UNITS of whichever
+// upload the collar came from. The 3D views added metre offsets to those raw
+// numbers and labelled the axis "Easting (m)", so a project with two uploads
+// (UTM metres and US-ft state plane, say) drew its holes millions of "metres"
+// apart. The position is the collar's EPSG:4326 point.
+describe('one local frame for every collar (GIS audit 2026-10)', () => {
+    // The same neighbourhood, stored three ways. lng/lat is consistent; the
+    // easting/northing are in three different systems and mean nothing together.
+    const mixedUploads = [
+        // UTM 13N, metres.
+        { collar_id: 'utm', lng: -105.0, lat: 58.0, easting: 500000, northing: 6427000, azimuth: 0, dip: -90 },
+        // US-survey-foot state plane.
+        { collar_id: 'ft', lng: -104.99, lat: 58.0, easting: 2100000, northing: 600000, azimuth: 0, dip: -90 },
+        // Geographic degrees.
+        { collar_id: 'deg', lng: -104.98, lat: 58.0, easting: -104.98, northing: 58.0, azimuth: 0, dip: -90 },
+    ];
+
+    it('places collars by lng/lat, so two uploads in different CRSs land where they really are', () => {
+        const holes = desurveyCollars(mixedUploads, []);
+        const east = (id: string) => holes.get(id)!.origin.x;
+        const north = (id: string) => holes.get(id)!.origin.y;
+        const perDegLon = metresPerDegree(58).lon;
+
+        // 0.01 degrees of longitude at 58 N is ~591 m.
+        close(east('ft') - east('utm'), 0.01 * perDegLon, 1e-6);
+        close(east('deg') - east('utm'), 0.02 * perDegLon, 1e-6);
+        close(north('ft') - north('utm'), 0, 1e-6);
+        close(north('deg') - north('utm'), 0, 1e-6);
+    });
+
+    it('does not read the stored easting/northing at all', () => {
+        const scrambled = mixedUploads.map((c) => ({ ...c, easting: 1e9, northing: -1e9 }));
+        const a = desurveyCollars(mixedUploads, []);
+        const b = desurveyCollars(scrambled, []);
+        for (const id of ['utm', 'ft', 'deg']) {
+            expect(b.get(id)!.origin).toEqual(a.get(id)!.origin);
+        }
+    });
+
+    it('keeps every hole within a few km of the frame origin however its easting is stored', () => {
+        const scene = buildScene3D(mixedUploads, []);
+        for (const h of scene.holes.values()) {
+            expect(Math.hypot(h.origin.x, h.origin.y)).toBeLessThan(5000);
+        }
+    });
+
+    it('a scene point is the local offset plus the desurveyed offset, in that one frame', () => {
+        const scene = buildScene3D(
+            [
+                {
+                    collar_id: 'a',
+                    lng: -105.0,
+                    lat: 58.0,
+                    easting: 500000,
+                    northing: 6427000,
+                    elevation: 300,
+                    azimuth: 90,
+                    dip: -60,
+                    total_depth: 100,
+                },
+                {
+                    collar_id: 'b',
+                    lng: -104.99,
+                    lat: 58.0,
+                    easting: 2100000,
+                    northing: 600000,
+                    elevation: 300,
+                    azimuth: 90,
+                    dip: -60,
+                    total_depth: 100,
+                },
+            ],
+            [],
+        );
+        const a = scene.at('a', 100)!;
+        const b = scene.at('b', 100)!;
+        // Same attitude and depth: the two toes differ by exactly the collar separation.
+        close(b.x - a.x, 0.01 * metresPerDegree(58).lon, 1e-6);
+        close(b.z, a.z, 1e-9);
+    });
+
+    it('leaves out a collar with no lng/lat and says so, instead of drawing it at its raw easting', () => {
+        const scene = buildScene3D(
+            [
+                ...mixedUploads,
+                {
+                    collar_id: 'noLonLat',
+                    lng: null,
+                    lat: null,
+                    easting: 500123,
+                    northing: 6427123,
+                    azimuth: 0,
+                    dip: -90,
+                },
+            ],
+            [],
+        );
+        expect(scene.holes.has('noLonLat')).toBe(false);
+        expect(scene.unplaced).toBe(1);
+        expect(scene.caption).toContain('1 with no geographic position — not drawn');
+    });
+
+    it('counts holes a view already filtered out for want of a position', () => {
+        const scene = buildScene3D(mixedUploads, [], new Map(), 2);
+        expect(scene.unplaced).toBe(2);
+        expect(scene.caption).toContain('2 with no geographic position');
+    });
+
+    it('names where the frame is centred', () => {
+        const scene = buildScene3D(mixedUploads, []);
+        expect(scene.frame).not.toBeNull();
+        expect(scene.caption).toMatch(/metres about 58\.0000°N 104\.9900°W/);
+    });
+
+    it('has no frame, and places nothing, when no collar has a position', () => {
+        const scene = buildScene3D([{ collar_id: 'x', easting: 1, northing: 2 }], []);
+        expect(scene.frame).toBeNull();
+        expect(scene.holes.size).toBe(0);
+        expect(scene.unplaced).toBe(1);
+    });
+
+    it('rejects non-finite coordinates', () => {
+        expect(hasLonLat({ lng: NaN, lat: 58 })).toBe(false);
+        expect(hasLonLat({ lng: -105, lat: null })).toBe(false);
+        expect(hasLonLat({ lng: -105, lat: 58 })).toBe(true);
+        expect(localFrameFor([{ lng: NaN, lat: 58 }])).toBeNull();
+    });
+
+    it('labels the axes as local metres, not as a map grid', () => {
+        expect(EAST_AXIS_TITLE).toBe('East (m, local)');
+        expect(NORTH_AXIS_TITLE).toBe('North (m, local)');
+    });
+
+    it('keeps a project that straddles the antimeridian together (about 14 km, not 20,000 km)', () => {
+        const holes = desurveyCollars(
+            [
+                { collar_id: 'w', lng: 179.9, lat: 50, azimuth: 0, dip: -90 },
+                { collar_id: 'e', lng: -179.9, lat: 50, azimuth: 0, dip: -90 },
+            ],
+            [],
+        );
+        const gap = holes.get('e')!.origin.x - holes.get('w')!.origin.x;
+        expect(gap).toBeGreaterThan(14000);
+        expect(gap).toBeLessThan(14600);
     });
 });

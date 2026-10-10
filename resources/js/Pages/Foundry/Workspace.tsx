@@ -996,6 +996,10 @@ export default function FoundryWorkspace({
                                                                                 azimuth: c.azimuth ?? null,
                                                                                 dip: c.dip ?? null,
                                                                                 elevation: c.elevation ?? null,
+                                                                                // Placed by lng/lat (geom_4326); easting/northing
+                                                                                // are in each upload's own CRS.
+                                                                                lng: c.lng,
+                                                                                lat: c.lat,
                                                                                 easting: c.easting,
                                                                                 northing: c.northing,
                                                                                 total_depth: c.total_depth,

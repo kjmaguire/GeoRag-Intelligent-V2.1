@@ -19,8 +19,10 @@ const hole = {
     total_depth: 100,
     easting: 500000,
     northing: 6000000,
-    lat: null,
-    lng: null,
+    // Placed by lng/lat (geom_4326); the stored easting/northing mean nothing
+    // between uploads.
+    lat: 58,
+    lng: -105,
     bands: [{ from: 0, to: 100, code: 'SST', color: '#cccccc' }],
 };
 

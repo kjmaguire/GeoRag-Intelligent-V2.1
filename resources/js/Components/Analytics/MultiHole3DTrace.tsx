@@ -1,6 +1,14 @@
 import { useMemo } from 'react';
 import GeoPlot from '../GeoPlot';
-import { describeDesurvey, desurveyCollars, type PathPoint } from '@/lib/desurvey';
+import {
+    EAST_AXIS_TITLE,
+    NORTH_AXIS_TITLE,
+    describeDesurvey,
+    desurveyCollars,
+    hasLonLat,
+    localFrameFor,
+    type PathPoint,
+} from '@/lib/desurvey';
 
 interface Collar {
     collar_id: string;
@@ -8,6 +16,10 @@ interface Collar {
     azimuth: number | null;
     dip: number | null;
     elevation: number | null;
+    /** EPSG:4326 position (geom_4326): what a hole is placed by. */
+    lng?: number | null;
+    lat?: number | null;
+    /** As stored, in the CRS of the collar's own upload: not used for placement. */
     easting: number | null;
     northing: number | null;
     hole_type: string | null;
@@ -44,10 +56,13 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 /**
- * Render every drill hole in the project as a 3-D polyline in shared
- * easting / northing / elevation space. Each hole is desurveyed with minimum
- * curvature (lib/desurvey — the same method as the server-side traces) and
- * extended to TD along its last attitude.
+ * Render every drill hole in the project as a 3-D polyline in one local
+ * east / north / elevation frame: metres about the centroid of the collars,
+ * from each collar's lng/lat. The stored easting/northing are in the CRS of
+ * whichever upload the collar came from, so they are not comparable between
+ * collars and are not used (GIS audit 2026-10). Each hole is desurveyed with
+ * minimum curvature (lib/desurvey — the same method as the server-side
+ * traces) and extended to TD along its last attitude.
  *
  * Holes with no downhole survey rows are drawn along their collar
  * azimuth/dip, DASHED, with an open-circle collar, and the part of any hole
@@ -59,13 +74,15 @@ const TYPE_COLORS: Record<string, string> = {
  * overall geometry of the drill array relative to the AOI.
  */
 export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' }: Props) {
-    const { traces, layout, hasData, caption } = useMemo(() => {
-        if (collars.length === 0) return { traces: [], layout: {}, hasData: false, caption: '' };
+    const { traces, layout, hasData, caption, unplaced } = useMemo(() => {
+        if (collars.length === 0) return { traces: [], layout: {}, hasData: false, caption: '', unplaced: 0 };
 
         const palette = colorBy === 'type' ? TYPE_COLORS : STATUS_COLORS;
         const colorKey = (c: Collar) => (colorBy === 'type' ? c.hole_type : c.status) ?? 'unknown';
 
-        const holes = desurveyCollars(collars, surveys);
+        const frame = localFrameFor(collars);
+        const holes = desurveyCollars(collars, surveys, undefined, frame);
+        const unplaced = collars.filter((c) => !hasLonLat(c)).length;
 
         // Group traces by colour key so each category gets one legend row.
         const groups: Record<string, Record<string, unknown>[]> = {};
@@ -186,12 +203,12 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             scene: {
                 bgcolor: 'rgba(0,0,0,0)',
                 xaxis: {
-                    title: { text: 'Easting (m)', font: { color: '#94a3b8' } },
+                    title: { text: EAST_AXIS_TITLE, font: { color: '#94a3b8' } },
                     color: '#94a3b8',
                     gridcolor: 'rgba(148,163,184,0.15)',
                 },
                 yaxis: {
-                    title: { text: 'Northing (m)', font: { color: '#94a3b8' } },
+                    title: { text: NORTH_AXIS_TITLE, font: { color: '#94a3b8' } },
                     color: '#94a3b8',
                     gridcolor: 'rgba(148,163,184,0.15)',
                 },
@@ -205,11 +222,23 @@ export default function MultiHole3DTrace({ collars, surveys, colorBy = 'status' 
             },
         };
 
-        return { traces, layout, hasData: holes.size > 0, caption: describeDesurvey(holes.values()) };
+        return {
+            traces,
+            layout,
+            hasData: holes.size > 0,
+            caption: describeDesurvey(holes.values(), { unplaced, frame }),
+            unplaced,
+        };
     }, [collars, surveys, colorBy]);
 
     if (!hasData) {
-        return <div className="flex items-center justify-center h-full text-sm text-gray-500">No collars to plot.</div>;
+        return (
+            <div className="flex items-center justify-center h-full text-sm text-gray-500">
+                {unplaced > 0
+                    ? `No collars to plot: ${unplaced} have no geographic position (lng/lat).`
+                    : 'No collars to plot.'}
+            </div>
+        );
     }
     return (
         <div className="flex flex-col h-full min-h-0">

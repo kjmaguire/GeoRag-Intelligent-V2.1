@@ -251,7 +251,7 @@ function TwoDViews({ traj, totalDepth, collarElevation }: SubProps) {
     );
 }
 
-function buildPlan(traj: Trajectory, totalDepth: number | null) {
+export function buildPlan(traj: Trajectory, totalDepth: number | null) {
     const { eOffset, nOffset, pts, zDrop } = traj;
     const hoverText = eOffset.map(
         (_, i) =>
@@ -337,7 +337,7 @@ function buildPlan(traj: Trajectory, totalDepth: number | null) {
     };
 }
 
-function buildSection(traj: Trajectory, totalDepth: number | null, collarElevation: number | null) {
+export function buildSection(traj: Trajectory, totalDepth: number | null, collarElevation: number | null) {
     const { alongHoleHoriz, zDrop, zElev, pts } = traj;
     const hoverText = alongHoleHoriz.map(
         (_, i) =>
@@ -407,6 +407,11 @@ function buildSection(traj: Trajectory, totalDepth: number | null, collarElevati
             zerolinecolor: 'rgba(148,163,184,0.4)',
             color: '#94a3b8',
             autorange: showElev ? true : ('reversed' as const),
+            // Equal aspect ratio, as in the plan view: without it the
+            // section stretches to its box and every dip reads steeper or
+            // flatter than it is (GIS audit 2026-10).
+            scaleanchor: 'x' as const,
+            scaleratio: 1,
         },
         showlegend: false,
     };
