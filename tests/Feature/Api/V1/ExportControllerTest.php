@@ -6,8 +6,11 @@ use App\Jobs\GenerateExportJob;
 use App\Models\Export;
 use App\Models\Project;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 /**
@@ -25,6 +28,9 @@ class ExportControllerTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** The bucket-scoped key GenerateExportJob records in `minio_path`. */
+    private const OBJECT_KEY = '0d4f9c2e-7b1a-4c53-9a58-3f6e1b2d8c90/georag_collars_65a1f.csv';
+
     private Project $project;
 
     private User $user;
@@ -32,6 +38,10 @@ class ExportControllerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // StorageService::exports() resolves this disk; faked, its
+        // temporaryUrl() is deterministic and needs no credentials.
+        Storage::fake('s3-exports');
 
         $this->project = Project::create([
             'project_name' => 'Export Test Project '.uniqid(),
@@ -199,17 +209,97 @@ class ExportControllerTest extends TestCase
 
     public function test_show_returns_download_url_when_completed(): void
     {
+        $export = $this->completedExport();
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
+        );
+
+        $response->assertOk()
+            ->assertJsonPath('data.status', 'completed');
+
+        // Minted from the stored object key for THIS response, not read back
+        // from the row.
+        $url = $response->json('data.download_url');
+        $this->assertIsString($url);
+        $this->assertStringContainsString(self::OBJECT_KEY, $url);
+    }
+
+    public function test_show_mints_a_short_lived_url_and_reports_when_it_expires(): void
+    {
+        $export = $this->completedExport();
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
+        );
+
+        // Storage::fake() puts the expiry in the URL's own query string, so the
+        // two can be checked against each other and against the clock.
+        parse_str((string) parse_url($response->json('data.download_url'), PHP_URL_QUERY), $query);
+        $signedUntil = (int) $query['expiration'];
+
+        $this->assertEqualsWithDelta(now()->addMinutes(5)->getTimestamp(), $signedUntil, 5);
+        $this->assertEqualsWithDelta(
+            $signedUntil,
+            Carbon::parse($response->json('data.download_url_expires_at'))->getTimestamp(),
+            1,
+        );
+    }
+
+    public function test_show_ignores_a_url_stored_by_the_previous_release(): void
+    {
+        // The old job stored a 24-hour URL and the controller served it until
+        // the stored expiry. With ECS task-role credentials that URL died when
+        // the signing session did, hours before download_url_expires_at.
+        $export = $this->completedExport();
+        DB::table('silver.exports')->where('export_id', $export->export_id)->update([
+            'download_url' => 'https://stale.example.test/dead-session-url',
+            'download_url_expires_at' => now()->addHours(20),
+        ]);
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
+        );
+
+        $response->assertOk();
+        $this->assertStringNotContainsString('stale.example.test', (string) $response->json('data.download_url'));
+        $this->assertStringContainsString(self::OBJECT_KEY, (string) $response->json('data.download_url'));
+        $this->assertEqualsWithDelta(
+            now()->addMinutes(5)->getTimestamp(),
+            Carbon::parse($response->json('data.download_url_expires_at'))->getTimestamp(),
+            5,
+        );
+    }
+
+    public function test_show_returns_a_session_token_sized_url_that_no_column_would_hold(): void
+    {
+        // Production signs with ECS task-role credentials, so the presigned URL
+        // carries an X-Amz-Security-Token. Configure the REAL s3-exports disk
+        // that way (offline: signing needs no network) rather than faking it.
+        $this->useRealExportsDiskWithSessionToken(str_repeat('T', 1400));
+        $export = $this->completedExport();
+
+        $response = $this->getJson(
+            "/api/v1/projects/{$this->project->project_id}/exports/{$export->export_id}",
+        );
+
+        $response->assertOk();
+        $url = (string) $response->json('data.download_url');
+        $this->assertGreaterThan(1000, strlen($url), 'precondition: longer than the old varchar(1000)');
+        $this->assertStringContainsString('X-Amz-Security-Token=', $url);
+        $this->assertStringStartsWith('https://georag-exports-test.s3.ca-central-1.amazonaws.com/', $url);
+
+        // Returned, never stored.
+        $this->assertNull(Export::find($export->export_id)->getRawOriginal('download_url'));
+    }
+
+    public function test_a_pending_export_has_no_download_link(): void
+    {
         $export = Export::create([
             'project_id' => $this->project->project_id,
             'export_type' => 'csv_collars',
-            'status' => 'completed',
+            'status' => 'running',
             'filters' => [],
-            'minio_path' => 'georag-exports/test/collars.csv',
-            'download_url' => 'https://minio.example.com/signed-url',
-            'download_url_expires_at' => now()->addHours(23),
-            'completed_at' => now(),
-            'file_count' => 1,
-            'total_size_bytes' => 1024,
         ]);
 
         $response = $this->getJson(
@@ -217,8 +307,26 @@ class ExportControllerTest extends TestCase
         );
 
         $response->assertOk()
-            ->assertJsonPath('data.status', 'completed')
-            ->assertJsonPath('data.download_url', 'https://minio.example.com/signed-url');
+            ->assertJsonPath('data.download_url', null)
+            ->assertJsonPath('data.download_url_expires_at', null);
+    }
+
+    public function test_index_carries_a_fresh_link_for_completed_exports_only(): void
+    {
+        $done = $this->completedExport();
+        $running = Export::create([
+            'project_id' => $this->project->project_id,
+            'export_type' => 'csv_assays',
+            'status' => 'running',
+            'filters' => [],
+        ]);
+
+        $rows = collect($this->getJson("/api/v1/projects/{$this->project->project_id}/exports")
+            ->assertOk()
+            ->json('data'))->keyBy('export_id');
+
+        $this->assertStringContainsString(self::OBJECT_KEY, (string) $rows[$done->export_id]['download_url']);
+        $this->assertNull($rows[$running->export_id]['download_url']);
     }
 
     public function test_show_returns_404_for_export_in_wrong_project(): void
@@ -307,5 +415,92 @@ class ExportControllerTest extends TestCase
         );
 
         $response->assertNotFound();
+    }
+
+    // -------------------------------------------------------------------------
+    // download — redirect to a URL minted for this request
+    // -------------------------------------------------------------------------
+
+    public function test_download_redirects_to_a_url_minted_from_the_object_key(): void
+    {
+        $export = $this->completedExport();
+
+        $response = $this->get("/api/v1/exports/{$export->export_id}/download");
+
+        $response->assertStatus(302);
+        $location = (string) $response->headers->get('Location');
+        $this->assertStringContainsString(self::OBJECT_KEY, $location);
+
+        parse_str((string) parse_url($location, PHP_URL_QUERY), $query);
+        $this->assertEqualsWithDelta(now()->addMinutes(5)->getTimestamp(), (int) $query['expiration'], 5);
+    }
+
+    public function test_download_does_not_follow_a_stored_url_that_is_still_in_date(): void
+    {
+        // The regression: a stored URL whose recorded expiry was still in the
+        // future was redirected to as-is, however long ago its credentials had
+        // lapsed.
+        $export = $this->completedExport();
+        DB::table('silver.exports')->where('export_id', $export->export_id)->update([
+            'download_url' => 'https://stale.example.test/dead-session-url',
+            'download_url_expires_at' => now()->addHours(20),
+        ]);
+
+        $response = $this->get("/api/v1/exports/{$export->export_id}/download");
+
+        $response->assertStatus(302);
+        $this->assertStringNotContainsString('stale.example.test', (string) $response->headers->get('Location'));
+        $this->assertStringContainsString(self::OBJECT_KEY, (string) $response->headers->get('Location'));
+    }
+
+    public function test_download_of_a_completed_export_with_no_object_key_is_404(): void
+    {
+        $export = $this->completedExport(['minio_path' => null]);
+
+        $this->getJson("/api/v1/exports/{$export->export_id}/download")
+            ->assertNotFound()
+            ->assertJsonPath('message', 'Export has no stored file.');
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function completedExport(array $overrides = []): Export
+    {
+        return Export::create(array_merge([
+            'project_id' => $this->project->project_id,
+            'export_type' => 'csv_collars',
+            'status' => 'completed',
+            'filters' => [],
+            'minio_path' => self::OBJECT_KEY,
+            'completed_at' => now(),
+            'file_count' => 1,
+            'total_size_bytes' => 1024,
+        ], $overrides));
+    }
+
+    /**
+     * Point the s3-exports disk at AWS the way production is configured: no
+     * endpoint, a region, and session credentials (key + secret + token), as an
+     * ECS task role supplies them.
+     */
+    private function useRealExportsDiskWithSessionToken(string $token): void
+    {
+        config(['filesystems.disks.s3-exports' => [
+            'driver' => 's3',
+            'key' => 'ASIAEXAMPLEEXAMPLE',
+            'secret' => 'example-secret-access-key',
+            'token' => $token,
+            'region' => 'ca-central-1',
+            'bucket' => 'georag-exports-test',
+            'endpoint' => null,
+            'use_path_style_endpoint' => false,
+            'throw' => false,
+        ]]);
+        Storage::forgetDisk('s3-exports');
     }
 }

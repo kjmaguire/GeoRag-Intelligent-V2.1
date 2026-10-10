@@ -130,6 +130,11 @@
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
+            <!-- 2026-10-10: the export job stored a presigned URL in
+                 silver.exports.download_url varchar(1000); an ECS session-token
+                 URL overflowed it (22001). SQLite does not enforce varchar
+                 lengths, so the failure is only observable here. -->
+            <file>tests/Feature/Jobs/GenerateExportJobStoresNoUrlTest.php</file>
             <!-- 2026-09-24: silver.answer_runs / silver.message_feedback are
                  raw-SQL Postgres-only migrations. -->
             <file>tests/Feature/Api/V1/AnswerRunFeedbackControllerTest.php</file>
