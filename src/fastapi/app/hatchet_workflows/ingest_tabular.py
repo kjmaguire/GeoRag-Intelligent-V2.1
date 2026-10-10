@@ -282,16 +282,31 @@ INSERT INTO silver.collars (
 ON CONFLICT (project_id, hole_id_canonical) WHERE hole_id_canonical IS NOT NULL
 DO UPDATE SET
     hole_id_canonical = EXCLUDED.hole_id_canonical,
+    -- This file's coordinates and CRS replace the stored ones, so everything
+    -- that DESCRIBES the position follows them (audit finding 3): the
+    -- georef_method of THIS file's CRS decision, and the uncertainty derived
+    -- from it. spatial_uncertainty_* are reset to NULL because the BEFORE
+    -- trigger derive_collar_spatial_uncertainty only fills them while NULL
+    -- (2026_07_02_000000); left alone, a hole re-uploaded with a declared
+    -- CRS kept the 'assumed' method and its 175 m forever.
     easting     = EXCLUDED.easting,
     northing    = EXCLUDED.northing,
-    elevation   = EXCLUDED.elevation,
-    -- Optional (§04e): a file without a depth keeps the stored one.
+    georef_method = COALESCE(EXCLUDED.georef_method, silver.collars.georef_method),
+    spatial_uncertainty_m      = NULL,
+    spatial_uncertainty_method = NULL,
+    -- Every attribute below is OPTIONAL in the file: a file that does not
+    -- carry one keeps what an earlier file stored instead of erasing it.
+    -- (Elevation / azimuth / dip / drill_date were overwritten with NULL by
+    -- a later collar file that merely had no such column.)
+    elevation   = COALESCE(EXCLUDED.elevation, silver.collars.elevation),
     total_depth = COALESCE(EXCLUDED.total_depth, silver.collars.total_depth),
-    azimuth     = EXCLUDED.azimuth,
-    dip         = EXCLUDED.dip,
-    hole_type   = EXCLUDED.hole_type,
-    drill_date  = EXCLUDED.drill_date,
-    status      = EXCLUDED.status,
+    azimuth     = COALESCE(EXCLUDED.azimuth, silver.collars.azimuth),
+    dip         = COALESCE(EXCLUDED.dip, silver.collars.dip),
+    -- 'unknown' is the writer's stand-in for "the file said nothing"
+    -- (silver_row_guard.UNKNOWN), never a value to put over a stored one.
+    hole_type   = COALESCE(NULLIF(EXCLUDED.hole_type, 'unknown'), silver.collars.hole_type),
+    drill_date  = COALESCE(EXCLUDED.drill_date, silver.collars.drill_date),
+    status      = COALESCE(NULLIF(EXCLUDED.status, 'unknown'), silver.collars.status),
     -- Only ever the overflow of a too-long hole_type / status (PG-10), so a
     -- row that did not overflow keeps whatever an earlier writer stored.
     drill_type  = COALESCE(EXCLUDED.drill_type, silver.collars.drill_type),
@@ -2382,17 +2397,27 @@ async def _stamp_crs_confidence(
     MVT's crs_confidence was NULL for every tabular collar. Flagged
     (implausible) collars get 0.1. Best-effort in a savepoint: a failure
     here must not undo collars that are already written.
+
+    Collars are matched by ``hole_id_canonical``, not by the file's spelling:
+    ``_write_collars`` lands a variant spelling (``SRE09_6`` for a stored
+    ``SRE09-6``) on the EXISTING collar and keeps the stored spelling, so a
+    match on ``hole_id`` skipped exactly those collars and left them with the
+    previous upload's confidence (audit finding 3).
     """
-    if not hole_ids:
+    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+
+    canonical = sorted({c for c in map(canonicalize, hole_ids) if c})
+    if not canonical:
         return
+    flagged_canonical = sorted({c for c in map(canonicalize, flagged) if c})
     try:
         async with conn.transaction():
             await conn.execute(
                 "UPDATE silver.collars SET crs_confidence = CASE "
-                "WHEN hole_id = ANY($3::text[]) THEN LEAST($4::real, 0.1::real) "
+                "WHEN hole_id_canonical = ANY($3::text[]) THEN LEAST($4::real, 0.1::real) "
                 "ELSE $4::real END "
-                "WHERE project_id = $1::uuid AND hole_id = ANY($2::text[])",
-                project_id, hole_ids, sorted(flagged), confidence,
+                "WHERE project_id = $1::uuid AND hole_id_canonical = ANY($2::text[])",
+                project_id, canonical, flagged_canonical, confidence,
             )
     except Exception as exc:  # noqa: BLE001 — best-effort; the collars are already written
         log.warning(
