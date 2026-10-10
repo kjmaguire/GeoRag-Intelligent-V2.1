@@ -70,6 +70,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import datetime as _dt
+import io
 import json
 import logging
 import math
@@ -2096,6 +2097,52 @@ def _csv_preamble_warning(path: str, filename: str) -> dict[str, Any] | None:
     }
 
 
+#: How much of a delimited file the header row is looked for in. The header is
+#: the first non-blank row; this is only a bound on how far past a long title
+#: block it is searched for (1 Mi characters, thousands of columns' worth).
+_HEADER_SCAN_CHARS = 1 << 20
+
+
+async def _declared_object_size(store: Any, key: str) -> int | None:
+    """The object's size from a HEAD, or None when the backend will not say.
+
+    None means "download and check the real size": a HEAD that fails is not
+    itself a reason to refuse an upload (``ingest_pdf._declared_object_size``
+    makes the same call).
+    """
+    try:
+        meta = await asyncio.to_thread(store.head, Bucket.BRONZE, key)
+        size = meta.get("size") if isinstance(meta, dict) else None
+        return int(size) if size is not None else None
+    except Exception as exc:  # noqa: BLE001 - see above; the post-download check still applies
+        log.info("ingest_tabular: HEAD failed for %s (%s)", key, exc)
+        return None
+
+
+def _oversize_refusal(size: int | None, *, filename: str) -> str | None:
+    """Why a tabular file is too big to ingest, or None (audit finding 16).
+
+    The CSV path decodes the whole file and holds the result beside several
+    copies of it (about nine times the file, measured), the worker has 8 GiB,
+    and no limit applied to tabular files at all beyond the 512 MiB every
+    upload is admitted under. ``INGEST_TABULAR_MAX_BYTES`` is that limit; this
+    is checked against the object's declared size BEFORE it is downloaded and
+    again against what arrived.
+    """
+    from app.config import settings  # noqa: PLC0415
+    from app.services.ingest.upload_limits import human_bytes  # noqa: PLC0415
+
+    limit = int(settings.INGEST_TABULAR_MAX_BYTES)
+    if size is None or size <= limit:
+        return None
+    return (
+        f"'{filename}' is {human_bytes(size)}, over the {human_bytes(limit)} limit "
+        f"for tabular files (INGEST_TABULAR_MAX_BYTES). Nothing was read. Split "
+        f"the table into smaller files (for example one per year or area) and "
+        f"upload them separately."
+    )
+
+
 def _csv_headers(path: str) -> list[str]:
     """Read a CSV's header row, honouring its real encoding and delimiter.
 
@@ -2104,6 +2151,10 @@ def _csv_headers(path: str) -> list[str]:
     Latin-1 from Windows survey software and semicolon-delimited from
     European labs, and a header row split on the wrong delimiter classifies
     as 'unknown' and silently routes the whole file to nothing.
+
+    Reads a bounded prefix, not the whole decoded file: this used to
+    ``splitlines()`` all of a 150 MB upload into millions of line objects just
+    to look at the first of them (audit finding 16).
     """
     import csv  # noqa: PLC0415
 
@@ -2113,9 +2164,9 @@ def _csv_headers(path: str) -> list[str]:
     )
 
     stream, _encoding, _sha, _size = open_csv_with_encoding(path)
-    content = stream.read()
-    delimiter = detect_delimiter(content)
-    for row in csv.reader(content.splitlines(), delimiter=delimiter):
+    prefix = stream.read(_HEADER_SCAN_CHARS)
+    delimiter = detect_delimiter(prefix)
+    for row in csv.reader(io.StringIO(prefix, newline=""), delimiter=delimiter):
         if any((cell or "").strip() for cell in row):
             return [(cell or "").strip() for cell in row]
     return []
@@ -2642,8 +2693,12 @@ def _read_delimited_rows(path: str) -> list[dict[str, Any]]:
 
     stream, _encoding, _sha, _size = open_csv_with_encoding(path)
     content = stream.read()
+    # io.StringIO(newline="") is the csv module's own contract for text it did
+    # not open itself: a quoted cell with a line break in it stays one cell.
+    # ``content.splitlines()`` cut it at the break and glued the pieces to the
+    # neighbouring rows (audit finding 18).
     reader = csv.DictReader(
-        content.splitlines(), delimiter=detect_delimiter(content),
+        io.StringIO(content, newline=""), delimiter=detect_delimiter(content),
     )
     return [dict(row) for row in reader]
 
@@ -3235,11 +3290,27 @@ async def run_ingest_tabular(
         if run_id:
             await _progress.mark_stage_started(run_id=run_id, stage="preflight")
 
+        # Refused on the object's DECLARED size, before a byte is downloaded.
+        oversize = _oversize_refusal(
+            await _declared_object_size(store, input.minio_key), filename=filename,
+        )
+        if oversize:
+            raise ValueError(oversize)
+
         with tempfile.TemporaryDirectory(prefix="georag_tabular_") as tmpdir:
             local = str(Path(tmpdir) / filename)
             await asyncio.to_thread(
                 store.get_file, Bucket.BRONZE, input.minio_key, local,
             )
+            # ... and again on what arrived: HEAD is metadata, and an object
+            # can be replaced between the two.
+            try:
+                arrived = Path(local).stat().st_size
+            except OSError:
+                arrived = None      # nothing to measure; the reader reports a missing file
+            oversize = _oversize_refusal(arrived, filename=filename)
+            if oversize:
+                raise ValueError(oversize)
             #: Lineage + replace key stamped on every drill row this run
             #: writes (see _write_intervals): the logical file name scopes
             #: the per-hole replace to THIS file, the hash records which
