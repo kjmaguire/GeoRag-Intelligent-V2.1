@@ -74,24 +74,42 @@ final class WorkspaceRlsCoverageTest extends TestCase
         // Added 2026-08-17 after the CI-gap audit surfaced this table as a
         // false-positive gap — RLS here would contradict the documented
         // support-ops design, not fix a real leak.
+        // NOTE (2026-10-10): production does not match that design.
+        // database/raw/phase0/98-rls-tenant-isolation-block3.sql §3C puts
+        // FORCE RLS and a strict tenant policy on this table after `migrate`,
+        // as it does on the two support tables in EXEMPT_TEST_DB_ONLY_TABLES.
+        // Whether ops.* is tenant-scoped or global is an open decision.
         'ops.support_tickets',
     ];
 
     /**
-     * Reserved for future test-DB-only exemptions. Currently empty —
-     * the 14 tables previously listed here were reconciled into a
-     * proper Laravel migration on 2026-05-25
+     * Tables whose RLS production gets from the raw layer, which
+     * RefreshDatabase does not run. The 14 tables previously listed here
+     * were reconciled into a proper Laravel migration on 2026-05-25
      * (2026_05_25_175214_enable_rls_on_phase0_workspace_tables_reconciliation),
      * which is a no-op against production (existing policies left
      * untouched) and a first-time install against the test DB.
      *
-     * Keep the constant in place so future test-DB-parity gaps have
-     * an obvious home; future entries MUST include a follow-up note
-     * for how they'll be reconciled.
+     * Every entry MUST include a follow-up note for how it will be
+     * reconciled.
      *
      * @var list<string>
      */
-    private const EXEMPT_TEST_DB_ONLY_TABLES = [];
+    private const EXEMPT_TEST_DB_ONLY_TABLES = [
+        // 2026-10-10. 2026_10_10_120000 adds workspace_id to both, nullable
+        // and back-filled, so the support workflow can write it on a
+        // migrate-only database as well. The policies stay in raw 98 (block3
+        // §3A/§3B: NOT NULL, FK, FORCE RLS, strict tenant policy), applied
+        // by `db:apply-raw` on every deploy. The "Cron sweeps under
+        // georag_app" CI job checks that post-raw state
+        // (test_support_replay_workspace_scope.py).
+        // Reconcile: a migration mirroring block3 §3A-§3C for all three
+        // support tables, as 2026_05_25_175214 did for 14 others. It retires
+        // these two entries and the ops.support_tickets exemption, once the
+        // tenancy decision above is made.
+        'ops.support_replay_runs',
+        'ops.support_ticket_traces',
+    ];
 
     public function test_every_workspace_scoped_table_has_rls_with_a_policy(): void
     {
