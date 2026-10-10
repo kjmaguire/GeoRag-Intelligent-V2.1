@@ -7,13 +7,16 @@ as one sequence cannot work), the watermark window continues each chain from the
 row before it, and the cursor / REPEATABLE READ plumbing is valid asyncpg.
 
 Needs a Postgres with the migration chain applied (the ledger and its BEFORE
-INSERT hash trigger) and a superuser login; skips otherwise. Rows use far-future
-timestamps and unique workspace ids and are removed afterwards.
+INSERT hash trigger) and a superuser login; skips otherwise. Rows carry a
+test-only action_type and workspace ids and are removed afterwards. The hash
+trigger stamps created_at itself (2026_10_10_100100), so the test cannot place
+a row in time: its windows are cut from the database clock between inserts.
 """
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -37,11 +40,26 @@ PG_DSN = os.environ.get("PG_DSN") or (
 WS_A = "7c01d000-0000-4000-8000-0000000a0001"
 WS_B = "7c01d000-0000-4000-8000-0000000b0002"
 ACTION = "cold.tier.archive.test"
-DAY1, DAY2, DAY3 = "2031-06-01", "2031-06-02", "2031-06-03"
 
 
-def _day(day: str) -> datetime:
-    return datetime.fromisoformat(f"{day}T00:00:00+00:00").astimezone(UTC)
+@dataclass
+class Ledger:
+    """The fixture ledger: row ids by tag, and three window edges.
+
+    ``day1`` < a1, n1, a2 < ``day2`` < a3, n2, b1, a4 < ``day3``. The edges are
+    not calendar days. The BEFORE INSERT trigger stamps ``created_at`` itself,
+    after the chain lock (2026_10_10_100100), so a caller cannot place a row in
+    time. Each edge is read from the database clock between two inserts
+    instead, which puts it strictly between the rows on either side of it.
+    """
+
+    ids: dict[str, str]
+    day1: datetime
+    day2: datetime
+    day3: datetime
+
+    def __getitem__(self, tag: str) -> str:
+        return self.ids[tag]
 
 
 class _Store:
@@ -71,13 +89,20 @@ async def admin():  # noqa: ANN201
         await conn.close()
 
 
+async def _edge(conn: asyncpg.Connection) -> datetime:
+    """A point on the ledger's clock that no row shares: pause, read, pause."""
+    await conn.execute("SELECT pg_sleep(0.002)")
+    edge: datetime = await conn.fetchval("SELECT clock_timestamp()")
+    await conn.execute("SELECT pg_sleep(0.002)")
+    return edge
+
+
 async def _scrub(conn: asyncpg.Connection) -> None:
+    # The ledger is append-only (2026_10_10_100200). Its refusing trigger is an
+    # ordinary one, so replica mode lets a superuser clean up a test's rows.
     async with conn.transaction():
         await conn.execute("SET LOCAL session_replication_role = replica")
-        await conn.execute(
-            "DELETE FROM audit.audit_ledger WHERE action_type = $1 "
-            "AND created_at >= '2031-06-01' AND created_at < '2031-06-04'", ACTION,
-        )
+        await conn.execute("DELETE FROM audit.audit_ledger WHERE action_type = $1", ACTION)
 
 
 @pytest.fixture
@@ -89,22 +114,24 @@ async def ledger(admin: asyncpg.Connection):  # noqa: ANN201
     * B     b1 on day 2 (no history before it)
     """
     await _scrub(admin)
-    rows = [
-        (WS_A, f"{DAY1} 00:00:01+00", "a1"), (None, f"{DAY1} 00:00:02+00", "n1"),
-        (WS_A, f"{DAY1} 00:00:03+00", "a2"),
-        (WS_A, f"{DAY2} 00:00:01+00", "a3"), (None, f"{DAY2} 00:00:02+00", "n2"),
-        (WS_B, f"{DAY2} 00:00:03+00", "b1"), (WS_A, f"{DAY2} 00:00:04+00", "a4"),
-    ]
     ids: dict[str, str] = {}
-    for ws, when, tag in rows:
+
+    async def put(ws: str | None, tag: str) -> None:
         ids[tag] = str(await admin.fetchval(
-            "INSERT INTO audit.audit_ledger (workspace_id, actor_kind, action_type, payload, created_at) "
-            "VALUES ($1::uuid, 'system', $2, jsonb_build_object('tag', $3::text), $4::text::timestamptz) "
-            "RETURNING id",
-            ws, ACTION, tag, when,
+            "INSERT INTO audit.audit_ledger (workspace_id, actor_kind, action_type, payload) "
+            "VALUES ($1::uuid, 'system', $2, jsonb_build_object('tag', $3::text)) RETURNING id",
+            ws, ACTION, tag,
         ))
+
+    day1 = await _edge(admin)
+    for ws, tag in ((WS_A, "a1"), (None, "n1"), (WS_A, "a2")):
+        await put(ws, tag)
+    day2 = await _edge(admin)
+    for ws, tag in ((WS_A, "a3"), (None, "n2"), (WS_B, "b1"), (WS_A, "a4")):
+        await put(ws, tag)
+    day3 = await _edge(admin)
     try:
-        yield ids
+        yield Ledger(ids=ids, day1=day1, day2=day2, day3=day3)
     finally:
         await _scrub(admin)
 
@@ -115,12 +142,12 @@ async def _tamper(conn: asyncpg.Connection, sql: str, *args: Any) -> None:
         await conn.execute(sql, *args)
 
 
-async def _heads(conn: asyncpg.Connection, before: str) -> dict[str, str]:
+async def _heads(conn: asyncpg.Connection, before: datetime) -> dict[str, str]:
     """The newest hash of each chain strictly before ``before``, from the table."""
     rows = await conn.fetch(
         "SELECT DISTINCT ON (workspace_id) workspace_id::text AS ws, hash FROM audit.audit_ledger "
-        "WHERE action_type = $1 AND created_at < $2::text::timestamptz "
-        "ORDER BY workspace_id, created_at DESC, id DESC", ACTION, f"{before} 00:00:00+00",
+        "WHERE action_type = $1 AND created_at < $2::timestamptz "
+        "ORDER BY workspace_id, created_at DESC, id DESC", ACTION, before,
     )
     return {(r["ws"] or SYSTEM_CHAIN): bytes(r["hash"]).hex() for r in rows}
 
@@ -131,33 +158,33 @@ async def test_interleaved_workspace_chains_archive_clean(admin, ledger) -> None
     store = _Store()
 
     run = await archive_window(
-        admin, cutoff_before=_day(DAY3), cutoff_after=_day(DAY1),
+        admin, cutoff_before=ledger.day3, cutoff_after=ledger.day1,
         archive_bucket="audit-cold-test", cold_tier=store, chunk_rows=3,
     )
 
     assert run.verification_passed is True, run.failure_reason
     assert run.rows_archived == 7
     assert len(run.chunks) == 3  # 3 + 3 + 1
-    assert run.chain_heads == await _heads(admin, DAY3)
+    assert run.chain_heads == await _heads(admin, ledger.day3)
     manifest = json.loads(store.puts[run.manifest_key].decode())
     assert manifest["chain_continuous"] is True
     assert manifest["chain_heads"] == run.chain_heads
-    assert manifest["window_start"] == _day(DAY1).isoformat()
+    assert manifest["window_start"] == ledger.day1.isoformat()
     assert sum(c["rows"] for c in manifest["chunks"]) == 7
 
 
 async def test_the_next_window_continues_each_chain_from_the_one_before(admin, ledger) -> None:
     store = _Store()
     first = await archive_window(
-        admin, cutoff_before=_day(DAY2), cutoff_after=_day(DAY1),
+        admin, cutoff_before=ledger.day2, cutoff_after=ledger.day1,
         archive_bucket="audit-cold-test", cold_tier=store,
     )
     assert first.verification_passed and first.rows_archived == 3
-    assert first.chain_heads == await _heads(admin, DAY2)
+    assert first.chain_heads == await _heads(admin, ledger.day2)
 
     # Day 2 alone: chains A and system hang off day-1 rows; B has no parent.
     second = await archive_window(
-        admin, cutoff_before=_day(DAY3), cutoff_after=_day(DAY2),
+        admin, cutoff_before=ledger.day3, cutoff_after=ledger.day2,
         archive_bucket="audit-cold-test", cold_tier=store,
     )
 
@@ -173,7 +200,7 @@ async def test_a_forged_parent_across_the_watermark_is_caught(admin, ledger) -> 
     store = _Store()
 
     run = await archive_window(
-        admin, cutoff_before=_day(DAY3), cutoff_after=_day(DAY2),
+        admin, cutoff_before=ledger.day3, cutoff_after=ledger.day2,
         archive_bucket="audit-cold-test", cold_tier=store,
     )
 
@@ -190,7 +217,7 @@ async def test_tampering_inside_the_window_is_caught_and_nothing_is_uploaded(adm
     store = _Store()
 
     run = await archive_window(
-        admin, cutoff_before=_day(DAY3), cutoff_after=_day(DAY2),
+        admin, cutoff_before=ledger.day3, cutoff_after=ledger.day2,
         archive_bucket="audit-cold-test", cold_tier=store,
     )
 
@@ -206,7 +233,7 @@ async def test_a_deleted_first_row_is_not_mistaken_for_a_break_without_a_waterma
     store = _Store()
 
     run = await archive_window(
-        admin, cutoff_before=_day(DAY3), cutoff_after=None,
+        admin, cutoff_before=ledger.day3, cutoff_after=None,
         archive_bucket="audit-cold-test", cold_tier=store,
     )
 
@@ -221,21 +248,20 @@ async def test_the_watermark_is_the_newest_completed_cutoff_of_the_scope(admin) 
     from app.hatchet_workflows.cold_tier_archive import _last_archived_cutoff
 
     anchors = [
-        # (workspace, action, cutoff_before, second)
-        (None, "audit.cold_tier.archive.completed", "2031-06-01T00:00:00+00:00", 1),
-        (None, "audit.cold_tier.archive.completed", "2031-06-03T00:00:00+00:00", 2),
-        (None, "audit.cold_tier.archive.completed", "2031-06-02T00:00:00+00:00", 3),  # shorter retention
-        (None, "audit.cold_tier.archive.failed", "2031-06-09T00:00:00+00:00", 4),
-        (WS_A, "audit.cold_tier.archive.completed", "2031-06-05T00:00:00+00:00", 5),
+        # (workspace, action, cutoff_before), written in this order
+        (None, "audit.cold_tier.archive.completed", "2031-06-01T00:00:00+00:00"),
+        (None, "audit.cold_tier.archive.completed", "2031-06-03T00:00:00+00:00"),
+        (None, "audit.cold_tier.archive.completed", "2031-06-02T00:00:00+00:00"),  # shorter retention
+        (None, "audit.cold_tier.archive.failed", "2031-06-09T00:00:00+00:00"),
+        (WS_A, "audit.cold_tier.archive.completed", "2031-06-05T00:00:00+00:00"),
     ]
     await _scrub_anchors(admin)
     try:
-        for ws, action, cutoff, second in anchors:
+        for ws, action, cutoff in anchors:
             await admin.execute(
-                "INSERT INTO audit.audit_ledger (workspace_id, actor_kind, action_type, payload, created_at) "
-                "VALUES ($1::uuid, 'workflow', $2, jsonb_build_object('cutoff_before', $3::text), "
-                "$4::text::timestamptz)",
-                ws, action, cutoff, f"2031-06-01 00:00:{second:02d}+00",
+                "INSERT INTO audit.audit_ledger (workspace_id, actor_kind, action_type, payload) "
+                "VALUES ($1::uuid, 'workflow', $2, jsonb_build_object('cutoff_before', $3::text))",
+                ws, action, cutoff,
             )
 
         assert await _last_archived_cutoff(admin, None) == datetime(2031, 6, 3, tzinfo=UTC)
@@ -248,15 +274,17 @@ async def test_the_watermark_is_the_newest_completed_cutoff_of_the_scope(admin) 
 async def _scrub_anchors(conn: asyncpg.Connection) -> None:
     async with conn.transaction():
         await conn.execute("SET LOCAL session_replication_role = replica")
+        # Matched on the test's own far-future cutoffs, not on created_at: the
+        # trigger stamps that, so it is today's date.
         await conn.execute(
             "DELETE FROM audit.audit_ledger WHERE action_type LIKE 'audit.cold_tier.archive.%' "
-            "AND created_at >= '2031-06-01' AND created_at < '2031-06-04'",
+            "AND payload->>'cutoff_before' LIKE '2031-06-%'",
         )
 
 
 async def test_the_scope_restricts_the_window_to_one_chain(admin, ledger) -> None:
     run = await archive_window(
-        admin, cutoff_before=_day(DAY3), cutoff_after=_day(DAY1), workspace_id_scope=WS_A,
+        admin, cutoff_before=ledger.day3, cutoff_after=ledger.day1, workspace_id_scope=WS_A,
         archive_bucket="audit-cold-test", cold_tier=_Store(),
     )
 

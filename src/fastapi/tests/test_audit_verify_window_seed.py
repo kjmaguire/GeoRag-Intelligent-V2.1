@@ -12,8 +12,10 @@ verdict that is not 'clean', which is only worth wiring once the verdict can
 be trusted.
 
 Needs a Postgres with the migration chain applied (the ledger, its hash
-trigger and the verification functions); skips otherwise. Rows use far-future
-timestamps and unique workspace ids, and are removed afterwards.
+trigger and the verification functions); skips otherwise. Rows carry a
+test-only action_type and workspace ids, and are removed afterwards. The hash
+trigger stamps created_at itself (2026_10_10_100100), so the test cannot place
+a row in time: its windows are cut from the database clock between inserts.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ import logging
 import os
 import re
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -95,13 +98,28 @@ pg = pytest.mark.integration
 WS_A = "5a0d1f00-0000-4000-8000-0000000a0001"
 WS_B = "5a0d1f00-0000-4000-8000-0000000b0002"
 ACTION = "verify.window.test"
-DAY1 = "2031-05-01"
-DAY2 = "2031-05-02"
-DAY3 = "2031-05-03"
 
 
-def _at(day: str, second: int) -> str:
-    return f"{day} 00:00:{second:02d}+00"
+@dataclass
+class Ledger:
+    """The fixture ledger: row ids by tag, and three window edges.
+
+    ``day1`` < a1, a2, n1 < ``day2`` < a3, n2, a4, b1 < ``day3``. The edges are
+    not calendar days. The BEFORE INSERT trigger stamps ``created_at`` itself,
+    after the chain lock (2026_10_10_100100), so a caller cannot place a row in
+    time. Each edge is read from the database clock between two inserts
+    instead, which puts it strictly between the rows on either side of it.
+    """
+
+    ids: dict[str, str]
+    day1: datetime
+    day2: datetime
+    day3: datetime
+    #: Verification runs a test created, removed at teardown.
+    runs: list[uuid.UUID] = field(default_factory=list)
+
+    def __getitem__(self, tag: str) -> str:
+        return self.ids[tag]
 
 
 @pytest.fixture
@@ -124,53 +142,64 @@ async def admin():  # noqa: ANN201
         await conn.close()
 
 
-async def _scrub(conn: asyncpg.Connection) -> None:
+async def _edge(conn: asyncpg.Connection) -> datetime:
+    """A point on the ledger's clock that no row shares: pause, read, pause."""
+    await conn.execute("SELECT pg_sleep(0.002)")
+    edge: datetime = await conn.fetchval("SELECT clock_timestamp()")
+    await conn.execute("SELECT pg_sleep(0.002)")
+    return edge
+
+
+async def _scrub(conn: asyncpg.Connection, runs: list[uuid.UUID] | None = None) -> None:
+    # The ledger is append-only (2026_10_10_100200). Its refusing trigger is an
+    # ordinary one, so replica mode lets a superuser clean up a test's rows.
     async with conn.transaction():
         await conn.execute("SET LOCAL session_replication_role = replica")
-        await conn.execute(
-            "DELETE FROM audit.audit_ledger WHERE action_type = $1 AND created_at >= '2031-05-01' "
-            "AND created_at < '2031-05-04'", ACTION,
-        )
-        await conn.execute(
-            "DELETE FROM audit.audit_ledger_verification_runs WHERE partition_date >= '2031-05-01' "
-            "AND partition_date < '2031-05-04'",
-        )
+        await conn.execute("DELETE FROM audit.audit_ledger WHERE action_type = $1", ACTION)
+        if runs:
+            await conn.execute(
+                "DELETE FROM audit.audit_ledger_verification_runs WHERE id = ANY($1::uuid[])", runs,
+            )
 
 
 @pytest.fixture
 async def ledger(admin: asyncpg.Connection):  # noqa: ANN201
-    """A ledger with three chains and history on both sides of day 2.
+    """A ledger with three chains and history on both sides of ``day2``.
 
-    * A      two rows on day 1, two on day 2
-    * NULL   one row on day 1, one on day 2     (the system-wide chain)
-    * B      no history: starts on day 2
+    * A      two rows before day2, two after
+    * NULL   one row before, one after     (the system-wide chain)
+    * B      no history: starts after day2
     """
     await _scrub(admin)
-    rows: list[tuple[str | None, str, str]] = [
-        (WS_A, _at(DAY1, 1), "a1"), (WS_A, _at(DAY1, 2), "a2"),
-        (None, _at(DAY1, 3), "n1"),
-        (WS_A, _at(DAY2, 1), "a3"), (None, _at(DAY2, 2), "n2"),
-        (WS_A, _at(DAY2, 3), "a4"), (WS_B, _at(DAY2, 4), "b1"),
-    ]
     ids: dict[str, str] = {}
-    for ws, when, tag in rows:
+
+    async def put(ws: str | None, tag: str) -> None:
         ids[tag] = str(await admin.fetchval(
-            "INSERT INTO audit.audit_ledger (workspace_id, actor_kind, action_type, payload, created_at) "
-            "VALUES ($1::uuid, 'system', $2, jsonb_build_object('tag', $3::text), $4::text::timestamptz) RETURNING id",
-            ws, ACTION, tag, when,
+            "INSERT INTO audit.audit_ledger (workspace_id, actor_kind, action_type, payload) "
+            "VALUES ($1::uuid, 'system', $2, jsonb_build_object('tag', $3::text)) RETURNING id",
+            ws, ACTION, tag,
         ))
+
+    day1 = await _edge(admin)
+    for ws, tag in ((WS_A, "a1"), (WS_A, "a2"), (None, "n1")):
+        await put(ws, tag)
+    day2 = await _edge(admin)
+    for ws, tag in ((WS_A, "a3"), (None, "n2"), (WS_A, "a4"), (WS_B, "b1")):
+        await put(ws, tag)
+    day3 = await _edge(admin)
+
+    fixture = Ledger(ids=ids, day1=day1, day2=day2, day3=day3)
     try:
-        yield ids
+        yield fixture
     finally:
-        await _scrub(admin)
+        await _scrub(admin, fixture.runs)
 
 
-async def _breaks(conn: asyncpg.Connection, start: str, end: str) -> list[asyncpg.Record]:
+async def _breaks(conn: asyncpg.Connection, start: datetime, end: datetime) -> list[asyncpg.Record]:
     return await conn.fetch(
         "SELECT audit_id::text AS id, workspace_id::text AS ws, stored_prev, expected_prev "
-        "FROM audit.verify_hash_chain($1::text::timestamptz, $2::text::timestamptz) "
-        "WHERE created_at >= '2031-05-01' ORDER BY created_at",
-        _at(start, 0), _at(end, 0),
+        "FROM audit.verify_hash_chain($1::timestamptz, $2::timestamptz) ORDER BY created_at",
+        start, end,
     )
 
 
@@ -182,23 +211,23 @@ async def _tamper(conn: asyncpg.Connection, sql: str, *args: Any) -> None:
 
 @pg
 async def test_a_clean_ledger_has_no_false_break_at_the_window_edge(
-    admin: asyncpg.Connection, ledger: dict[str, str],
+    admin: asyncpg.Connection, ledger: Ledger,
 ) -> None:
     """Day 2 alone: chains A and NULL both have a predecessor on day 1. The old
     verifier returned both of their first rows."""
-    assert await _breaks(admin, DAY2, DAY3) == []
+    assert await _breaks(admin, ledger.day2, ledger.day3) == []
     # ... and a window that contains the whole history was never a problem.
-    assert await _breaks(admin, DAY1, DAY3) == []
+    assert await _breaks(admin, ledger.day1, ledger.day3) == []
 
 
 @pg
 async def test_a_chain_with_no_history_still_expects_a_null_parent(
-    admin: asyncpg.Connection, ledger: dict[str, str],
+    admin: asyncpg.Connection, ledger: Ledger,
 ) -> None:
     """B's first row has no predecessor anywhere. Forge a previous_hash on it:
     the seed is NULL, so it must be flagged."""
     await _tamper(admin, "UPDATE audit.audit_ledger SET previous_hash = '\\xdeadbeef' WHERE id = $1::uuid", ledger["b1"])
-    broken = await _breaks(admin, DAY2, DAY3)
+    broken = await _breaks(admin, ledger.day2, ledger.day3)
     assert [r["id"] for r in broken] == [ledger["b1"]]
     assert broken[0]["expected_prev"] is None
 
@@ -206,13 +235,13 @@ async def test_a_chain_with_no_history_still_expects_a_null_parent(
 @pytest.mark.parametrize("victim,chain_head", [("a2", "a3"), ("n1", "n2")])
 @pg
 async def test_tampering_with_the_pre_window_parent_is_caught_at_the_first_in_window_row(
-    admin: asyncpg.Connection, ledger: dict[str, str], victim: str, chain_head: str,
+    admin: asyncpg.Connection, ledger: Ledger, victim: str, chain_head: str,
 ) -> None:
     """The seed is a real lookup, not a pass: change the parent's hash and the
     child's stored previous_hash no longer matches it."""
     await _tamper(admin, "UPDATE audit.audit_ledger SET hash = '\\xdeadbeef' WHERE id = $1::uuid", ledger[victim])
 
-    broken = await _breaks(admin, DAY2, DAY3)
+    broken = await _breaks(admin, ledger.day2, ledger.day3)
 
     assert [r["id"] for r in broken] == [ledger[chain_head]]
     assert bytes(broken[0]["expected_prev"]) == bytes.fromhex("deadbeef")
@@ -221,30 +250,31 @@ async def test_tampering_with_the_pre_window_parent_is_caught_at_the_first_in_wi
 
 @pg
 async def test_a_tampered_payload_inside_the_window_is_still_caught(
-    admin: asyncpg.Connection, ledger: dict[str, str],
+    admin: asyncpg.Connection, ledger: Ledger,
 ) -> None:
     await _tamper(
         admin, "UPDATE audit.audit_ledger SET payload = '{\"tag\": \"forged\"}' WHERE id = $1::uuid", ledger["a4"],
     )
-    assert [r["id"] for r in await _breaks(admin, DAY2, DAY3)] == [ledger["a4"]]
+    assert [r["id"] for r in await _breaks(admin, ledger.day2, ledger.day3)] == [ledger["a4"]]
 
 
 @pg
-async def test_a_deleted_row_breaks_the_chain_it_was_in(admin: asyncpg.Connection, ledger: dict[str, str]) -> None:
+async def test_a_deleted_row_breaks_the_chain_it_was_in(admin: asyncpg.Connection, ledger: Ledger) -> None:
     """Remove a1 (day 1): a2 then hangs off a row that is gone, so a day-1 walk
     flags a2. (The day-2 walk is unaffected; day 2 starts at a3, parent a2.)"""
     await _tamper(admin, "DELETE FROM audit.audit_ledger WHERE id = $1::uuid", ledger["a1"])
-    assert ledger["a2"] in [r["id"] for r in await _breaks(admin, DAY1, DAY2)]
-    assert await _breaks(admin, DAY2, DAY3) == []
+    assert ledger["a2"] in [r["id"] for r in await _breaks(admin, ledger.day1, ledger.day2)]
+    assert await _breaks(admin, ledger.day2, ledger.day3) == []
 
 
 @pg
 async def test_run_verification_records_clean_for_a_clean_window(
-    admin: asyncpg.Connection, ledger: dict[str, str],
+    admin: asyncpg.Connection, ledger: Ledger,
 ) -> None:
     run_id = await admin.fetchval(
-        "SELECT audit.run_verification($1::text::timestamptz, $2::text::timestamptz, NULL)", _at(DAY2, 0), _at(DAY3, 0),
+        "SELECT audit.run_verification($1::timestamptz, $2::timestamptz, NULL)", ledger.day2, ledger.day3,
     )
+    ledger.runs.append(run_id)
     row = await admin.fetchrow(
         "SELECT status, rows_verified, broken_ids FROM audit.audit_ledger_verification_runs WHERE id = $1", run_id,
     )
@@ -254,19 +284,18 @@ async def test_run_verification_records_clean_for_a_clean_window(
 
 @pg
 async def test_the_workflow_is_quiet_when_clean_and_raises_the_marker_on_a_break(
-    admin: asyncpg.Connection, ledger: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    admin: asyncpg.Connection, ledger: Ledger, monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(alv, "_build_dsn", lambda *a, **k: PG_DSN)
     monkeypatch.setattr("app.services.laravel_bridge.post_admin_surface_updated", AsyncMock())
-    window = alv.AuditVerifyInput(
-        start_at=datetime(2031, 5, 2, tzinfo=UTC), end_at=datetime(2031, 5, 3, tzinfo=UTC),
-    )
+    window = alv.AuditVerifyInput(start_at=ledger.day2, end_at=ledger.day3)
 
     with caplog.at_level(logging.ERROR, logger="georag.hatchet.audit_ledger_verify"):
         clean = await alv.run_verification.aio_mock_run(window)
+    ledger.runs.append(uuid.UUID(clean.run_id))
     assert clean.status == "clean"
     assert not [r for r in caplog.records if alv.AUDIT_CHAIN_BREAK_MARKER in r.getMessage()]
 
@@ -274,6 +303,7 @@ async def test_the_workflow_is_quiet_when_clean_and_raises_the_marker_on_a_break
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="georag.hatchet.audit_ledger_verify"):
         broken = await alv.run_verification.aio_mock_run(window)
+    ledger.runs.append(uuid.UUID(broken.run_id))
 
     assert broken.status == "break"
     lines = [r.getMessage() for r in caplog.records if alv.AUDIT_CHAIN_BREAK_MARKER in r.getMessage()]
