@@ -49,7 +49,6 @@ def _make_capturing_client() -> tuple[Any, dict[str, Any]]:
     return client, captured
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
 @pytest.mark.asyncio
 async def test_vllm_payload_omits_ollama_only_fields():
     """The vLLM branch must NOT emit Ollama-specific fields:
@@ -90,7 +89,6 @@ async def test_vllm_payload_omits_ollama_only_fields():
     )
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
 @pytest.mark.asyncio
 async def test_vllm_sampling_defaults_promoted_to_top_level():
     """QWEN3_TOP_P / TOP_K / MIN_P flow through to TOP-LEVEL fields on
@@ -116,7 +114,6 @@ async def test_vllm_sampling_defaults_promoted_to_top_level():
     assert payload["min_p"] == pytest.approx(0.0)
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
 @pytest.mark.asyncio
 async def test_vllm_presence_penalty_thinking_off():
     """presence_penalty=1.5 (the no-think default) lands at top level on
@@ -159,7 +156,6 @@ async def test_vllm_presence_penalty_absent_when_thinking_on():
     )
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
 @pytest.mark.asyncio
 async def test_vllm_json_mode_uses_response_format():
     """Structured-output requests on vLLM emit the OpenAI-compat-standard
@@ -215,7 +211,6 @@ async def test_vllm_thinking_token_bump_still_applies(monkeypatch):
     assert payload["max_tokens"] == 4096 + 2048
 
 
-@pytest.mark.skip(reason="Phase 2: requires orchestrator backend-conditional cleanup (options dict, response_format kwarg, sampling-param top-level promotion). Test asserts the contract; will pass once orchestrator refactor lands per docs/model_migration.md Phase 2.")
 @pytest.mark.asyncio
 async def test_vllm_backend_detection_via_settings(monkeypatch):
     """When base_url is empty (orchestrator using settings), the backend
