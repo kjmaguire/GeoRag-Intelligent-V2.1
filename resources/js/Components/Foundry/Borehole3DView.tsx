@@ -1,6 +1,12 @@
 import { useMemo } from 'react';
 import GeoPlot from '@/Components/GeoPlot';
-import { buildScene3D, sceneZAxisTitle, type CollarForDesurvey, type SurveyStationInput } from '@/lib/desurvey';
+import {
+    buildScene3D,
+    sceneZAxisTitle,
+    type CollarForDesurvey,
+    type SurveyStationInput,
+    SCENE_3D_ASPECT,
+} from '@/lib/desurvey';
 
 interface IntervalBand {
     from: number;
@@ -185,8 +191,7 @@ export function Borehole3DView({
                     showbackground: true,
                 },
                 bgcolor: '#0a0e14',
-                aspectmode: 'manual',
-                aspectratio: { x: 1, y: 1, z: 0.6 },
+                ...SCENE_3D_ASPECT,
                 camera: { eye: { x: 1.6, y: 1.6, z: 0.8 }, up: { x: 0, y: 0, z: 1 } },
             },
             paper_bgcolor: '#0a0e14',
