@@ -55,7 +55,9 @@ WHAT IS EXEMPT, AND WHY
 from __future__ import annotations
 
 import re
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -609,3 +611,160 @@ def test_the_pg_cron_scan_reads_only_live_statements() -> None:
 def test_an_unreadable_pg_cron_hour_fails_instead_of_being_skipped() -> None:
     with pytest.raises(AssertionError, match="cannot place"):
         pg_cron_daily_jobs("SELECT cron.schedule('range', '0 1-4 * * *', $$SELECT 1$$);")
+
+
+# ---------------------------------------------------------------------------
+# The dead-air suppressor against the longest night (AW-11, 2026-10-10)
+# ---------------------------------------------------------------------------
+# alerts.tf suppresses octane-dead-air for `period` after the shutdown sweep's
+# completion marker. The schedule says the night is 15h30m; the clock says
+# otherwise on the night it falls back (16h30m) and on the night it springs
+# forward (14h30m). A fixed period sized for the schedule let go before the
+# startup sweep fired on 2026-11-01 and paged about five minutes before the
+# platform was asked to start. The zone's real rules are used here, not a
+# hardcoded "+60", so the test notices if the zone, the crons or the slack
+# change.
+
+SCHEDULER_TF = REPO / "deploy" / "aws" / "terraform" / "scheduler.tf"
+ALERTS_TF = REPO / "deploy" / "aws" / "terraform" / "alerts.tf"
+
+
+def _maintenance_timezone() -> str:
+    text = TERRAFORM.read_text(encoding="utf-8")
+    block = re.search(r'variable\s+"maintenance_timezone"\s*\{(.*?)\n\}', text, re.S)
+    assert block, "no maintenance_timezone variable"
+    match = re.search(r'default\s*=\s*"([^"]+)"', block.group(1))
+    assert match, "maintenance_timezone has no default"
+    return match.group(1)
+
+
+def night_lengths(tz_name: str, years: range) -> list[int]:
+    """Elapsed minutes from each day's shutdown fire to the next startup fire.
+
+    Both are local-time schedules (EventBridge Scheduler takes a timezone), so
+    the instants come from the tz database, and the subtraction is done in UTC:
+    two aware datetimes sharing a tzinfo subtract as wall-clock time, which
+    would report every night as 15h30m and hide exactly what this measures.
+    """
+    tz = ZoneInfo(tz_name)
+    stop_h, stop_m = divmod(_local_minutes("shutdown_cron"), 60)
+    start_h, start_m = divmod(_local_minutes("startup_cron"), 60)
+    same_day = (start_h, start_m) > (stop_h, stop_m)
+
+    nights: list[int] = []
+    day = date(years.start, 1, 1)
+    while day.year < years.stop:
+        stop_at = datetime(day.year, day.month, day.day, stop_h, stop_m, tzinfo=tz)
+        start_day = day if same_day else day + timedelta(days=1)
+        start_at = datetime(
+            start_day.year, start_day.month, start_day.day, start_h, start_m, tzinfo=tz
+        )
+        elapsed = start_at.astimezone(UTC) - stop_at.astimezone(UTC)
+        nights.append(int(elapsed.total_seconds() // 60))
+        day += timedelta(days=1)
+    return nights
+
+
+def _scheduler_local_minutes(name: str, text: str) -> int:
+    """A scheduler.tf local that is an integer, or a sum of integers and locals.
+
+    `maintenance_window_minutes` is derived from the two crons, as Terraform
+    derives it. Anything fancier than a sum is refused rather than guessed at,
+    so the day it becomes something this cannot read, this fails.
+    """
+    if name == "maintenance_window_minutes":
+        return (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    match = re.search(rf"^  {name}\s*=\s*([^\n#]+)", text, re.M)
+    assert match, f"scheduler.tf defines no local {name!r}"
+    total = 0
+    for term in (t.strip() for t in match.group(1).split("+")):
+        if term.isdigit():
+            total += int(term)
+            continue
+        ref = re.fullmatch(r"local\.(\w+)", term)
+        assert ref, (
+            f"cannot evaluate {term!r} in local {name!r}: keep it a sum of "
+            "integers and other locals, or teach this test the new expression"
+        )
+        total += _scheduler_local_minutes(ref.group(1), text)
+    return total
+
+
+def suppressor_minutes() -> int:
+    """The period, in minutes, of alerts.tf's maintenance_window alarm."""
+    block = re.search(
+        r'resource\s+"aws_cloudwatch_metric_alarm"\s+"maintenance_window"\s*\{(.*?)\n\}',
+        ALERTS_TF.read_text(encoding="utf-8"), re.S,
+    )
+    assert block, "no maintenance_window alarm in alerts.tf"
+    period = re.search(r"^\s*period\s*=\s*local\.(\w+)\s*\*\s*60\s*$", block.group(1), re.M)
+    assert period, (
+        "the maintenance_window alarm's period is no longer `local.<name> * 60`; "
+        "teach suppressor_minutes() the new shape"
+    )
+    return _scheduler_local_minutes(period.group(1), SCHEDULER_TF.read_text(encoding="utf-8"))
+
+
+def test_the_longest_night_is_what_the_clock_says_not_what_the_schedule_says() -> None:
+    """Guards the guard, and states the premise: with real zone rules the night
+    is not one length. If this stops being true, the zone has no DST and the
+    slack in scheduler.tf can go to 0."""
+    nights = night_lengths(_maintenance_timezone(), range(2026, 2036))
+    nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+
+    assert max(nights) > nominal > min(nights), (
+        f"nights run {min(nights)}-{max(nights)} min against a scheduled {nominal}; "
+        "the premise of the slack in scheduler.tf (a night longer than the "
+        "schedule says) no longer holds for this zone, or the tz data is missing "
+        "a transition"
+    )
+    # Exactly the two nights a year the clocks move, an hour each way.
+    assert sorted(set(nights)) == [nominal - 60, nominal, nominal + 60]
+    assert nights.count(nominal + 60) == 10 and nights.count(nominal - 60) == 10
+
+
+def test_the_suppressor_covers_the_longest_night_of_the_year() -> None:
+    longest = max(night_lengths(_maintenance_timezone(), range(2026, 2036)))
+    period = suppressor_minutes()
+
+    assert period >= longest, (
+        f"the maintenance_window alarm suppresses for {period} min after the "
+        f"shutdown-complete marker, but the night the clocks fall back runs "
+        f"{longest} min from the shutdown fire to the startup fire. The "
+        "suppressor lets go before the startup sweep has fired, and "
+        "octane-dead-air emails about five minutes before the platform is "
+        "asked to start. Raise local.dst_slack_minutes in scheduler.tf; the "
+        "extension_period in alerts.tf covers the sweep's own runtime and is "
+        "not where this hour belongs."
+    )
+
+
+def test_a_period_equal_to_the_schedule_would_not_cover_it() -> None:
+    """The regression: the suppressor was the schedule's length, 930 minutes."""
+    nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    longest = max(night_lengths(_maintenance_timezone(), range(2026, 2036)))
+    assert nominal < longest, "a period of exactly the schedule must be caught"
+
+
+def test_the_slack_is_only_the_clock_change_and_not_more() -> None:
+    """The price of the slack is paid every morning (the page for a platform
+    that never came up is late by exactly the slack), so it should be the hour
+    the clocks move and not a generous round number."""
+    nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    longest = max(night_lengths(_maintenance_timezone(), range(2026, 2036)))
+    assert suppressor_minutes() <= longest, (
+        f"the suppressor is {suppressor_minutes()} min against a longest night "
+        f"of {longest} (schedule {nominal}). Every minute above the longest "
+        "night delays the morning page for a platform that did not come up."
+    )
+
+
+def test_the_scheduler_local_reader_follows_sums_and_refuses_anything_else() -> None:
+    text = "  a = 60\n  b = local.maintenance_window_minutes + local.a\n  c = local.a * 2\n"
+    window = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
+    assert _scheduler_local_minutes("a", text) == 60
+    assert _scheduler_local_minutes("b", text) == window + 60
+    with pytest.raises(AssertionError, match="cannot evaluate"):
+        _scheduler_local_minutes("c", text)
+    with pytest.raises(AssertionError, match="defines no local"):
+        _scheduler_local_minutes("missing", text)

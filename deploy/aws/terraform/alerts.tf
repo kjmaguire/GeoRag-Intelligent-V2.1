@@ -587,13 +587,22 @@ resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
   #     services-stable (README: ~15 min), then two healthy ALB checks and a
   #     clean 5-minute HealthyHostCount period. With 60 s the composite
   #     emailed at about 08:32 every day. 45 min covers a slow start with
-  #     margin; a platform still dead at ~09:15 is a real page.
+  #     margin; a platform still dead 45 min after the suppressor lets go is
+  #     a real page (when that is, see the DST hour below).
   #   wait_period 900 s (15 min) — the EVENING end. The shutdown sweep now
   #     drains tier by tier (AWS-8), so "shutdown sweep complete" lands
   #     several minutes after Octane stopped; dead air can reach ALARM before
   #     the suppressor does. The composite now waits up to 15 min for it.
   #     Cost: a genuine daytime outage emails up to 15 min later than before
   #     (on top of the 10 min the dead-air alarm itself needs).
+  #
+  # The suppressor's own period carries an hour of DST slack since 2026-10-10
+  # (local.maintenance_suppressor_minutes; scheduler.tf has the arithmetic).
+  # The fall-back night is an hour longer than the schedule says, and without
+  # the hour this paged about five minutes before the startup sweep fired on
+  # 2026-11-01. The price is on every other morning: the suppressor lets go at
+  # about 09:40 rather than 08:40, so the page for a platform that never came
+  # up arrives at about 10:25 rather than 09:25.
   actions_suppressor {
     alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
     wait_period      = 900
@@ -636,12 +645,18 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
     page arrives every morning until someone silences the channel. That is
     why the derivation counts minutes: startup moved to 08:30 on 2026-09-16
     and an hour-granular window would have been thirty minutes short.
+
+    Counting minutes is not enough on the two nights the clocks change. The
+    fall-back night is an hour LONGER than the schedule says (16h30m, not
+    15h30m), and a fixed period measured from the completion marker would let
+    go before the platform was asked to start. So the period is the window
+    plus local.dst_slack_minutes (scheduler.tf), sized for the longest night.
   EOT
 
   namespace           = "GeoRAG/Markers"
   metric_name         = "shutdown-sweep-complete"
   statistic           = "Sum"
-  period              = local.maintenance_window_minutes * 60
+  period              = local.maintenance_suppressor_minutes * 60
   evaluation_periods  = 1
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
