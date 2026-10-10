@@ -731,7 +731,7 @@ class DrillUploadController extends Controller
             throw new \RuntimeException('Unable to open uploaded file for streaming.');
         }
         try {
-            $storage->bronze()->put($key, $handle, $putOptions);
+            $storage->putOrFail($storage->bronze(), $key, $handle, $putOptions);
         } finally {
             if (is_resource($handle)) {
                 fclose($handle);

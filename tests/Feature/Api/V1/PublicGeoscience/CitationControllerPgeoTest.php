@@ -270,11 +270,23 @@ class CitationControllerPgeoTest extends TestCase
 
     public function test_references_summary_count_reflects_active_links(): void
     {
+        // The links are the caller's own reports, so the caller needs a
+        // project to be scoped to. Created before DB is mocked.
+        $project = Project::create([
+            'project_name' => 'Pgeo links scope '.uniqid(),
+            'orientation_reference' => 'BOH',
+        ]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+        DB::table('silver.projects')
+            ->where('project_id', $project->project_id)
+            ->update(['workspace_id' => 'a0000000-0000-0000-0000-000000000001']);
+
         $this->mockPgeoResolverCall(
             entityTable: 'public_geo.pg_mine',
             entityRow: $this->fakeMineRow(),
             canonicalType: 'mine',
             linkCount: 3,
+            expectedProjectIds: [(string) $project->project_id],
         );
 
         $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
@@ -283,6 +295,30 @@ class CitationControllerPgeoTest extends TestCase
             ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
             ->assertOk()
             ->assertJsonPath('references_summary.count', 3);
+    }
+
+    public function test_references_summary_never_lists_documents_for_a_caller_with_no_projects(): void
+    {
+        // public_geo.document_entity_links has no workspace column and no
+        // RLS. A signed-in user with no membership used to get every tenant's
+        // linked document ids, filenames and the unscoped count for any public
+        // entity id they could see on the map. Now the link table is not even
+        // queried for them.
+        $this->mockPgeoResolverCall(
+            entityTable: 'public_geo.pg_mine',
+            entityRow: $this->fakeMineRow(),
+            canonicalType: 'mine',
+            linkCount: 3,
+            expectLinkQuery: false,
+        );
+
+        $chunkId = 'pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id='.self::PG_ID;
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
+            ->assertOk()
+            ->assertJsonPath('references_summary.count', 0)
+            ->assertJsonPath('references_summary.documents', []);
     }
 
     // ── resolveReport — references_to_entities zero-fill ─────────────────────
@@ -392,7 +428,9 @@ class CitationControllerPgeoTest extends TestCase
      * The controller calls queries in this order:
      *   1. DB::table($entityTable)->where()->first()          — entity row
      *   2. DB::table('public_geo.sources as s')->...->first()  — source/jurisdiction
-     *   3. DB::table('public_geo.document_entity_links')->...->count() — link count
+     *   3. DB::table('public_geo.document_entity_links as l')->join(reports)
+     *      ->whereIn(caller's projects)->...->count() — link count (skipped
+     *      entirely for a caller with no projects)
      *   4. (when linkCount > 0) links detail query
      *
      * We return separate Mockery builder mocks per table so `first()` calls
@@ -424,6 +462,8 @@ class CitationControllerPgeoTest extends TestCase
         string $canonicalType,
         ?string $lastRefreshedAt = null,
         int $linkCount = 0,
+        ?array $expectedProjectIds = null,
+        bool $expectLinkQuery = true,
     ): void {
         $this->mockWorkspaceRlsPassthrough();
 
@@ -453,27 +493,33 @@ class CitationControllerPgeoTest extends TestCase
         $sourceBuilder->shouldReceive('select')->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('first')->once()->andReturn($sourceObj);
 
-        $linksCountBuilder = \Mockery::mock('links_count_query_builder');
-        $linksCountBuilder->shouldReceive('where')->withAnyArgs()->andReturn($linksCountBuilder);
-        $linksCountBuilder->shouldReceive('whereNull')->andReturn($linksCountBuilder);
-        $linksCountBuilder->shouldReceive('count')->andReturn($linkCount);
-
         DB::shouldReceive('table')->with($entityTable)->once()->andReturn($entityBuilder);
         DB::shouldReceive('table')->with('public_geo.sources as s')->once()->andReturn($sourceBuilder);
-        DB::shouldReceive('table')->with('public_geo.document_entity_links')->andReturn($linksCountBuilder);
 
-        if ($linkCount > 0) {
-            $linksDetailBuilder = \Mockery::mock('links_detail_query_builder');
-            $linksDetailBuilder->shouldReceive('leftJoin')->withAnyArgs()->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('where')->withAnyArgs()->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('whereNull')->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('orderByDesc')->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('limit')->andReturn($linksDetailBuilder);
-            $linksDetailBuilder->shouldReceive('get')->andReturn(collect([]));
+        if (! $expectLinkQuery) {
+            DB::shouldReceive('table')->with('public_geo.document_entity_links as l')->never();
 
-            DB::shouldReceive('table')
-                ->with('public_geo.document_entity_links as l')
-                ->andReturn($linksDetailBuilder);
+            return;
         }
+
+        // Count and detail share one scoped query: an INNER join to the
+        // caller's own reports, never the bare link table.
+        $linksBuilder = \Mockery::mock('links_query_builder');
+        $linksBuilder->shouldReceive('join')
+            ->with('silver.reports as r', 'r.report_id', '=', 'l.document_id')
+            ->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('whereIn')
+            ->with('r.project_id', $expectedProjectIds ?? \Mockery::any())
+            ->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('where')->withAnyArgs()->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('whereNull')->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('count')->andReturn($linkCount);
+        $linksBuilder->shouldReceive('orderByDesc')->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('limit')->andReturn($linksBuilder);
+        $linksBuilder->shouldReceive('get')->andReturn(collect([]));
+
+        DB::shouldReceive('table')
+            ->with('public_geo.document_entity_links as l')
+            ->andReturn($linksBuilder);
     }
 }

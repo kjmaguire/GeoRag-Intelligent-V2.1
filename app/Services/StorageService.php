@@ -7,6 +7,7 @@ namespace App\Services;
 use DateTimeInterface;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 
 /**
  * Thin façade over the three S3-compatible Flysystem disks declared in
@@ -78,5 +79,29 @@ class StorageService
     public function presignedUrl(mixed $disk, string $key, ?DateTimeInterface $expiresAt = null): string
     {
         return $disk->temporaryUrl($key, $expiresAt ?? now()->addHours(24));
+    }
+
+    /**
+     * Write an object, and throw when the disk says the write did not happen.
+     *
+     * Every disk in config/filesystems.php is `'throw' => false`, so a refused
+     * write (AccessDenied, a wrong bucket, a timeout) comes back as `false`
+     * rather than an exception. The upload controllers and the export job
+     * ignored that return value and went on to record the object, dispatch
+     * its ingest and answer 201 — or mark an export completed with a link to
+     * nothing. Every writer goes through here instead, so the failure reaches
+     * the error path each of them already has.
+     *
+     * @param Filesystem $disk
+     * @param resource|string $contents
+     * @param array<string, mixed> $options
+     *
+     * @throws RuntimeException when the disk reports that the write failed
+     */
+    public function putOrFail(mixed $disk, string $key, mixed $contents, array $options = []): void
+    {
+        if ($disk->put($key, $contents, $options) === false) {
+            throw new RuntimeException("Object storage did not accept the write for {$key}.");
+        }
     }
 }

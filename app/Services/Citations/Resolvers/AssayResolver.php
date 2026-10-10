@@ -6,6 +6,7 @@ namespace App\Services\Citations\Resolvers;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 /**
  * Resolves `silver.assays_v2:assay_id=<uuid>` chunk ids to a description
@@ -62,7 +63,9 @@ final class AssayResolver extends AbstractCitationResolver
 
         // Belt and braces (security fix 2026-08-14): explicit tenant filter
         // on top of the controller-bound RLS GUC; null scope fails CLOSED.
-        if ($workspaceId === null || $projectIds === null || $projectIds === []) {
+        // `[0-9a-f-]{36}` also matches 36 hyphens, which the uuid column
+        // rejects with a 22P02 — a 500 where "not found" is the answer.
+        if ($workspaceId === null || $projectIds === null || $projectIds === [] || ! Str::isUuid($assayId)) {
             return $this->notFound($sourceId);
         }
 

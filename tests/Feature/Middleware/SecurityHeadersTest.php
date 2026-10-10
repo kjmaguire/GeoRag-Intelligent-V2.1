@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Middleware;
 
 use App\Http\Middleware\SecurityHeadersMiddleware;
+use App\Providers\AppServiceProvider;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -199,6 +200,22 @@ final class SecurityHeadersTest extends TestCase
         // test_hsts_absent_on_http_request above, working.
         $this->assertStringStartsNotWith('https://', (string) config('app.url'));
         $this->assertSame('http://', URL::formatScheme());
+    }
+
+    public function test_an_https_app_url_pins_generated_links_to_its_host(): void
+    {
+        // A forgot-password request whose X-Forwarded-Host names another site
+        // must still be mailed a link on APP_URL's host: the reset token is in
+        // the link, so whoever owns the host it points at owns the account.
+        config(['app.url' => 'https://georag.example']);
+        (new AppServiceProvider($this->app))->boot();
+
+        URL::setRequest(Request::create('http://evil.example/api/v1/auth/forgot-password', 'POST'));
+
+        $this->assertSame(
+            'https://georag.example/reset-password/abc123',
+            url(route('password.reset', ['token' => 'abc123'], false)),
+        );
     }
 
     public function test_csp_omits_upgrade_insecure_in_local_env(): void

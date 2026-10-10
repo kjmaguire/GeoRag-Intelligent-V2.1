@@ -66,8 +66,17 @@ class AppServiceProvider extends ServiceProvider
         // the condition that matters: it is the address the browser uses, and
         // deploy/aws/terraform/config.tf sets it from the real public host in
         // both edge modes. Local development over http is unaffected.
+        //
+        // The host is pinned for the same reason. ProxyTrust believes
+        // X-Forwarded-Host, and neither the ALB nor CloudFront sets it, so on
+        // AWS its only author is the client. Without a forced root, a
+        // forgot-password request carrying `X-Forwarded-Host: evil.example`
+        // mails the victim a reset link on evil.example (the framework's
+        // ResetPassword builds it from the request root), and one click hands
+        // the token over.
         if (str_starts_with((string) config('app.url'), 'https://')) {
             URL::forceScheme('https');
+            URL::forceRootUrl(rtrim((string) config('app.url'), '/'));
         }
 
         Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);

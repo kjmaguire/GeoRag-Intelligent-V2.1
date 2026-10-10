@@ -90,10 +90,20 @@ class GenerateExportJob implements ShouldQueue
 
             // Upload to MinIO via the dedicated exports disk (separate bucket
             // from the bronze layer so generated artifacts never pollute the
-            // immutable raw archive).
-            $storage->exports()->put($minioKey, fopen($localPath, 'r'));
-
-            @unlink($localPath);
+            // immutable raw archive). putOrFail, because a refused write used
+            // to leave this export 'completed' with a link to nothing.
+            $handle = fopen($localPath, 'r');
+            if ($handle === false) {
+                throw new \RuntimeException('Unable to open the generated export for upload.');
+            }
+            try {
+                $storage->putOrFail($storage->exports(), $minioKey, $handle);
+            } finally {
+                if (is_resource($handle)) {
+                    fclose($handle);
+                }
+                @unlink($localPath);
+            }
 
             // Generate a presigned URL valid for 24 hours.
             $expiresAt = now()->addHours(24);
