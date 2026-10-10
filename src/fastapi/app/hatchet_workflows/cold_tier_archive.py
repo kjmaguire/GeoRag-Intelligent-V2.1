@@ -162,7 +162,7 @@ async def _last_archived_cutoff(
     archiving less is not.
     """
     try:
-        return await conn.fetchval(
+        cutoff: datetime | None = await conn.fetchval(
             """
             SELECT max((payload->>'cutoff_before')::timestamptz)
               FROM audit.audit_ledger
@@ -171,6 +171,7 @@ async def _last_archived_cutoff(
             """,
             workspace_id_scope,
         )
+        return cutoff
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "cold_tier_archive: could not read the watermark, archiving from the "

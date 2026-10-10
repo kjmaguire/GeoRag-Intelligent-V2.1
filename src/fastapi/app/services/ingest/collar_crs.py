@@ -353,7 +353,7 @@ def _within_area(area: Any, lon: float, lat: float) -> bool:
     the antimeridian (the Aleutians), so a plain ``west <= lon <= east``
     rejects every point in it.
     """
-    return within_area(area, lon, lat, slack_deg=_AREA_SLACK_DEG)
+    return bool(within_area(area, lon, lat, slack_deg=_AREA_SLACK_DEG))
 
 
 def plausibility_warnings(

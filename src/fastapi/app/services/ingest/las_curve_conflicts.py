@@ -92,12 +92,15 @@ async def fetch_stored_curves(
         unit = r["depth_unit"]
         factor = 1.0 if unit == "m" else _FEET_TO_METRES if unit == "ft" else None
         lo, hi = r["min_depth"], r["max_depth"]
-        known = factor is not None and lo is not None and hi is not None
+        min_depth: float | None = None
+        max_depth: float | None = None
+        if factor is not None and lo is not None and hi is not None:
+            min_depth, max_depth = float(lo) * factor, float(hi) * factor
         out[r["curve_name"]] = StoredCurve(
             name=r["curve_name"],
             source_file=r["source_file"],
-            min_depth=float(lo) * factor if known else None,
-            max_depth=float(hi) * factor if known else None,
+            min_depth=min_depth,
+            max_depth=max_depth,
         )
     return out
 
@@ -157,7 +160,8 @@ def replacement_warnings(
         more = len(replaced) - len(lines)
         lost = [
             n for n, d in replaced.items()
-            if d.stored is not None and d.stored.min_depth is not None
+            if d.stored is not None
+            and d.stored.min_depth is not None and d.stored.max_depth is not None
             and (ranges[n][0] > d.stored.min_depth or ranges[n][1] < d.stored.max_depth)
         ]
         warning: dict[str, Any] = {

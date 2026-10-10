@@ -139,4 +139,4 @@ def ungroup_response_markers[R](response: R) -> R:
     update: dict[str, object] = {"text": new_head + tail}
     if offset is not None:
         update["proactive_insights_offset"] = len(new_head)
-    return response.model_copy(update=update)  # type: ignore[attr-defined]
+    return response.model_copy(update=update)  # type: ignore[attr-defined,no-any-return]
