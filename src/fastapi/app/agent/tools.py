@@ -3072,11 +3072,15 @@ class ProjectSummaryResult:
 
 @dataclass
 class IngestGapStats:
-    """Bronze → silver ingest-stage coverage gap.
+    """Bronze → silver ingest-stage coverage gap, for ONE project.
 
-    indexed: count of rows in ``bronze.ingest_manifest`` for this workspace.
-    processed: count of distinct manifest rows that have a downstream
-        ``bronze.provenance`` entry pointing at a row in ``silver.reports``.
+    indexed: count of rows in ``bronze.ingest_manifest`` that belong to this
+        project -- its PLSS sections, as named in the source paths of the
+        provenance rows of its collars and reports. 0 for a project that did
+        not come from the bulk archive import (the manifest has no project
+        column, and the live pipeline writes no provenance).
+    processed: count of this project's distinct ``silver.reports`` that have
+        a ``bronze.provenance`` entry.
     gap_pct: 100 * (indexed - processed) / indexed when indexed > 0, else 0.
     """
 
@@ -3121,7 +3125,7 @@ class CoverageFindingRow:
 class CoverageGapResult:
     """Return type for ``query_coverage_gap``.
 
-    ingest_gap: bronze→silver coverage stats for the workspace.
+    ingest_gap: bronze→silver coverage stats for the project.
     attribute_coverage: per-attribute coverage rows for the project.
     findings: rows from silver.completeness_findings for this project.
     gap_geojson: FeatureCollection of project collars with per-feature
@@ -3526,9 +3530,11 @@ async def query_coverage_gap(
 
     Three signals are surfaced:
 
-      1. **Ingest gap**: bronze.ingest_manifest rows for the workspace that
-         have no provenance pointer into silver.reports. The 2026-05-25
-         audit observed 39,744 indexed vs 1,209 processed (~97% gap).
+      1. **Ingest gap**: bronze.ingest_manifest rows of THIS project (found
+         through its PLSS sections, see the query below) against the
+         project's reports that have a provenance pointer. The 2026-05-25
+         audit observed 39,744 indexed vs 1,209 processed (~97% gap) --
+         for the whole workspace; a project's own numbers are its share.
 
       2. **Attribute coverage**: for each known §04e detail table
          (assays / lithology / structure / alteration / samples), what
@@ -3569,14 +3575,47 @@ async def query_coverage_gap(
 
     # ── Ingest stage ──
     # bronze.ingest_manifest is workspace-scoped (workspace_id column added
-    # in the 2026-05-25 bronze tenancy migration). The "processed" count
-    # is the distinct manifest_id values that appear in bronze.provenance
-    # tied to a silver.reports row — the strongest available ingest signal.
+    # in the 2026-05-25 bronze tenancy migration) and has NO project column:
+    # it is the manifest of the one-off bulk archive import, whose only
+    # project signal is `guessed_project`, a PLSS section token. This used to
+    # count the whole workspace's manifest against the whole workspace's
+    # processed reports, so a project answer reported every OTHER project's
+    # file counts too (2026-10-10 audit, finding 12): a 40,000-file archive in
+    # the workspace read as a 97 % ingest gap on a project that had none of it.
+    #
+    # The project's rows are found the way the Sources page finds them
+    # (SourcesController::resolveProjectSections): the PLSS sections named in
+    # the source paths of the provenance rows of THIS project's collars and
+    # reports. A project that did not come from that archive (everything
+    # uploaded through the live pipeline, which writes no provenance) has no
+    # sections, so its ingest stage is 0 / 0 -- "not applicable", not the
+    # workspace's numbers. The "processed" count is the distinct reports of
+    # this project that appear in bronze.provenance -- the strongest
+    # available ingest signal.
     ingest_sql = """
         WITH indexed AS (
             SELECT COUNT(*)::int AS n
-            FROM bronze.ingest_manifest
-            WHERE workspace_id = $1::uuid
+            FROM bronze.ingest_manifest m
+            WHERE m.workspace_id = $1::uuid
+              AND m.guessed_project IN (
+                  SELECT substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/')
+                  FROM bronze.provenance bp
+                  WHERE bp.workspace_id = $1::uuid
+                    AND bp.target_schema = 'silver'
+                    AND bp.target_table = 'collars'
+                    AND bp.target_id IN (
+                        SELECT c.collar_id FROM silver.collars c WHERE c.project_id = $2::uuid
+                    )
+                  UNION
+                  SELECT substring(bp.source_file FROM '(?:extract|data)/([0-9]{3}N[0-9]{3}W[0-9A-Z]+)/')
+                  FROM bronze.provenance bp
+                  WHERE bp.workspace_id = $1::uuid
+                    AND bp.target_schema = 'silver'
+                    AND bp.target_table = 'reports'
+                    AND bp.target_id IN (
+                        SELECT r.report_id FROM silver.reports r WHERE r.project_id = $2::uuid
+                    )
+              )
         ),
         processed AS (
             SELECT COUNT(DISTINCT bp.target_id)::int AS n
@@ -3584,6 +3623,7 @@ async def query_coverage_gap(
             JOIN silver.reports r ON r.report_id = bp.target_id::uuid
             WHERE bp.workspace_id = $1::uuid
               AND r.workspace_id = $1::uuid
+              AND r.project_id = $2::uuid
         )
         SELECT indexed.n AS indexed_n, processed.n AS processed_n
         FROM indexed, processed
@@ -3683,11 +3723,13 @@ async def query_coverage_gap(
         async with deps.pg_pool.acquire() as conn:
             # Ingest stage
             try:
-                ingest_row = await conn.fetchrow(ingest_sql, workspace_id)
+                ingest_row = await conn.fetchrow(ingest_sql, workspace_id, project_id)
             except Exception:
                 logger.exception(
-                    "query_coverage_gap: ingest stage query failed workspace=%s",
+                    "query_coverage_gap: ingest stage query failed workspace=%s "
+                    "project=%s",
                     workspace_id,
+                    project_id,
                 )
                 ingest_row = None
 
