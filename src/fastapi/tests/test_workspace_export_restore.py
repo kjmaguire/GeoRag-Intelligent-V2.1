@@ -258,7 +258,7 @@ def test_the_conflict_target_is_the_tables_own_primary_key() -> None:
     assert rp._insert_sql("silver.hypotheses", single, ["hypothesis_id", "label"]).endswith(
         'ON CONFLICT ("hypothesis_id") DO NOTHING'
     )
-    assert rp._insert_sql("audit.audit_ledger", composite, ["id", "created_at"]).endswith(
+    assert rp._insert_sql("targeting.scores", composite, ["id", "created_at"]).endswith(
         'ON CONFLICT ("id", "created_at") DO NOTHING'
     )
     assert rp._insert_sql("x.y", keyless, ["x"]).endswith("ON CONFLICT DO NOTHING")
@@ -266,6 +266,19 @@ def test_the_conflict_target_is_the_tables_own_primary_key() -> None:
     assert "ON CONFLICT (id)" not in sql
     assert "jsonb_populate_record(NULL::silver.hypotheses, $1::jsonb)" in sql
     assert sql.startswith('INSERT INTO silver.hypotheses ("hypothesis_id", "label") SELECT "hypothesis_id", "label" FROM')
+
+
+def test_a_ledger_row_is_present_when_its_id_is() -> None:
+    """The ledger's key is (id, created_at), but the hash trigger stamps
+    created_at itself, so a replayed row never matches on the key. Keyed on
+    the key, a second restore appended every ledger row again."""
+    composite = rp._TableInfo(columns={"id": "uuid", "created_at": "timestamptz"}, pk=("id", "created_at"))
+
+    sql = rp._insert_sql("audit.audit_ledger", composite, ["id", "created_at"])
+
+    assert "ON CONFLICT" not in sql
+    assert sql.endswith('WHERE NOT EXISTS (SELECT 1 FROM audit.audit_ledger AS t WHERE t."id" = r."id")')
+    assert "jsonb_populate_record(NULL::audit.audit_ledger, $1::jsonb) AS r" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +852,47 @@ async def _snapshot(admin: asyncpg.Connection, ws: str) -> dict[str, list[dict[s
     return out
 
 
+#: Ledger columns the BEFORE INSERT trigger owns. A restore replays each row's
+#: content oldest-first; the trigger stamps created_at after the chain lock
+#: (2026_10_10_100100) and rebuilds previous_hash/hash from it, so after a
+#: restore these three are the restore's, not the export's.
+_TRIGGER_OWNED = frozenset({"created_at", "previous_hash", "hash"})
+
+
+def _restorable(snapshot: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """The snapshot without the columns a restore cannot carry over."""
+    out = dict(snapshot)
+    out["audit_ledger_anchors"] = sorted(
+        ({k: v for k, v in r.items() if k not in _TRIGGER_OWNED} for r in snapshot["audit_ledger_anchors"]),
+        key=lambda r: json.dumps(r, sort_keys=True, default=str),
+    )
+    return out
+
+
+def _ledger_order(snapshot: dict[str, list[dict[str, Any]]]) -> list[str]:
+    """Ledger row ids in chain order, (created_at, id), as the trigger links them."""
+    rows = snapshot["audit_ledger_anchors"]
+    return [str(r["id"]) for r in sorted(rows, key=lambda r: (str(r["created_at"]), str(r["id"])))]
+
+
+async def _assert_ledger_restored(
+    admin: asyncpg.Connection, ws: str,
+    before: dict[str, list[dict[str, Any]]], after: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Every row back, in its original order, on a chain the verifier accepts."""
+    assert _restorable(after) == _restorable(before)
+    assert _ledger_order(after) == _ledger_order(before)
+    breaks = await admin.fetch(
+        "SELECT audit_id FROM audit.verify_hash_chain("
+        "  (SELECT min(created_at) FROM audit.audit_ledger WHERE workspace_id = $1::uuid),"
+        "  (SELECT max(created_at) FROM audit.audit_ledger WHERE workspace_id = $1::uuid)"
+        "    + interval '1 microsecond'"
+        ") WHERE workspace_id = $1::uuid",
+        ws,
+    )
+    assert breaks == [], "the restored rows must form a chain the nightly verifier accepts"
+
+
 async def _forget(admin: asyncpg.Connection, s: _Seeded, *, drop_targeting_parents: bool = False) -> None:
     """Remove the eight restorable tables' rows (not the workspace itself)."""
     await admin.execute("DELETE FROM targeting.target_recommendations WHERE workspace_id = $1::uuid", s.ws)
@@ -950,8 +1004,10 @@ async def test_full_export_restore_round_trip(
     Exact counts, not '>= 0': every one of the 14 rows that was removed comes
     back (the workspace row itself was never removed, so it is reported as
     already present), nothing is rejected, and the values -- bytea hashes,
-    jsonb documents, arrays, numerics, both kinds of timestamp, the audit
-    ledger's hash chain -- are what they were.
+    jsonb documents, arrays, numerics, both kinds of timestamp -- are what
+    they were. The audit ledger's rows come back with their content and in
+    their order, on a chain the verifier accepts; their created_at, and so
+    previous_hash/hash, are the restore's (_TRIGGER_OWNED).
     """
     path = await _export(monkeypatch, seeded, tmp_path)
     before = await _snapshot(admin, seeded.ws)
@@ -982,7 +1038,7 @@ async def test_full_export_restore_round_trip(
 
     after = await _snapshot(admin, seeded.ws)
     assert {k: len(v) for k, v in after.items()} == EXPECTED
-    assert after == before
+    await _assert_ledger_restored(admin, seeded.ws, before, after)
 
     # Running it again changes nothing, and says so.
     again = await rp.restore_postgres_from_export(seeded.ws, f"file://{path}")
@@ -990,7 +1046,9 @@ async def test_full_export_restore_round_trip(
     assert again["total_rows_already_present"] == 15
     assert again["total_rows_rejected"] == 0
     assert rp.restore_shortfall(again) is None
-    assert await _snapshot(admin, seeded.ws) == before
+    # Exact, ledger included: the second pass must not append the ledger rows
+    # again (their key holds a created_at the trigger re-stamps on insert).
+    assert await _snapshot(admin, seeded.ws) == after
 
 
 @pytest.mark.integration
@@ -1055,7 +1113,7 @@ async def test_restore_under_a_nobypassrls_role_lands_every_row(
 
         assert result["rows_rejected"] == {}, result["rejected_samples"]
         assert result["total_rows_inserted"] == 14
-        assert await _snapshot(admin, seeded.ws) == before
+        await _assert_ledger_restored(admin, seeded.ws, before, await _snapshot(admin, seeded.ws))
     finally:
         await admin.execute(f"DROP OWNED BY {role}")
         await admin.execute(f"DROP ROLE IF EXISTS {role}")

@@ -227,8 +227,28 @@ def _record_for(info: _TableInfo, row: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+#: Tables whose rows are identified by fewer columns than their primary key.
+#: audit.audit_ledger's key is (id, created_at) only because it is partitioned
+#: on created_at, and its BEFORE INSERT trigger stamps created_at itself
+#: (2026_10_10_100100). A replayed row therefore arrives with a NEW created_at
+#: and never conflicts on the key, so a second restore of the same export
+#: appended every ledger row again. Its id alone says whether it is there.
+#: (Checked with NOT EXISTS, not ON CONFLICT: a partitioned table cannot carry
+#: a unique index without its partition key. Two restores of one workspace
+#: running at once could both pass the check; restores are not run that way.)
+_ROW_IDENTITY: dict[str, tuple[str, ...]] = {"audit.audit_ledger": ("id",)}
+
+
 def _insert_sql(qualified_table: str, info: _TableInfo, columns: list[str]) -> str:
     col_list = ", ".join(_quote_ident(c) for c in columns)
+    identity = _ROW_IDENTITY.get(qualified_table)
+    if identity:
+        match = " AND ".join(f"t.{_quote_ident(c)} = r.{_quote_ident(c)}" for c in identity)
+        return (
+            f"INSERT INTO {qualified_table} ({col_list}) "
+            f"SELECT {col_list} FROM jsonb_populate_record(NULL::{qualified_table}, $1::jsonb) AS r "
+            f"WHERE NOT EXISTS (SELECT 1 FROM {qualified_table} AS t WHERE {match})"
+        )
     if info.pk:
         conflict = "ON CONFLICT (" + ", ".join(_quote_ident(c) for c in info.pk) + ") DO NOTHING"
     else:
