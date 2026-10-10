@@ -407,15 +407,19 @@ INSERT INTO silver.mineralization (
 #: nl_summaries passages derived from them do not churn. ON CONFLICT
 #: handles the same natural key appearing twice WITHIN one file (last
 #: row wins, matching the interval tables' replace semantics).
+#:
+#: qaqc_flag is written explicitly: NULL (not evaluated) or a control-sample
+#: marker (``_ASSAY_QAQC_FLAGS``). The column used to default to 'pass', so
+#: every row said "QA/QC: pass" with nothing having evaluated it.
 _ASSAYS_V2_SQL = """
 INSERT INTO silver.assays_v2 (
     id, workspace_id, collar_id, sample_id, from_depth, to_depth,
     element, value, unit, value_ppm, detection_limit,
     over_detection, under_detection, half_dl_substituted, lab_name,
-    source_file, source_file_sha256
+    qaqc_flag, source_file, source_file_sha256
 ) VALUES (
     $1::uuid, $2::uuid, $3::uuid, $4, $5, $6,
-    $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+    $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
 )
 ON CONFLICT (id) DO UPDATE SET
     value               = EXCLUDED.value,
@@ -426,6 +430,7 @@ ON CONFLICT (id) DO UPDATE SET
     under_detection     = EXCLUDED.under_detection,
     half_dl_substituted = EXCLUDED.half_dl_substituted,
     lab_name            = EXCLUDED.lab_name,
+    qaqc_flag           = EXCLUDED.qaqc_flag,
     -- Last writer owns the row, so a later same-file replace finds it.
     source_file         = EXCLUDED.source_file,
     source_file_sha256  = EXCLUDED.source_file_sha256
@@ -828,20 +833,70 @@ def _sample_type_of(raw: Any) -> str:
 _UNIT_TO_PPM = {"ppm": 1.0, "ppb": 0.001, "pct": 10000.0}
 
 
+#: ``silver.assays_v2.qaqc_flag`` for a row of a QA/QC CONTROL sample, keyed on
+#: the sample's ``qaqc_type`` (the parser's vocabulary: Primary / Duplicate /
+#: Blank / Standard). The column has no CHECK and no defined vocabulary
+#: (``CsvAssaysExporter`` asks the SME to confirm one); these values only say
+#: WHAT the row is - a blank, a standard, a duplicate - and are prefixed so
+#: they cannot be read as a pass/fail outcome. A Primary or unreadable type
+#: stays NULL: nothing at ingest has evaluated any row, so 'pass' (the old
+#: column default, rendered by nl_summaries as "QA/QC: pass") was a claim
+#: nobody made.
+_ASSAY_QAQC_FLAGS: dict[str, str] = {
+    "blank": "control_blank",
+    "standard": "control_standard",
+    "duplicate": "control_duplicate",
+}
+
+
+def _assay_qaqc_flag(qaqc_type: Any) -> str | None:
+    """``qaqc_flag`` for a sample row of *qaqc_type*: a control marker, or NULL."""
+    return _ASSAY_QAQC_FLAGS.get(str(qaqc_type or "").strip().lower())
+
+
+def _derived_sample_id(
+    rec: dict[str, Any], bounds: tuple[float, float], seen: dict[str, int],
+) -> str:
+    """A sample id for a sample row that has none, from its hole and interval.
+
+    ``silver.assays_v2.sample_id`` is NOT NULL, and an interval composite
+    file ("Hole, From, To, Au_ppm") has no sample column. Dropping those rows
+    left every such assay out of the one table all assay readers query; this
+    keeps them, under an id that is self-evidently derived (``DH-1 10-12 m (no
+    sample id)``), deterministic (the same file writes the same ids, so the
+    nl_summaries passages keyed on them do not churn) and unique within the
+    sheet - a second row for the same hole and interval gets ``#2``, so one
+    never overwrites the other. ``seen`` carries the per-sheet counts.
+    """
+
+    def _fmt(depth: float) -> str:
+        return f"{depth:.3f}".rstrip("0").rstrip(".")
+
+    base = (
+        f"{str(rec.get('hole_id') or '').strip()} "
+        f"{_fmt(bounds[0])}-{_fmt(bounds[1])} m (no sample id)"
+    )
+    seen[base] = seen.get(base, 0) + 1
+    return base if seen[base] == 1 else f"{base} #{seen[base]}"
+
+
 def derive_assay_v2_rows(
     rec: dict[str, Any],
     *,
     workspace_id: str,
     collar_id: str,
     element_ref: dict[str, str],
+    fallback_sample_id: str | None = None,
+    skipped_log: list[tuple[str, str]] | None = None,
 ) -> tuple[list[tuple], int]:
     """Explode one sample record's commodity_assays into assays_v2 params.
 
-    Returns ``(rows, skipped)``. A row is skipped — counted, never silently
-    dropped — when the record has no lab sample number (the column is NOT
-    NULL and inventing one would break the "same file, same ids" property),
-    when the interval is missing or inverted, or when a value is negative
-    (the table CHECK rejects it and one bad cell must not sink the batch).
+    Returns ``(rows, skipped)``. A value is skipped — counted, never silently
+    dropped — when the record has no sample id and the caller supplied no
+    ``fallback_sample_id`` (the column is NOT NULL), when the interval is
+    missing or inverted, or when a value is negative (the table CHECK rejects
+    it and one bad cell must not sink the batch). ``skipped_log`` receives
+    ``(element key, reason)`` for each, so the caller can name them.
 
     A below-detection cell with an unknown threshold ("BDL") still becomes a
     row: value NULL + under_detection TRUE is the difference between "below
@@ -851,9 +906,10 @@ def derive_assay_v2_rows(
     ``element_ref`` maps element symbol → default unit
     (silver.element_reference) for headers that named only the element.
     """
-    sample_id = str(rec.get("sample_id") or "").strip()
+    sample_id = str(rec.get("sample_id") or "").strip() or (fallback_sample_id or "")
     from_depth = _num(rec.get("from_depth"))
     to_depth = _num(rec.get("to_depth"))
+    qaqc_flag = _assay_qaqc_flag(rec.get("qaqc_type"))
 
     assays: dict[str, Any] = rec.get("commodity_assays") or {}
     flags: dict[str, Any] = rec.get("commodity_assay_flags") or {}
@@ -866,12 +922,20 @@ def derive_assay_v2_rows(
     if not keys:
         return [], 0
 
-    if (
-        not sample_id
-        or from_depth is None
-        or to_depth is None
-        or to_depth <= from_depth
-    ):
+    def _skip(key: str, reason: str) -> None:
+        if skipped_log is not None:
+            skipped_log.append((key, reason))
+
+    unusable = None
+    if not sample_id:
+        unusable = "no sample id"
+    elif from_depth is None or to_depth is None:
+        unusable = "no readable from/to depth"
+    elif to_depth <= from_depth:
+        unusable = "to depth is not below from depth"
+    if unusable is not None:
+        for key in sorted(keys):
+            _skip(key, unusable)
         return [], len(keys)
 
     from georag_geoparsers._assay_columns import split_assay_key  # noqa: PLC0415
@@ -884,6 +948,7 @@ def derive_assay_v2_rows(
             # Not an assay key the parser could have produced — counted,
             # never raised.
             skipped += 1
+            _skip(key, "not a recognisable element column")
             continue
         element, suffix = parsed
         unit = suffix or element_ref.get(element) or "unspecified"
@@ -891,6 +956,7 @@ def derive_assay_v2_rows(
         value = assays.get(key)
         if value is not None and value < 0:
             skipped += 1
+            _skip(key, f"negative value {value:g} (the assay table stores 0 or more)")
             continue
         factor = _UNIT_TO_PPM.get(unit)
         value_ppm = value * factor if value is not None and factor else None
@@ -917,7 +983,7 @@ def derive_assay_v2_rows(
             from_depth, to_depth,
             element, value, unit, value_ppm, detection_limit,
             over_detection, under_detection, half_dl,
-            rec.get("lab_id"),
+            rec.get("lab_id"), qaqc_flag,
         ))
     return rows, skipped
 
@@ -1450,6 +1516,13 @@ async def _write_intervals(
     skipped, an out-of-range optional value (RQD / recovery / abundance
     outside 0..100) or an over-width text value is blanked, and both are
     recorded in ``issues``.
+
+    For ``sample`` sheets the element values are also written, one row each,
+    to silver.assays_v2. A sample row with assays but no sample id is kept
+    there under an id derived from its hole and interval
+    (``_derived_sample_id``), and an element value the table cannot hold (a
+    negative, an unrecognisable column) is left out; both are recorded in
+    ``issues`` (``assay_sample_id_derived`` / ``assay_values_skipped``).
     """
     issues = issues if issues is not None else RowIssues()
     skipped_before = len(issues.skipped)
@@ -1466,6 +1539,8 @@ async def _write_intervals(
     rows = []
     assay_rows: list[tuple] = []
     assay_skipped = 0
+    #: derived sample id -> how many sample rows of this sheet were given it
+    derived_seen: dict[str, int] = {}
     orphaned = 0
     for rec in records:
         collar_id = _resolve_collar(index, rec.get("hole_id"))
@@ -1571,12 +1646,28 @@ async def _write_intervals(
                     if rec.get("commodity_assay_flags") else None
                 ),
             ))
+            # A row with assays but no sample id (an interval composite) is
+            # kept under an id derived from its hole and interval and the run
+            # says so; the alternative was leaving its assays out of
+            # assays_v2, the table every assay reader queries.
+            fallback_sample_id = None
+            if not str(rec.get("sample_id") or "").strip() and (
+                rec.get("commodity_assays") or rec.get("commodity_assay_flags")
+            ):
+                fallback_sample_id = _derived_sample_id(rec, bounds, derived_seen)
+            assay_skip_log: list[tuple[str, str]] = []
             exploded, exploded_skipped = derive_assay_v2_rows(
                 rec,
                 workspace_id=workspace_id,
                 collar_id=collar_id,
                 element_ref=element_ref,
+                fallback_sample_id=fallback_sample_id,
+                skipped_log=assay_skip_log,
             )
+            if fallback_sample_id is not None and exploded:
+                issues.derived_sample_id(rec, fallback_sample_id)
+            for key, reason in assay_skip_log:
+                issues.skip_assay(rec, key, reason)
             assay_rows.extend(exploded)
             assay_skipped += exploded_skipped
 

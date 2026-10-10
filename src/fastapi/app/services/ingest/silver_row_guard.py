@@ -126,6 +126,14 @@ class RowIssues:
     #: this one was not stored. Kept apart from ``skipped`` because it is not a
     #: row the table could not hold, and has its own warning code.
     duplicates: list[dict[str, Any]] = field(default_factory=list)
+    #: ``(row, hole_id, element key, reason)`` for an element value of a sample
+    #: row that was NOT written to silver.assays_v2 (the sample row itself, and
+    #: the value in its ``commodity_assays`` JSON, were). Kept apart from
+    #: ``skipped`` so the primary-table counts do not move.
+    assay_skipped: list[tuple[Any, str, str, str]] = field(default_factory=list)
+    #: ``(row, hole_id, sample_id)`` for a sample row that carried assays but no
+    #: sample id, so assays_v2 (sample_id NOT NULL) was given a derived one.
+    derived_sample_ids: list[tuple[Any, str, str]] = field(default_factory=list)
 
     def blank(self, fld: str, rec: dict[str, Any], value: Any, reason: str) -> None:
         self.blanked.append((fld, _row(rec), _hole(rec), value, reason))
@@ -133,8 +141,17 @@ class RowIssues:
     def skip(self, rec: dict[str, Any], reason: str) -> None:
         self.skipped.append((_row(rec), _hole(rec), reason))
 
+    def skip_assay(self, rec: dict[str, Any], key: str, reason: str) -> None:
+        self.assay_skipped.append((_row(rec), _hole(rec), key, reason))
+
+    def derived_sample_id(self, rec: dict[str, Any], sample_id: str) -> None:
+        self.derived_sample_ids.append((_row(rec), _hole(rec), sample_id))
+
     def __bool__(self) -> bool:
-        return bool(self.blanked or self.skipped or self.merged or self.duplicates)
+        return bool(
+            self.blanked or self.skipped or self.merged or self.duplicates
+            or self.assay_skipped or self.derived_sample_ids
+        )
 
     def skipped_details(self) -> list[dict[str, Any]]:
         """The skips in the parsers' ``skipped_details`` shape."""
@@ -372,6 +389,57 @@ def issue_warnings(
         duplicate_note = duplicate_hole_warning(issues.duplicates, label=label)
         if duplicate_note is not None:
             out.append(duplicate_note)
+    if issues.assay_skipped:
+        examples = "; ".join(
+            f"{'row ' + str(row) + ' ' if row is not None else ''}"
+            f"{hole or '(no hole id)'} {key}: {reason}"
+            for row, hole, key, reason in issues.assay_skipped[:_MAX_EXAMPLES]
+        )
+        more = len(issues.assay_skipped) - min(len(issues.assay_skipped), _MAX_EXAMPLES)
+        out.append({
+            "code": "assay_values_skipped",
+            "message": (
+                f"{len(issues.assay_skipped)} assay value(s) in {label} were not "
+                f"written to the assay table"
+            ),
+            "detail": (
+                f"{len(issues.assay_skipped)} element value(s) of {label} could "
+                f"not be stored in silver.assays_v2, the one-row-per-element "
+                f"table every assay query reads, so they will not appear in "
+                f"assay answers: {examples}"
+                + (f" (and {more} more)" if more else "")
+                + ". The sample rows, and these values, are kept in "
+                "silver.samples. Fix the values in the source and re-upload "
+                "the file."
+            )[:900],
+            "rows": len(issues.assay_skipped),
+        })
+    if issues.derived_sample_ids:
+        examples = "; ".join(
+            f"{'row ' + str(row) + ' ' if row is not None else ''}{sample_id}"
+            for row, _hole_id, sample_id in issues.derived_sample_ids[:_MAX_EXAMPLES]
+        )
+        more = len(issues.derived_sample_ids) - min(
+            len(issues.derived_sample_ids), _MAX_EXAMPLES,
+        )
+        out.append({
+            "code": "assay_sample_id_derived",
+            "severity": "info",
+            "message": (
+                f"{len(issues.derived_sample_ids)} sample row(s) in {label} have "
+                f"no sample id; their assays were keyed by hole and interval"
+            ),
+            "detail": (
+                f"{len(issues.derived_sample_ids)} sample row(s) of {label} carry "
+                f"assay values but no sample id, and the assay table needs one. "
+                f"Each was given an id built from its hole and interval so the "
+                f"values could be stored ({examples}"
+                + (f" and {more} more" if more else "")
+                + "); no lab sample number was invented. If the file does have "
+                "a sample-id column, map it and re-upload."
+            )[:900],
+            "rows": len(issues.derived_sample_ids),
+        })
     if issues.merged:
         examples = ", ".join(
             f"{given!r} -> {stored!r}" for _row_no, given, stored in issues.merged[:_MAX_EXAMPLES]
