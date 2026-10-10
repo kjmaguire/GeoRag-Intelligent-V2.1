@@ -52,6 +52,9 @@ class CollarCrudTest extends TestCase
                 'hole_id' => 'DH-TEST-001',
                 'easting' => 512345.0,
                 'northing' => 6234567.0,
+                // The factory project has no crs_epsg, and a collar is placed
+                // only through a known coordinate system (CollarController::store).
+                'crs_epsg' => 32613,
                 'elevation' => 450.0,
                 'total_depth' => 350.0,
                 'hole_type' => 'Diamond',
