@@ -104,8 +104,9 @@ These four services have no `profiles:` key and start on a bare
   is mounted at `/docker-entrypoint-initdb.d` and runs on first
   initialisation only: `10-phase0-extensions-and-schemas.sql`,
   `20-hatchet-database.sql` (the `hatchet` role + logical DB),
-  `init-postgis.sql`, `init-roles.sql`, `init-test-db.sh`, and the two
-  `Z_activate_*.sql` opt-ins. `init-roles.sql` is inside this directory; an
+  `init-postgis.sql`, `init-roles.sql` and `init-test-db.sh`. The two
+  `Z_activate_*.sql` opt-ins (workstation tuning and WAL archiving) were
+  deleted 2026-10-06. `init-roles.sql` is inside this directory; an
   older note claiming it had to be applied by hand is obsolete.
 - **No WAL archive volume.** The base compose has no `archive_mode` and no
   `pg_wal_archive` volume (the `docker/compose.wal-archiving.yml` overlay

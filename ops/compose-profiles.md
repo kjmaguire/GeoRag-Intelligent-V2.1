@@ -2,7 +2,8 @@
 
 **Authority:** the `profiles:` key on each service in `docker-compose.yml`. If
 this file and the compose file disagree, the compose file is right.
-**Last updated:** 2026-10-06. Rewritten against the compose file; the
+**Last updated:** 2026-10-10 (the overlay list no longer names the deleted
+WAL-archiving overlay). Rewritten 2026-10-06 against the compose file; the
 2026-04-19 version described Neo4j, Ollama, Dagster, RAGFlow, vLLM,
 Prometheus/Grafana, the backup agent and Ofelia, none of which has a service
 block any more. This is the **dev** topology. Production is ECS Fargate
@@ -29,8 +30,9 @@ OpenAI-compatible endpoint you run yourself.
 Overlays, layered with `-f`: `docker-compose.demo.yml` (small-VM resource
 overlay), `docker-compose.smoke-isolation.yml` (second stack renamed
 `smoke-*`), `docker/compose.redis-staging.yml` (3-instance Redis),
-`docker/compose.wal-archiving.yml` (Postgres WAL archive volume),
-`docker/compose.langfuse.yml` (opt-in Langfuse + ClickHouse).
+`docker/compose.langfuse.yml` (opt-in Langfuse + ClickHouse). There is no
+WAL-archiving overlay: `docker/compose.wal-archiving.yml` was deleted
+2026-10-06, and production point-in-time restore is RDS's.
 
 ```sh
 # Core infrastructure only
