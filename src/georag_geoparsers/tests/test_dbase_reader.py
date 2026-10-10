@@ -17,6 +17,7 @@ The four target files were chosen to cover the two ways the naive
 * alteration_riehle.dbf — ASCII dBASE with real decimals
 """
 
+import os
 import struct
 from pathlib import Path
 
@@ -24,7 +25,9 @@ import pytest
 
 from georag_geoparsers.dbase_reader import DbaseTable, read_dbase
 
-REDSTAR = Path("C:/Users/GeoRAG/Desktop/RedStar")
+#: Where the client delivery is mounted. Overridable (REDSTAR_DELIVERY) so a
+#: machine that has it anywhere but one Windows desktop can run the pins below.
+REDSTAR = Path(os.environ.get("REDSTAR_DELIVERY", "C:/Users/GeoRAG/Desktop/RedStar"))
 
 SITKA_TRENCH = REDSTAR / "Apollo Sitka" / "Trench" / "Sitka_tr" / "Sitka_trD.DAT"
 SITKA_LEGEND = REDSTAR / "Apollo Sitka" / "Trench" / "Sitka_tr" / "Sitka_tr_Legend.DAT"
@@ -35,9 +38,15 @@ SOILS = (
 MISC_POINTS = REDSTAR / "Unga Regional (inc)" / "Geology" / "2005" / "MiscPoints_2005.dbf"
 ALTERATION = REDSTAR / "Unga Regional (inc)" / "Geology" / "Digital Data" / "alteration_riehle.dbf"
 
-pytestmark = pytest.mark.skipif(
+#: Applied to the tests that read the delivery, NOT to the whole module. It was a
+#: module-level `pytestmark`, which skipped all 34 tests on every CI run -- the
+#: two that need no client data included, and any test of the decode rule that
+#: could have been written without it. The rule is now also tested on bytes
+#: built in the test (tests/test_dbase_reader_synthetic.py), which runs
+#: everywhere; these pins are what that rule was MEASURED against.
+needs_redstar = pytest.mark.skipif(
     not REDSTAR.is_dir(),
-    reason="RedStar delivery not mounted on this machine",
+    reason="RedStar delivery not mounted on this machine (set REDSTAR_DELIVERY)",
 )
 
 
@@ -68,6 +77,7 @@ def misc_points() -> DbaseTable:
 # Sitka_trD.DAT — binary doubles plus a width-4 binary int32
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_sitka_shape(sitka: DbaseTable) -> None:
     assert sitka.record_count == 10
     assert sitka.deleted_count == 0
@@ -75,6 +85,7 @@ def test_sitka_shape(sitka: DbaseTable) -> None:
     assert len(sitka.fields) == 9
 
 
+@needs_redstar
 def test_sitka_declares_every_field_as_character(sitka: DbaseTable) -> None:
     """The header is useless here — all nine columns claim to be text.
 
@@ -85,6 +96,7 @@ def test_sitka_declares_every_field_as_character(sitka: DbaseTable) -> None:
     assert {f.dbase_type for f in sitka.fields} == {"C"}
 
 
+@needs_redstar
 def test_sitka_collar_ids_are_text(sitka: DbaseTable) -> None:
     assert _field(sitka, "CollarID_D").decoded_as == "text"
     ids = _column(sitka, "CollarID_D")
@@ -97,6 +109,7 @@ def test_sitka_collar_ids_are_text(sitka: DbaseTable) -> None:
     ]
 
 
+@needs_redstar
 def test_sitka_azimuths_decode_as_doubles(sitka: DbaseTable) -> None:
     assert _field(sitka, "Azimuth_DB").decoded_as == "double"
     assert _column(sitka, "Azimuth_DB") == [
@@ -104,6 +117,7 @@ def test_sitka_azimuths_decode_as_doubles(sitka: DbaseTable) -> None:
     ]
 
 
+@needs_redstar
 def test_sitka_depth_max(sitka: DbaseTable) -> None:
     depths = _column(sitka, "Depth_DB")
     assert _field(sitka, "Depth_DB").decoded_as == "double"
@@ -114,6 +128,7 @@ def test_sitka_depth_max(sitka: DbaseTable) -> None:
     assert depths == [0.0, 61.5, 0.0, 32.0, 0.0, 40.0, 0.0, 19.0, 0.0, 82.0]
 
 
+@needs_redstar
 def test_sitka_midpoint_coordinates_are_in_the_survey_area(sitka: DbaseTable) -> None:
     """A misread double lands nowhere near UTM zone 4N — hence range pins."""
     xs = _column(sitka, "MidX_DB")
@@ -122,6 +137,7 @@ def test_sitka_midpoint_coordinates_are_in_the_survey_area(sitka: DbaseTable) ->
     assert min(ys) >= 6117146 and max(ys) <= 6117348
 
 
+@needs_redstar
 def test_sitka_key_is_a_width_four_int32(sitka: DbaseTable) -> None:
     """The case a range test cannot reach — width 4 is decided by refutation."""
     key = _field(sitka, "__Key_DB")
@@ -131,6 +147,7 @@ def test_sitka_key_is_a_width_four_int32(sitka: DbaseTable) -> None:
     assert _column(sitka, "__Key_DB") == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 
+@needs_redstar
 def test_sitka_all_empty_columns_are_reported_as_text(sitka: DbaseTable) -> None:
     """Dip_DB and MidZ_DB are eight NUL bytes in all ten rows.
 
@@ -167,6 +184,7 @@ def test_sitka_all_empty_columns_are_reported_as_text(sitka: DbaseTable) -> None
 # Sitka_tr_Legend.DAT — the 0x2A deleted-record flag
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_legend_counts_deleted_records_without_returning_them() -> None:
     """23 declared, 7 delete-flagged, 16 live — all three numbers matter.
 
@@ -185,6 +203,7 @@ def test_legend_counts_deleted_records_without_returning_them() -> None:
 # all_historical_soils_clean.DAT — both traps in one table
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_soils_shape(soils: DbaseTable) -> None:
     assert soils.record_count == 854
     assert soils.deleted_count == 0
@@ -192,6 +211,7 @@ def test_soils_shape(soils: DbaseTable) -> None:
     assert len(soils.fields) == 111
 
 
+@needs_redstar
 def test_soils_coordinate_ranges(soils: DbaseTable) -> None:
     eastings = _column(soils, "easting")
     northings = _column(soils, "northing")
@@ -199,6 +219,7 @@ def test_soils_coordinate_ranges(soils: DbaseTable) -> None:
     assert (min(northings), max(northings)) == (6117254.0, 6129820.0)
 
 
+@needs_redstar
 def test_soils_printable_bytes_trap(soils: DbaseTable) -> None:
     """cu_ppm row 0 is 14.0, whose eight bytes are all printable-or-NUL.
 
@@ -210,6 +231,7 @@ def test_soils_printable_bytes_trap(soils: DbaseTable) -> None:
     assert _column(soils, "cu_ppm")[0] == 14.0
 
 
+@needs_redstar
 def test_soils_trailing_nul_trap(soils: DbaseTable) -> None:
     """samsubtype is real text whose NUL padding sits in the exponent.
 
@@ -222,6 +244,7 @@ def test_soils_trailing_nul_trap(soils: DbaseTable) -> None:
     assert set(values) == {"", "SOIL", "TALU", "FROS"}
 
 
+@needs_redstar
 def test_soils_field_classification_tally(soils: DbaseTable) -> None:
     """37 double / 3 text / 41 all-empty across the 81 width-8 'C' fields.
 
@@ -243,6 +266,7 @@ def test_soils_field_classification_tally(soils: DbaseTable) -> None:
     assert len(texts) - len(populated_texts) == 41
 
 
+@needs_redstar
 def test_soils_narrow_character_fields_are_never_read_as_binary(soils: DbaseTable) -> None:
     """`color` is width 4 and holds 'BR' — the width-4 false-positive case.
 
@@ -255,6 +279,7 @@ def test_soils_narrow_character_fields_are_never_read_as_binary(soils: DbaseTabl
         assert _field(soils, name).decoded_as == "text"
 
 
+@needs_redstar
 def test_soils_text_columns_keep_their_content(soils: DbaseTable) -> None:
     first = soils.rows[0]
     assert first["sample"] == "8101"
@@ -264,6 +289,7 @@ def test_soils_text_columns_keep_their_content(soils: DbaseTable) -> None:
     assert first["sampler"] == "AKA"
 
 
+@needs_redstar
 def test_soils_negative_and_sub_unit_assays_survive(soils: DbaseTable) -> None:
     """-1.0 (below detection) and 0.173 both sit inside the magnitude window."""
     assert _column(soils, "sb_ppm")[0] == -1.0
@@ -275,6 +301,7 @@ def test_soils_negative_and_sub_unit_assays_survive(soils: DbaseTable) -> None:
 # MiscPoints_2005.dbf — ordinary ASCII dBASE, must not regress
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_misc_points_shape(misc_points: DbaseTable) -> None:
     assert misc_points.record_count == 42
     assert misc_points.deleted_count == 0
@@ -282,6 +309,7 @@ def test_misc_points_shape(misc_points: DbaseTable) -> None:
     assert [f.name for f in misc_points.fields] == ["OBJECTID", "Type", "Comments"]
 
 
+@needs_redstar
 def test_misc_points_ascii_numeric_stays_numeric(misc_points: DbaseTable) -> None:
     """OBJECTID is a genuine 'N' field of right-justified digits."""
     objectid = _field(misc_points, "OBJECTID")
@@ -292,17 +320,20 @@ def test_misc_points_ascii_numeric_stays_numeric(misc_points: DbaseTable) -> Non
     assert all(isinstance(v, int) for v in values)
 
 
+@needs_redstar
 def test_misc_points_text_columns(misc_points: DbaseTable) -> None:
     types = _column(misc_points, "Type")
     assert types[:5] == ["Misc", "Misc", "Misc", "Misc", "HandSample"]
     assert sorted(set(types)) == ["HandSample", "Misc", "Photo"]
 
 
+@needs_redstar
 def test_misc_points_interior_line_break_survives_padding_strip(misc_points: DbaseTable) -> None:
     """Trailing spaces go, the CRLF inside the sentence stays."""
     assert misc_points.rows[0]["Comments"] == "check if bm sampled along this\r\nzone."
 
 
+@needs_redstar
 def test_misc_points_ldid_0x57_does_not_change_the_result(misc_points: DbaseTable) -> None:
     """This file declares code page 0x57 where the MapInfo files declare 0x00.
 
@@ -318,6 +349,7 @@ def test_misc_points_ldid_0x57_does_not_change_the_result(misc_points: DbaseTabl
 # alteration_riehle.dbf — ASCII dBASE with decimals
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_alteration_shape_and_decimal_fields() -> None:
     table = read_dbase(ALTERATION)
     assert table.record_count == 10
@@ -360,6 +392,7 @@ GCP_DAT = REDSTAR / "Apollo Sitka" / "Trench" / "TR002" / "TR002.3" / "tr002.3-g
 GCP_TAB = REDSTAR / "Apollo Sitka" / "Trench" / "TR006" / "tr006.4-geology_gcp.TAB"
 
 
+@needs_redstar
 def test_gcp_sidecar_still_declares_the_schema_this_test_was_written_against() -> None:
     """Guard the oracle itself — the test below is worthless if the .TAB moved."""
     declaration = GCP_TAB.read_text(encoding="latin-1")
@@ -368,6 +401,7 @@ def test_gcp_sidecar_still_declares_the_schema_this_test_was_written_against() -
     assert "Image_X Integer ;" in declaration
 
 
+@needs_redstar
 def test_blind_decode_reproduces_the_types_mapinfo_declared() -> None:
     """Ten of ten, on a table the decode rule was never tuned against.
 
@@ -385,6 +419,7 @@ def test_blind_decode_reproduces_the_types_mapinfo_declared() -> None:
     assert recovered == GCP_DECLARED_TYPES
 
 
+@needs_redstar
 def test_gcp_values() -> None:
     table = read_dbase(GCP_DAT)
     assert len(table.rows) == 3
@@ -398,6 +433,7 @@ def test_gcp_values() -> None:
     assert all(abs(v) < 10 for v in _column(table, "RMS"))
 
 
+@needs_redstar
 def test_logical_column_decodes_true_as_one() -> None:
     """MapInfo writes 0x01, not 'T'."""
     table = read_dbase(GCP_DAT)
@@ -421,6 +457,7 @@ def _gcp_with_use_byte(tmp_path: Path, value: int) -> Path:
     return target
 
 
+@needs_redstar
 def test_logical_false_is_zero_not_missing(tmp_path: Path) -> None:
     """0x00 means false here, and must not be swallowed as padding.
 
@@ -433,6 +470,7 @@ def test_logical_false_is_zero_not_missing(tmp_path: Path) -> None:
     assert _column(table, "Use") == [0, 1, 1]
 
 
+@needs_redstar
 def test_logical_unknown_is_none(tmp_path: Path) -> None:
     table = read_dbase(_gcp_with_use_byte(tmp_path, 0x20))
     assert _column(table, "Use") == [None, 1, 1]
@@ -441,6 +479,7 @@ def test_logical_unknown_is_none(tmp_path: Path) -> None:
     assert _column(ascii_form, "Use") == [0, 1, 1]
 
 
+@needs_redstar
 def test_undefined_logical_byte_demotes_the_column_to_text(tmp_path: Path) -> None:
     """An unrecognised flag costs the column its type, never its content."""
     table = read_dbase(_gcp_with_use_byte(tmp_path, ord("Z")))
@@ -452,6 +491,7 @@ def test_undefined_logical_byte_demotes_the_column_to_text(tmp_path: Path) -> No
 # Failure modes
 # ---------------------------------------------------------------------------
 
+@needs_redstar
 def test_truncated_file_is_refused_by_name(tmp_path: Path) -> None:
     """Half a table that looks whole is the worst possible return value."""
     truncated = tmp_path / "Sitka_trD_cut.DAT"
@@ -479,6 +519,7 @@ def test_missing_file_raises_file_not_found(tmp_path: Path) -> None:
         read_dbase(tmp_path / "nope.dbf")
 
 
+@needs_redstar
 def test_decoded_as_predicts_the_python_type(sitka: DbaseTable, soils: DbaseTable) -> None:
     """The closed vocabulary is a contract: text->str, double->float, int32->int.
 
