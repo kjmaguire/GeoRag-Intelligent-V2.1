@@ -832,9 +832,10 @@ def _bronze_bucket_name() -> str:
     """
     try:
         return StorageConfig.from_env().bucket_name(Bucket.BRONZE)
-    except ValueError:
+    except ValueError as exc:
         # Half a credential pair. Every storage call will say so; a URI that is
         # only a record of where the file is must not be what fails persist.
+        log.debug("bronze bucket name for a review URI: storage config unreadable (%s)", exc)
         return os.environ.get("AWS_BUCKET_BRONZE") or Bucket.BRONZE.value
 
 

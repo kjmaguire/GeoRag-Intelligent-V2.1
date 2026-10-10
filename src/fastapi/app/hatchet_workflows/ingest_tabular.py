@@ -3389,6 +3389,7 @@ async def run_ingest_tabular(
             try:
                 arrived = Path(local).stat().st_size
             except OSError:
+                log.debug("ingest_tabular: cannot stat the downloaded %s", local, exc_info=True)
                 arrived = None      # nothing to measure; the reader reports a missing file
             oversize = _oversize_refusal(arrived, filename=filename)
             if oversize:

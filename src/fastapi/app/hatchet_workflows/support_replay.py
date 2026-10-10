@@ -555,6 +555,7 @@ def _failure_reason(ctx: object | None) -> str:
     try:
         errors = getattr(ctx, "task_run_errors", None) or {}
     except Exception:  # noqa: BLE001 — diagnostics must not block the hook
+        log.debug("support_replay failure hook: task_run_errors unreadable", exc_info=True)
         errors = {}
     if errors:
         return "; ".join(f"{name}: {msg}" for name, msg in errors.items())[:2000]

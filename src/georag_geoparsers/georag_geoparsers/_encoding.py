@@ -110,7 +110,7 @@ def _detect(data: bytes) -> tuple[str, str | None]:
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
-            pass
+            logger.debug("not strict UTF-8; trying the damaged-UTF-8 and single-byte readings")
         else:
             return ("ascii" if data.isascii() else "utf-8"), text
 
@@ -174,6 +174,7 @@ def open_csv_bytes(data: bytes) -> tuple[StringIO, str]:
         try:
             text = data.decode(encoding, errors="replace")
         except (LookupError, UnicodeDecodeError):
+            logger.debug("cannot decode as %s; decoding as UTF-8 with replacements", encoding, exc_info=True)
             text = data.decode("utf-8", errors="replace")
             encoding = "utf-8"
     return StringIO(text), encoding

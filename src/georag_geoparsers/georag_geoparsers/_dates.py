@@ -28,11 +28,14 @@ What this does instead:
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: 2023-04-05, 2023-04-05T00:00:00, 2023-04-05 10:30:15.123456, ...Z / +02:00
 _ISO = re.compile(
@@ -55,6 +58,7 @@ def _make(year: int, month: int, day: int) -> date | None:
     try:
         return date(year, month, day)
     except ValueError:
+        logger.debug("no such calendar date: %d-%02d-%02d", year, month, day)
         return None
 
 
@@ -148,6 +152,7 @@ class DateReader:
             try:
                 return datetime.strptime(text, fmt).date()
             except ValueError:
+                logger.debug("%r is not %s", text, fmt)
                 continue
         self.unparseable.append((row, text))
         return None

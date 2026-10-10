@@ -111,6 +111,7 @@ def _loop_budget_seconds() -> float:
         v = float(raw)
         return v if v > 0 else 420.0
     except ValueError:
+        log.warning("STALE_RUN_DETECTOR_BUDGET_SECONDS=%r is not a number; using 420", raw)
         return 420.0
 
 

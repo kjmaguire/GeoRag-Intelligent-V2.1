@@ -456,6 +456,7 @@ async def restore_postgres_from_export(
                     infos[qualified] = await _load_table_info(conn, qualified)
                 except LookupError as exc:
                     # Same fate for every row of this table.
+                    log.debug("restore: %s is not on this database (%s); its rows are rejected", qualified, exc)
                     infos[qualified] = _TableInfo(columns={}, pk=())
                     tally.reject(qualified, None, row or {}, exc)
                     continue

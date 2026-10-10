@@ -585,6 +585,7 @@ async def run_export(
                             # Keep going so one run names EVERY unreadable
                             # table; each had its own savepoint, so the
                             # snapshot is still sound.
+                            log.debug("workspace_export: %s unreadable: %s", qualified_table, exc.reason)
                             skipped_tables[output_key] = exc.reason
                 if skipped_tables:
                     # An archive with a silently empty section restores as a
