@@ -42,6 +42,14 @@ use Illuminate\Support\Facades\DB;
  * and widening them is a separate decision.
  *
  * Idempotent: GRANT and ALTER DEFAULT PRIVILEGES are both repeatable.
+ *
+ * One table is deliberately withheld from the `audit` UPDATE grant:
+ * audit.audit_ledger is append-only for this role (2026-10 database audit,
+ * 2026_10_10_100200_make_audit_ledger_append_only). The schema-wide grant below
+ * would otherwise hand UPDATE back every time this migration is re-run, and
+ * `migrate:refresh` / a restored `migrations` table are exactly when it is.
+ * The withholding is at the end of up(), after the generic grants, so the order
+ * of the two halves cannot matter.
  */
 return new class extends Migration
 {
@@ -142,6 +150,46 @@ return new class extends Migration
                 $sequencePrivileges,
             ));
         }
+
+        $this->withholdUpdateFromAppendOnlyLedger();
+    }
+
+    /**
+     * audit.audit_ledger takes INSERT and SELECT from the schema-wide matrix, not
+     * UPDATE or DELETE: it is append-only for the application role, and the
+     * generic `INSERT, SELECT, UPDATE` above would undo that on every re-run.
+     *
+     * Same ownership rule as grantPerObject(): only revoke where this role may.
+     * Partitions (a ledger built from raw phase0/20) are covered by walking the
+     * inheritance tree.
+     */
+    private function withholdUpdateFromAppendOnlyLedger(): void
+    {
+        DB::statement(<<<'SQL'
+            DO $$
+            DECLARE
+                v_rel regclass;
+            BEGIN
+                IF to_regclass('audit.audit_ledger') IS NULL THEN
+                    RETURN;
+                END IF;
+
+                FOR v_rel IN
+                    WITH RECURSIVE tree(oid) AS (
+                        SELECT 'audit.audit_ledger'::regclass::oid
+                        UNION ALL
+                        SELECT i.inhrelid FROM pg_inherits i JOIN tree t ON i.inhparent = t.oid
+                    )
+                    SELECT t.oid::regclass
+                    FROM tree t
+                    JOIN pg_class c ON c.oid = t.oid
+                    WHERE pg_has_role(current_user, c.relowner, 'USAGE')
+                LOOP
+                    EXECUTE format('REVOKE UPDATE, DELETE ON %s FROM georag_app', v_rel);
+                END LOOP;
+            END
+            $$;
+        SQL);
     }
 
     /**

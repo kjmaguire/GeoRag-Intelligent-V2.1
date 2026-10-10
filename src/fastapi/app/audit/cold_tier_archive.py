@@ -299,6 +299,15 @@ async def prune_archived_window(
     OPT-IN. Caller is responsible for verifying the cold-tier
     manifest exists + chain_continuous=True before invoking this.
 
+    No workflow, route or script calls this today. Since
+    2026_10_10_100200_make_audit_ledger_append_only the ledger refuses every
+    UPDATE and DELETE (privilege revoked for ``georag_app``; a BEFORE UPDATE OR
+    DELETE trigger for every other role), so this raises unless the caller is a
+    superuser that has run ``SET LOCAL session_replication_role = replica`` in
+    the same transaction. That is deliberate: pruning the tamper-evident ledger
+    is a reviewed operator act, not something a service role does. Partition
+    retention (pg_partman DROP) is DDL and is unaffected.
+
     Returns the number of rows deleted.
     """
     where = "WHERE created_at < $1"

@@ -211,6 +211,7 @@
                  in a rolled-back transaction: the ledger cannot be cleaned up. -->
             <file>tests/Feature/Tenancy/AuditQueryLogRetentionGrantTest.php</file>
             <file>tests/Feature/Tenancy/AuditHashTriggerCreatedAtTest.php</file>
+            <file>tests/Feature/Tenancy/AuditLedgerAppendOnlyTest.php</file>
             <!-- 2026-10-04 database audit: MV refresh CONCURRENTLY, hot-path and
                  FK indexes, SECURITY DEFINER ACL + search_path, role timeouts. -->
             <file>tests/Feature/Tenancy/DatabaseAuditHardeningMigrationsTest.php</file>

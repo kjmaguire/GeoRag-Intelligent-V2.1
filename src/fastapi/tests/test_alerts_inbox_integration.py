@@ -56,11 +56,18 @@ async def _insert_alert(
     return row["id"]
 
 
+# audit.audit_ledger is append-only (2026_10_10_100200): a BEFORE UPDATE OR
+# DELETE trigger refuses every row change, for the owner and superusers too.
+# This fixture connects as a superuser and removes its own rows with ordinary
+# triggers switched off for that one transaction -- the same break-glass an
+# operator would use. SET LOCAL, so it cannot leak past the transaction.
 async def _cleanup(conn: asyncpg.Connection, target_id_prefix: str) -> None:
-    await conn.execute(
-        "DELETE FROM audit.audit_ledger WHERE target_id LIKE $1",
-        f"{target_id_prefix}%",
-    )
+    async with conn.transaction():
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        await conn.execute(
+            "DELETE FROM audit.audit_ledger WHERE target_id LIKE $1",
+            f"{target_id_prefix}%",
+        )
 
 
 def _headers() -> dict[str, str]:
