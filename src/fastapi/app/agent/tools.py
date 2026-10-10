@@ -62,7 +62,7 @@ from app.agent.deps import AgentDeps
 from app.agent.log_safe import query_hash
 from app.config import settings
 from app.services.dem_elevation import EFFECTIVE_ELEVATION_SQL
-from app.services.reranker import RERANKER_BACKEND
+from app.services.reranker import RERANKER_BACKEND, reranker_backend_is_hosted
 
 
 def _metered(tool_name: str):
@@ -2568,8 +2568,10 @@ async def search_documents(
             # yes/no logits, see _Qwen3CausalReranker.predict). Both are
             # ALREADY in [0, 1]; sigmoiding them squeezes every score into
             # [0.5, 0.73] (audit item 21). Only the cross_encoder backend
-            # emits raw unbounded logits.
-            needs_sigmoid = RERANKER_BACKEND not in ("bedrock", "qwen3_causal")
+            # emits raw unbounded logits -- and only it is assumed to: a
+            # value that is not a known backend is read as probability-scale
+            # (see the floor below), never as logits.
+            needs_sigmoid = RERANKER_BACKEND == "cross_encoder"
 
             # Pair chunks with raw scores, threshold, sort, top-K.
             #
@@ -2586,12 +2588,17 @@ async def search_documents(
             #     problem, so it gets RERANKER_SCORE_THRESHOLD_PROBABILITY
             #     rather than the logit floor.
             pre_threshold_count = len(chunks)
-            if RERANKER_BACKEND == "bedrock":
-                min_score = settings.RERANKER_SCORE_THRESHOLD_HOSTED
-            elif RERANKER_BACKEND == "qwen3_causal":
+            # Only the explicit logit backend gets the logit floor (whose 0.0
+            # default is a no-op on a probability). Anything else -- bedrock,
+            # and a value that is not a backend at all (the service refuses to
+            # start with one, but this is the line that would otherwise run
+            # unfiltered) -- is held to the calibrated hosted floor.
+            if RERANKER_BACKEND == "qwen3_causal":
                 min_score = settings.RERANKER_SCORE_THRESHOLD_PROBABILITY
-            else:
+            elif RERANKER_BACKEND == "cross_encoder":
                 min_score = settings.RERANKER_SCORE_THRESHOLD
+            else:
+                min_score = settings.RERANKER_SCORE_THRESHOLD_HOSTED
             paired = [
                 (chunk, score)
                 for chunk, score in zip(chunks, raw_scores, strict=False)
@@ -2657,12 +2664,18 @@ async def search_documents(
     # precision stage, so its absence is the same typed failure as the stage
     # failing twice. Only the explicitly local/dev backends keep the
     # degrade-to-RRF path below.
-    if RERANKER_BACKEND == "bedrock":
+    #
+    # "Explicitly local" is a closed set (cross_encoder, qwen3_causal). This
+    # used to test `== "bedrock"` (2026-10-10 audit, finding 10), so any other
+    # value ("cohere", a typo) took the lenient path, failed to load a
+    # CrossEncoder and returned 12 RRF-ordered chunks with no floor.
+    if reranker_backend_is_hosted(RERANKER_BACKEND):
         logger.error(
             "RERANKER_UNAVAILABLE search_documents: RERANKER_BACKEND=%s but no "
-            "reranker is configured (empty BEDROCK_RERANK_MODEL_ID or a failed "
-            "startup); refusing to return %d unfiltered RRF-order candidates "
-            "for project=%s. This is NOT an empty corpus.",
+            "reranker is configured (empty BEDROCK_RERANK_MODEL_ID, a failed "
+            "startup or an unrecognised backend); refusing to return %d "
+            "unfiltered RRF-order candidates for project=%s. This is NOT an "
+            "empty corpus.",
             RERANKER_BACKEND,
             len(chunks),
             project_id,
