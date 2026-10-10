@@ -1257,7 +1257,8 @@ jobs:
         run: |
           uv run python scripts/ci/e2e_smoke_query.py \
             --project-id "${{ steps.ingest.outputs.project_id }}" \
-            --workspace-id "${{ steps.ingest.outputs.workspace_id }}"
+            --workspace-id "${{ steps.ingest.outputs.workspace_id }}" \
+            --report-id "${{ steps.ingest.outputs.report_id }}"
 
       - name: Dump FastAPI log on failure
         if: failure()
