@@ -11,10 +11,17 @@ note below the router definition.
 
 Auth
 ----
-Service-key + workspace-id context. Workspace scope is enforced via the
-RLS GUC at the asyncpg connection level — queries outside the caller's
-workspace return empty result sets, which the renderer turns into a
-graceful "no data" figure.
+Service key + the Laravel-minted JWT. The workspace is resolved from that JWT
+by ``resolve_workspace_id`` (the way ``routers/coverage.py`` does), and every
+real-data query runs under that workspace's RLS GUC, so a query for a project
+outside the caller's workspace returns an empty result set, which the renderer
+turns into a graceful "no data" figure.
+
+There is no default-tenant fallback. GIS audit 2026-10 (finding 13): this
+router used to read ``request.state.workspace_id``, which nothing in the app
+ever sets, so every real-data branch ran as ``LEGACY_DEFAULT_TENANT_UUID`` and
+a caller in any other workspace was handed demo data presented as their own.
+A request whose workspace cannot be resolved is refused (401/403) instead.
 """
 from __future__ import annotations
 
@@ -24,13 +31,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID, WorkspaceContext
-from app.agent.workspace_dependency import OptionalWorkspace
 from app.db.scoped_pool import scoped_connection
-from app.metrics import WORKSPACE_RESOLUTION_FAILURES
-from app.services.auth import verify_service_key
+from app.services.auth import UserContext, extract_user_context, verify_service_key
 from app.services.collar_depth import EFFECTIVE_TOTAL_DEPTH_SQL
 from app.services.dem_elevation import EFFECTIVE_ELEVATION_SQL
+from app.services.workspace_resolution import resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +66,6 @@ router = APIRouter(
 # §17.3 — 8 additional chart types (long-section, Harker, spider, REE,
 # ternary, grade-tonnage, anomaly map, target heatmap)
 # ============================================================================
-import contextlib  # noqa: E402
-
 from pydantic import BaseModel, Field  # noqa: E402
 
 from app.services.visualizations.additional_charts import (  # noqa: E402
@@ -431,13 +434,15 @@ async def list_chart_kinds() -> dict[str, list[str]]:
         "chart kinds. With project_id set + a supported chart kind, the "
         "endpoint pulls real workspace data from silver/gold tables. "
         "Without project_id (or for chart kinds not yet wired to real "
-        "data), the synthetic demo dataset is used."
+        "data), the synthetic demo dataset is used. The caller's workspace "
+        "is resolved from the JWT: 401 without a bearer token, 403 when no "
+        "workspace can be resolved."
     ),
 )
 async def render_chart_endpoint(
     request: Request,
     body: ChartRequest,
-    ws: WorkspaceContext | None = OptionalWorkspace,
+    _user: UserContext = Depends(extract_user_context),
 ) -> dict[str, Any]:
     if body.chart_kind not in KNOWN_CHARTS:
         raise HTTPException(
@@ -449,20 +454,17 @@ async def render_chart_endpoint(
     # for target_heatmap) is provided. Falls back to params/demo otherwise.
     params = body.params
     pg_pool = getattr(request.app.state, "pg_pool", None)
-    # REC#1 (2026-06-03) — typed Depends. `ws` is None ONLY when the
-    # request had no workspace claim on auth context; the synthetic
-    # demo path is the right fallback for chart rendering specifically
-    # (this endpoint genuinely serves anonymous gallery previews, so
-    # OptionalWorkspace is correct here vs RequiredWorkspace). The B4
-    # metric still fires so ops can see anonymous render rate.
-    if ws is not None:
-        workspace_id_str = ws.workspace_id
-    else:
-        workspace_id_str = LEGACY_DEFAULT_TENANT_UUID
-        with contextlib.suppress(Exception):
-            WORKSPACE_RESOLUTION_FAILURES.labels(
-                site="visualizations.render"
-            ).inc()
+    # GIS audit 2026-10 (finding 13) — resolve the workspace the way the
+    # other routers do. This used to read request.state.workspace_id, which
+    # nothing in the app sets (extract_user_context returns a UserContext and
+    # never touches request.state), so `ws` was always None and every
+    # real-data branch below ran as the default tenant. It is resolved before
+    # the try block on purpose: its 401/403/503 must reach the client, not
+    # fall into the demo-data fallback.
+    redis_client = getattr(request.app.state, "redis_client", None)
+    workspace_id_str = str(
+        await resolve_workspace_id(_user, request, pg_pool, redis_client)
+    )
 
     try:
         if body.chart_kind == "long_section" and body.project_id and pg_pool:

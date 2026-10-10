@@ -24,6 +24,16 @@ This module flips workspace_id from "look it up, hope it's there" to
 
 Migration path
 --------------
+NOTE (GIS audit 2026-10, finding 13): nothing in ``app/`` assigns
+``request.state.workspace_id`` -- ``extract_user_context`` returns a
+``UserContext`` and leaves ``request.state`` alone -- so the factories below
+see an empty state on every real request: ``require_workspace_context`` always
+answers 401 and ``optional_workspace_context`` always answers None. The
+reference router (``visualizations.py``) sat on ``OptionalWorkspace`` and so
+served the default tenant to everybody; it now resolves its workspace with
+``services.workspace_resolution.resolve_workspace_id`` like ``routers/coverage.py``.
+Use that, not these, until something populates ``request.state``.
+
 Phase 1 (this commit): the factories exist + one reference router
 (``visualizations.py``) is migrated. Phase 2 (follow-up) migrates the
 other 6 routers identified in the B4 sweep. Phase 3 flips
@@ -57,9 +67,10 @@ async def require_workspace_context(request: Request) -> WorkspaceContext:
     HTTPException makes the bug visible at the request level instead
     of silently corrupting cross-tenant data.
 
-    Composes cleanly with the existing extract_user_context Depends:
-    that one populates request.state.workspace_id from the JWT claim,
-    this one type-narrows the result + raises if absent.
+    Intended to compose with extract_user_context, but extract_user_context
+    does NOT populate request.state.workspace_id (see the module note), so
+    today this raises for every real request. Routers resolve the workspace
+    with services.workspace_resolution.resolve_workspace_id instead.
 
     Raises:
         HTTPException(401): when request.state has no workspace_id OR
