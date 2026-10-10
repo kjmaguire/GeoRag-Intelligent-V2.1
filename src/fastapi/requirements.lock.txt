@@ -430,7 +430,7 @@ pydantic==2.13.5
     #   pydantic-graph
     #   pydantic-settings
     #   qdrant-client
-pydantic-ai-slim==2.31.1
+pydantic-ai-slim==2.53.0
     # via georag-fastapi
 pydantic-core==2.46.5
     # via pydantic
