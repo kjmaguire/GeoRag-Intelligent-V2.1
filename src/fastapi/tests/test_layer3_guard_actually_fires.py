@@ -13,11 +13,13 @@ larger than the biggest coordinate in the payload.
 
 The first repair narrowed that to "within 0.5x-2x of ANY numeric field", which
 still ignored what the field was: an azimuth of 45 grounded "40 m", a depth of
-320 m grounded "87 drill holes". A derived statistic is now accepted only for a
-number written with a unit, only against a structured series of the same
-dimension (`total_depth` for a length, the assay values for a grade), and only
-inside that series' own [min, max] -- the one thing a mean, median or
-percentile is guaranteed to satisfy (2026-10-10 audit, finding 1).
+320 m grounded "87 drill holes". A derived statistic is now accepted only
+against a structured series of the same dimension (`total_depth` for a length,
+the assay values for a grade), only inside that series' own [min, max] -- the
+one thing a mean, median or percentile is guaranteed to satisfy (2026-10-10
+audit, finding 1) -- and, since the review of the same day, only in a sentence
+that says it is a statistic or states a bound, about the series it names
+(see test_layer3_review_2026_10_10.py).
 
 **Unit families.** `_detect_unit_mismatches` flags a (value, unit) pair only
 when every same-valued grounded tuple lives in a different unit family, and

@@ -184,22 +184,39 @@ def find_numeric_hole_ids(text: str) -> list[NumericHoleIdCandidate]:
 # over-matching is harmless). Everything that ACTS on a match goes through
 # iter_hole_id_matches() below, so the exclusions live in one place.
 
-#: Lettered prefixes that are words, not hole series. Matched against the
+#: Lettered prefixes that are English words, dates or labels as well as hole
+#: series, in the four ways such a token is told from a hole (2026-10-10 review,
+#: item 5: one flat list made "CO-12" invisible on both sides -- retrieval
+#: dropped a real hole, Layer 4 stopped checking "CO-99"). Matched against the
 #: letters in front of the first digit, case-insensitively.
-_NOT_HOLE_PREFIXES: frozenset[str] = frozenset((
-    # affixes in front of a year or a number: "pre-2010", "post-2015", "mid-2019"
+#:
+#: * affixes: a year behind them makes the token a date ("pre-2010",
+#:   "post-2015", "mid-2019"); anything else is a hole series ("CO-12",
+#:   "SUB-3", "MID-5", "PRE-9").
+_AFFIX_PREFIXES: frozenset[str] = frozenset((
     "pre", "post", "mid", "sub", "non", "co", "semi", "multi", "inter", "intra",
     "ultra", "anti",
-    # calendar shorthand: "Oct-2011", "June-2021", "Yr-2"
+))
+#: * months: a year behind one makes a date ("Oct-2011"); "MAR-12" can be either
+#:   (March 2012, or hole 12 of series MAR), so it is a hole to retrieval and a
+#:   question for Layer 4's pool (`iter_ambiguous_hole_id_matches`).
+_MONTH_PREFIXES: frozenset[str] = frozenset((
     "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct",
-    "nov", "dec", "june", "july", "march", "april", "august", "yr", "year", "day",
-    "week", "wk",
-    # report nouns that take a number: "Zone-3", "Lens-2", "Phase-2"
-    "zone", "lens", "unit", "phase", "stage", "level", "area", "block", "vein",
-    "target", "type", "class", "layer", "seam", "lode", "cycle", "series",
-    "group", "bench", "stope", "grid", "line", "step", "case", "item",
-    "fig", "figure", "table", "tab", "page",
-    # standards, codes and datums: "ISO-9001", "NAD-83", "WGS-84"
+    "nov", "dec", "june", "july", "march", "april", "august",
+))
+#: * places: "Zone-3" is a zone and "ZONE-3" may be a hole. Retrieval takes the
+#:   capitalised form for a hole; Layer 4 asks the pool whether the project has
+#:   any hole of that series at all.
+_LOCATION_PREFIXES: frozenset[str] = frozenset((
+    "zone", "lens", "area", "block", "vein", "target", "lode", "seam", "bench",
+    "stope", "grid", "line", "level",
+))
+#: * never a hole series: calendar and report labels, references, standards and
+#:   datums ("Yr-2", "Phase-2", "Figure-3", "ISO-9001", "WGS-84").
+_WORD_PREFIXES: frozenset[str] = frozenset((
+    "yr", "year", "day", "week", "wk",
+    "unit", "phase", "stage", "type", "class", "layer", "cycle", "series", "group",
+    "step", "case", "item", "fig", "figure", "table", "tab", "page",
     "iso", "astm", "jorc", "cim", "csa", "nad", "wgs", "utm", "epsg", "srid", "crs",
 ))
 
@@ -220,51 +237,123 @@ _ELEMENT_SYMBOLS: frozenset[str] = frozenset((
 ))
 _ISOTOPE_RE = re.compile(r"^([A-Z][a-z])-[1-9]\d{0,2}$")
 _LEADING_LETTERS_RE = re.compile(r"[A-Za-z]+")
+_FIRST_NUMBER_RE = re.compile(r"-(\d+)")
+_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 
 #: A hole word this close in front of a token names it a hole whatever it
 #: looks like ("hole CO-12", "drill hole Sub-3"), the same allowance a year
 #: range gets for "hole 2011-14".
 _NAMED_AS_HOLE_WINDOW = 3
 
+# What a lettered match is, to the extractors below.
+_HOLE = "hole"        # an ordinary series: always a hole
+_WORD = "word"        # never a hole (unless a hole word names it)
+_AFFIX = "affix"      # a series, unless a year follows (handled: that is _WORD)
+_MONTH = "month"      # a date or a series: Layer 4 asks the pool
+_LOCATION = "location"  # a place or a series: Layer 4 asks the pool
 
-def _is_not_a_hole(token: str) -> bool:
-    """Whether a lettered ``HOLE_ID_RE`` match is a word, date, standard or
-    isotope rather than a hole series."""
+
+def _lettered_kind(token: str) -> str:
+    """What a lettered ``HOLE_ID_RE`` match is: ``_HOLE``, ``_WORD``, ``_AFFIX``
+    (a word-like prefix that is a series unless a year follows), ``_MONTH`` or
+    ``_LOCATION``."""
     letters = _LEADING_LETTERS_RE.match(token)
     if letters is None:
-        return False
+        return _HOLE
     prefix = letters.group().lower()
-    embedded_digits = token[letters.end():letters.end() + 1].isdigit()
     if prefix in _NOT_HOLE_EVEN_WITH_DIGITS:
-        return True
-    if prefix in _NOT_HOLE_PREFIXES and not embedded_digits:
-        return True
+        return _WORD
     isotope = _ISOTOPE_RE.match(token)
-    return bool(isotope) and isotope.group(1) in _ELEMENT_SYMBOLS
+    if isotope and isotope.group(1) in _ELEMENT_SYMBOLS:
+        return _WORD
+    # "GH08-212", "SRE09-12": digits glued to the letters make a series name.
+    if token[letters.end():letters.end() + 1].isdigit():
+        return _HOLE
+    first_number = _FIRST_NUMBER_RE.search(token)
+    is_year = bool(first_number and _YEAR_RE.match(first_number.group(1)))
+    if prefix in _WORD_PREFIXES:
+        return _WORD
+    if prefix in _AFFIX_PREFIXES:
+        return _WORD if is_year else _AFFIX
+    if prefix in _MONTH_PREFIXES:
+        return _WORD if is_year else _MONTH
+    if prefix in _LOCATION_PREFIXES:
+        return _LOCATION
+    return _HOLE
 
 
-def iter_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
+def _named_as_hole(start: int, contexts: list[int]) -> bool:
+    return any(0 <= start - c <= _NAMED_AS_HOLE_WINDOW for c in contexts)
+
+
+def iter_hole_id_matches(text: str, *, certain_only: bool = False) -> Iterator[re.Match[str]]:
     """``HOLE_ID_RE`` matches in ``text`` that can be a drill hole.
 
     Drops the lettered shapes that are not holes -- "Pre-2010", "Post-2015",
-    "mid-2019", "Zone-3", "Lens-2", "Oct-2011", "ISO-9001", "Pb-206" -- unless
-    a hole word sits right in front of the token ("hole SUB-3"). Real series
-    ("DDH-1234", "BH-21", "PLS-22-08", "GH08-212", "SRE09-12", "IC-11") pass.
+    "mid-2019", "Oct-2011", "Yr-2", "Phase-2", "ISO-9001", "Pb-206" -- unless a
+    hole word sits right in front of the token ("hole SUB-3"). Real series
+    ("DDH-1234", "BH-21", "PLS-22-08", "GH08-212", "SRE09-12", "IC-11") pass, and
+    so do the ones that are also words: "CO-12", "SUB-3", "MID-5", "MAR-12".
+    A word-like prefix directly followed by a measurement unit ("sub-3 g/t") is
+    a figure, not a hole.
+
+    ``ZONE-4`` and ``Zone-4``: a place name or a series. Retrieval, which has no
+    pool to ask, takes the capitalised form for a hole and the title-case form
+    for a place. ``certain_only=True`` (Layer 4) takes neither -- the answer
+    side asks the pool about them instead (`iter_ambiguous_hole_id_matches`) --
+    and also leaves out the months that are not followed by a year.
+
     Group 1 is the ID, as for ``HOLE_ID_RE.finditer``.
     """
     contexts = [m.end() for m in HOLE_CONTEXT_RE.finditer(text)]
     for match in HOLE_ID_RE.finditer(text):
-        start = match.start(1)
-        if _is_not_a_hole(match.group(1)) and not any(
-            0 <= start - c <= _NAMED_AS_HOLE_WINDOW for c in contexts
-        ):
+        token = match.group(1)
+        kind = _lettered_kind(token)
+        if kind == _HOLE or _named_as_hole(match.start(1), contexts):
+            yield match
             continue
-        yield match
+        if kind == _WORD or _UNIT_AFTER_RE.match(text, match.end(1)):
+            continue
+        # A word-like prefix: an affix is a series unless a year follows (that
+        # was _WORD above); a month or a place is left to Layer 4's pool when
+        # ``certain_only``, and otherwise to the spelling.
+        takes_it = (
+            kind == _AFFIX
+            or (not certain_only and kind == _MONTH)
+            or (not certain_only and kind == _LOCATION and token.isupper())
+        )
+        if takes_it:
+            yield match
 
 
-def find_lettered_hole_ids(text: str) -> list[str]:
+def iter_ambiguous_hole_id_matches(text: str) -> Iterator[tuple[re.Match[str], str]]:
+    """The tokens that are a word, a date or a place AND may be a hole series:
+    a month with no year ("MAR-12"), a place with a number ("Zone-3", "ZONE-3").
+
+    Yields ``(match, PREFIX)``. Only Layer 4 can tell them apart, by asking
+    whether the project has any hole of that series; retrieval reads
+    :func:`iter_hole_id_matches` instead. A token a hole word names is not
+    ambiguous (it is a hole) and neither is one followed by a unit.
+    """
+    contexts = [m.end() for m in HOLE_CONTEXT_RE.finditer(text)]
+    for match in HOLE_ID_RE.finditer(text):
+        token = match.group(1)
+        if _lettered_kind(token) not in (_MONTH, _LOCATION):
+            continue
+        if _named_as_hole(match.start(1), contexts) or _UNIT_AFTER_RE.match(text, match.end(1)):
+            continue
+        letters = _LEADING_LETTERS_RE.match(token)
+        yield match, (letters.group().upper() if letters else "")
+
+
+def find_lettered_hole_ids(text: str, *, certain_only: bool = False) -> list[str]:
     """The IDs of :func:`iter_hole_id_matches`, in order of appearance."""
-    return [m.group(1) for m in iter_hole_id_matches(text)]
+    return [m.group(1) for m in iter_hole_id_matches(text, certain_only=certain_only)]
+
+
+def find_ambiguous_hole_ids(text: str) -> list[tuple[str, str]]:
+    """``(token, PREFIX)`` of :func:`iter_ambiguous_hole_id_matches`."""
+    return [(m.group(1), prefix) for m, prefix in iter_ambiguous_hole_id_matches(text)]
 
 
 #: Compact IDs: letters then digits with no separator -- "BH21", "DDH0023",
@@ -294,7 +383,14 @@ COMPACT_HOLE_CONTEXT_WINDOW = 32
 _NOT_COMPACT_HOLE_PREFIXES: frozenset[str] = frozenset((
     "NI", "ISO", "JORC", "SK", "NAD", "WGS", "EPSG", "SRID", "UTM", "ITRF", "NTS",
     "CRS", "ASTM", "CSA", "CIM", "SEC", "NSR", "FY", "CY", "PH",
+    # vertical and horizontal datums: "CGVD28", "NAVD88", "GDA2020", "MGA94"
+    "CGVD", "NAVD", "NGVD", "GDA", "MGA", "ETRS", "GRS", "NZGD", "DIN",
 ))
+
+#: A drill-type prefix in front of a year -- "RC2012 program results", "the
+#: DD2021 campaign" -- names a program far more often than hole 2012 of a
+#: series, so it counts as a hole only when a hole word names it ("hole RC2012").
+_PROGRAM_YEAR_RE = re.compile(r"[A-Za-z]+(?:19|20)\d{2}")
 
 
 #: Glue that may sit between a hole word and an ID, or between two IDs of a
@@ -328,7 +424,9 @@ def iter_compact_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
     abbreviation (:data:`DRILL_TYPE_PREFIXES`) or be named as a hole: follow a
     hole word within :data:`COMPACT_HOLE_CONTEXT_WINDOW` characters with
     nothing but IDs in between (:func:`_only_ids_between`) -- and never start
-    with a standards / datum prefix. Group 1 is the ID.
+    with a standards / datum prefix. A drill-type prefix in front of a YEAR
+    ("RC2012 program results", "the DD2021 campaign") is a program, so only a
+    hole word makes it a hole (:data:`_PROGRAM_YEAR_RE`). Group 1 is the ID.
     """
     contexts = [m.end() for m in HOLE_CONTEXT_RE.finditer(text)]
     for match in HOLE_ID_COMPACT_RE.finditer(text):
@@ -339,7 +437,10 @@ def iter_compact_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
             continue
         start = match.start(1)
         near = [c for c in contexts if 0 <= start - c <= COMPACT_HOLE_CONTEXT_WINDOW]
-        if prefix in DRILL_TYPE_PREFIXES or (near and _only_ids_between(text[max(near):start])):
+        program_year = _PROGRAM_YEAR_RE.fullmatch(token) is not None
+        if (prefix in DRILL_TYPE_PREFIXES and not program_year) or (
+            near and _only_ids_between(text[max(near):start])
+        ):
             yield match
 
 

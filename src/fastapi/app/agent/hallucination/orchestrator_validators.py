@@ -32,7 +32,9 @@ Usage in orchestrator:
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
+import functools
 import logging
 import re
 import time
@@ -46,12 +48,14 @@ from app.agent.hallucination.citation_markers import (
     CITATION_MARKER_RE,
     CITATION_PREFIXES,
 )
+from app.agent.hallucination.claim_sentences import split_units
 from app.agent.hole_id_patterns import (
     DESIGNATION_RE,
     HOLE_CONTEXT_RE,
     HOLE_ID_RE,
     NUMERIC_HOLE_ID_RE,
     canonical_hole_id,
+    find_ambiguous_hole_ids,
     find_lettered_hole_ids,
     find_numeric_hole_ids,
     hole_id_key,
@@ -421,9 +425,17 @@ def _content_strings(obj: Any, key: str = "") -> list[str]:
 # (`_scan_quantities`), the evidence is read the same way, and a number is
 # grounded by one of three things only: the same figure (literal, give or
 # take its rounding), the same quantity in ANOTHER unit of the same dimension
-# (the real family-to-family factor), or -- for a number with a unit -- a
-# mean / median / percentile of a structured series of that dimension, which
-# lies inside the series' own [min, max]. A bare number is literal-only.
+# (the real family-to-family factor), or something the answer works out from
+# the evidence and SAYS it works out -- a mean / median / percentile of a
+# structured series (inside the series' own [min, max]), a bound inside that
+# range, a recount of the rows, arithmetic on its own sentence's numbers. See
+# "Figures the answer works out from the evidence" below for what each needs.
+#
+# The independent review of 2026-10-10 then found the other side of this:
+# a guard that cannot tell "the 75th percentile" from a claim about the data
+# floors correct answers (any Layer 3 finding forces a retry), so what is NOT
+# a claim is stripped first (`_strip_labels`), and what a sentence works out
+# is recomputed rather than guessed at.
 # ────────────────────────────────────────────────────────────────────────
 
 #: family -> (dimension, scale to the dimension's base unit). Two families
@@ -506,8 +518,11 @@ _CLAIM_UNIT_FAMILY: dict[str, str] = {
 _MAGNITUDES: dict[str, float] = {
     "thousand": 1e3, "million": 1e6, "billion": 1e9, "M": 1e6,
 }
+# A hyphen may stand in for the space: "a 320.1-m depth" is 320.1 metres, as
+# "a 5-km strike" is 5 km. (A unit that runs into more letters is still not a
+# unit, so "12-month" and "5-minute" are untouched.)
 _QTY_AFTER_RE = re.compile(
-    r"\s*(?:(?P<mag>million|billion|thousand|(?-i:M))\s+)?"
+    r"(?:\s*|-)(?:(?P<mag>million|billion|thousand|(?-i:M))\s+)?"
     r"(?P<unit>"
     + "|".join(re.escape(u) for u in sorted(_CLAIM_UNIT_FAMILY, key=len, reverse=True))
     + r")(?![A-Za-z0-9/²³])",
@@ -539,6 +554,18 @@ class _Quantity:
     family: str | None = None
     start: int = 0
     end: int = 0
+    #: The sentence the number is written in, the text in front of it and
+    #: behind it within that sentence, and the other numbers of the sentence.
+    #: Filled in by `_extract_claims`; what a number means (a mean, a
+    #: threshold, the difference of two depths) is read from its sentence.
+    context: str = ""
+    before: str = ""
+    after: str = ""
+    peers: tuple[_Quantity, ...] = ()
+    #: The ``(from, to)`` pairs of the sentence that are written as a range
+    #: ("from 145.2 to 152.5 m", "120-126 m"): a range has a width, its two
+    #: ends are depths.
+    ranges: tuple[tuple[_Quantity, _Quantity], ...] = ()
 
     @property
     def scaled(self) -> float:
@@ -593,11 +620,17 @@ def _conversion_factors(source: str, target: str) -> tuple[float, ...]:
     """Multipliers ``m`` with ``value_in_target = value_in_source * m``.
 
     Empty when either family is unknown or the two measure different things
-    (a percentage is never a length). A family converts into itself with 1.
+    (a percentage is never a length). A family converts into itself with
+    exactly 1: "oz/t" carries two readings of the token (short ton, metric
+    tonne), but one figure is written in ONE of them -- applying both to a
+    restatement in the same family made "1.10 oz/t" a restatement of
+    "1.00 oz/t" (their ratio is 34.2857 / 31.1035).
     """
     src, dst = _FAMILY_SCALES.get(source), _FAMILY_SCALES.get(target)
     if src is None or dst is None or src[0] != dst[0]:
         return ()
+    if source == target:
+        return (1.0,)
     return tuple(a / b for a in src[1] for b in dst[1])
 
 
@@ -717,26 +750,99 @@ class _Evidence:
     bounds: dict[tuple[str, str], tuple[float, float]] = dataclasses.field(
         default_factory=dict
     )
+    #: ``(family, series) -> [(value, hole id)]`` -- the rows the range above
+    #: was taken over, so that "5 holes intersected more than 2 g/t" can be
+    #: counted rather than guessed at. The hole is "" for a row that names none.
+    rows: dict[tuple[str, str], list[tuple[float, str]]] = dataclasses.field(
+        default_factory=dict
+    )
+    #: ``(figure with its "million" applied, unit family or None)`` for each
+    #: number the evidence writes with a magnitude word ("48.2 million tonnes").
+    #: Kept apart from `literal` on purpose: a scaled figure carries the unit
+    #: it was written in, so it may ground a claim that states NO unit, or one
+    #: of the same dimension -- never "48,200,000 ounces" (2026-10-10 review).
+    scaled: list[tuple[float, str | None]] = dataclasses.field(default_factory=list)
+    #: The tool's own aggregates of one result ({"min": .., "max": .., "mean":
+    #: .., "median": .., "std": ..}), for the multiples an answer works out
+    #: from them ("5 times the median", "2.4 standard deviations").
+    stat_sets: list[dict[str, float]] = dataclasses.field(default_factory=list)
     identifiers: set[str] = dataclasses.field(default_factory=set)
+    _indexes: dict[str, Any] = dataclasses.field(default_factory=dict, repr=False, compare=False)
 
-    def add_quantity(self, value: float, family: str, series: str | None = None) -> None:
+    def literal_index(self) -> list[float]:
+        """The unit-blind literals as a sorted list of magnitudes, for a
+        bisect rather than a scan per claim. Built on first use, after the
+        walk has finished adding to the evidence (a sentinel of 1e9 or more
+        is not a measurement and is left out)."""
+        index = self._indexes.get("literal")
+        if index is None:
+            index = self._indexes["literal"] = sorted(
+                abs(g) for g in self.literal if abs(g) < 1e9
+            )
+        return index
+
+    def quantity_index(self) -> dict[str, list[float]]:
+        """``unit family -> sorted magnitudes`` of the quantities the evidence
+        states with a unit (same sentinel cut-off as `literal_index`)."""
+        index = self._indexes.get("quantities")
+        if index is None:
+            grouped: dict[str, list[float]] = {}
+            for value, family in self.quantities:
+                if abs(value) < 1e9:
+                    grouped.setdefault(family, []).append(abs(value))
+            for values in grouped.values():
+                values.sort()
+            index = self._indexes["quantities"] = grouped
+        return index
+
+    def add_quantity(
+        self, value: float, family: str, series: str | None = None, hole: str = ""
+    ) -> None:
         """Record ``value`` as a quantity of ``family``; a ``series`` name
         also widens that series' range (leave it None for values a mean of
-        is never stated: coordinates, interval boundaries, a spread).
+        is never stated: coordinates, interval boundaries, a spread, and the
+        tool's own full-set aggregates -- `_field_unit`).
 
         A value no measurement of the family can take -- a -999 or 1e10
-        sentinel for a missing depth -- is kept as a quantity but never
-        widens a range: one sentinel would otherwise make every number
-        "derivable".
+        sentinel for a missing depth, a 9999 / 99999 / 999999 "no data" code,
+        a zero-metre hole -- is kept as a quantity but never widens a range:
+        one sentinel would otherwise make every number "derivable".
         """
         self.quantities.append((value, family))
-        if series is None:
-            return
-        plausible = abs(value) <= 360.0 if family == "angle_deg" else 0.0 <= value < 1e6
-        if not plausible:
+        if series is None or not _plausible_measurement(value, family, series):
             return
         low, high = self.bounds.get((family, series), (value, value))
         self.bounds[(family, series)] = (min(low, value), max(high, value))
+        self.rows.setdefault((family, series), []).append((value, hole))
+
+
+#: Positive "no data" codes of assay and collar databases. (The negative ones
+#: -- -999, -9999, a detection limit stored as its negative -- fall outside
+#: every range below.)
+_NULL_CODES: frozenset[float] = frozenset((9999.0, 99999.0, 999999.0))
+#: No drill hole is deeper than this: the deepest ever drilled is ~12.3 km.
+_MAX_LENGTH_M = 15_000.0
+#: Terrain a collar can stand on, in metres.
+_ELEVATION_RANGE_M = (-500.0, 9_000.0)
+
+
+def _plausible_measurement(value: float, family: str, series: str) -> bool:
+    """Whether ``value`` can be a measurement of ``series``, as opposed to a
+    sentinel or a default. Only plausible values widen a series' range."""
+    if value in _NULL_CODES:
+        return False
+    if family == "angle_deg":
+        return abs(value) <= 360.0
+    dimension, scales = _FAMILY_SCALES.get(family, ("", (1.0,)))
+    if dimension == "length":
+        metres = value * scales[0]
+        if series == "elevation":
+            # 0.0 is the usual stand-in for a collar with no surveyed height.
+            return metres != 0.0 and _ELEVATION_RANGE_M[0] <= metres <= _ELEVATION_RANGE_M[1]
+        return 0.0 < metres <= _MAX_LENGTH_M
+    if family == "conc_pct":
+        return 0.0 <= value <= 100.0
+    return 0.0 <= value < 1e6
 
 
 #: Structured numeric fields whose NAME fixes their unit -- the tools return
@@ -748,13 +854,13 @@ class _Evidence:
 _FIELD_UNITS: dict[str, tuple[str, bool]] = {
     **dict.fromkeys(
         ("total_depth", "max_depth", "total_metres", "total_meters", "thickness",
-         "width", "true_width", "length"),
+         "width", "true_width", "length", "elevation"),
         ("length_m", True),
     ),
     **dict.fromkeys(
         ("depth", "depth_m", "depth_from", "depth_to", "from_depth", "to_depth",
-         "from_m", "to_m", "elevation", "easting", "northing", "radius_m",
-         "buffer_m", "distance_m"),
+         "from_m", "to_m", "easting", "northing", "radius_m", "buffer_m",
+         "distance_m"),
         ("length_m", False),
     ),
     **dict.fromkeys(
@@ -772,9 +878,14 @@ _FIELD_SUFFIX_FAMILY: tuple[tuple[str, str], ...] = (
 #: An assay value's unit is not in its field name (``value``) but in the
 #: ``element`` key of the row or result that carries it ("Au_ppb",
 #: "U3O8_pct_e") or in a sibling ``unit``.
-_GRADE_FIELD_RE = re.compile(
-    r"^(?:value|grade|(?:min|max|mean|median|avg)_(?:value|grade))$"
-)
+_GRADE_FIELD_RE = re.compile(r"^(?:value|grade)$")
+#: The tool's own aggregates over the FULL set the rows were drawn from
+#: (``min_value``, ``mean_value`` ...). They ground a restatement of themselves
+#: and convert like any grade, but they are not rows: the rows are LIMIT-capped
+#: and the aggregates are not, so putting both in one series let one
+#: full-set mean (or max) stretch the window the capped rows span (2026-10-10
+#: review, "mean grade 0.07 g/t" over samples of 0.5-45 ppb).
+_GRADE_AGGREGATE_RE = re.compile(r"^(?:(?:min|max|mean|median|avg)_(?:value|grade)|std_value)$")
 _ELEMENT_UNIT_RE = re.compile(r"_(ppm|ppb|pct|percent|gpt|g_t|opt)(?:_e)?$", re.IGNORECASE)
 _ELEMENT_UNIT_FAMILY: dict[str, str] = {
     "ppm": "conc_ppm", "gpt": "conc_ppm", "g_t": "conc_ppm", "ppb": "conc_ppb",
@@ -814,15 +925,15 @@ def _field_unit(
 ) -> tuple[str, str | None] | None:
     """``(unit family, series)`` of a structured numeric field, or None.
 
-    ``series`` is None for a value that is not averaged. Grade values of one
-    element form one series however they are named (each sample's ``value``
-    and the result's ``min_value`` / ``max_value`` / ``mean_value`` /
-    ``median_value`` all lie in the range the samples span).
+    ``series`` is None for a value that is not averaged. The grade values of
+    one element's ROWS form one series (``value`` of each sample); the
+    result's own ``min_value`` / ``max_value`` / ``mean_value`` /
+    ``median_value`` / ``std_value`` are literal-only (`_GRADE_AGGREGATE_RE`).
     """
     if grade_family is not None:
         if _GRADE_FIELD_RE.match(name):
             return grade_family, f"grade:{element}"
-        if name == "std_value":
+        if _GRADE_AGGREGATE_RE.match(name):
             return grade_family, None
     known = _FIELD_UNITS.get(name)
     if known is not None:
@@ -854,14 +965,23 @@ def _evidence_text(text: str) -> str:
 
 
 def _numbers_in(text: str) -> list[float]:
-    """Every number an evidence string states, and the figure a following
-    "million" makes of it ("48.2 million tonnes" states 48.2 and 48,200,000)."""
-    out: list[float] = []
-    for quantity in _scan_quantities(_evidence_text(text)):
-        out.append(quantity.value)
-        if quantity.magnitude != 1.0:
-            out.append(quantity.scaled)
-    return out
+    """Every number an evidence string states, as it is written.
+
+    The figure a following "million" makes of it ("48.2 million tonnes" is
+    also 48,200,000) is NOT among them: this list is unit-blind, and a scaled
+    figure must keep the unit it was written with -- see `_scaled_in`.
+    """
+    return [quantity.value for quantity in _scan_quantities(_evidence_text(text))]
+
+
+def _scaled_in(text: str) -> list[tuple[float, str | None]]:
+    """``(figure with its magnitude word applied, unit family)`` for every
+    number an evidence string writes with a "million" / "billion" / "thousand"."""
+    return [
+        (quantity.scaled, quantity.family)
+        for quantity in _scan_quantities(_evidence_text(text))
+        if quantity.magnitude != 1.0
+    ]
 
 
 def _quantities_in(text: str) -> list[tuple[float, str]]:
@@ -904,6 +1024,29 @@ def _add_interval_width(obj: Any, ev: _Evidence) -> None:
             return
 
 
+def _row_hole(obj: Any) -> str:
+    """The hole a row belongs to ("" when it names none)."""
+    hole = _field_of(obj, "hole_id")
+    return hole if isinstance(hole, str) else ""
+
+
+_STAT_FIELDS: dict[str, str] = {
+    "min_value": "min", "max_value": "max", "mean_value": "mean", "avg_value": "mean",
+    "median_value": "median", "std_value": "std",
+}
+
+
+def _note_stat_set(obj: Any, ev: _Evidence) -> None:
+    """Remember the aggregates a result reports about its own rows."""
+    stats: dict[str, float] = {}
+    for field, name in _STAT_FIELDS.items():
+        value = _field_of(obj, field)
+        if _is_number(value):
+            stats[name] = float(value)
+    if len(stats) >= 2:
+        ev.stat_sets.append(stats)
+
+
 def _walk_evidence(
     obj: Any,
     ev: _Evidence,
@@ -913,6 +1056,7 @@ def _walk_evidence(
     sample_sizes: bool = True,
     grade_family: str | None = None,
     element: str = "",
+    hole: str = "",
 ) -> None:
     """Collect content numbers from ``obj``, skipping non-content keys.
 
@@ -923,7 +1067,8 @@ def _walk_evidence(
     how "50 holes" got grounded on a 567-hole project (audit item 3).
 
     ``grade_family`` / ``element`` carry the unit of the grade values of the
-    row being walked down to its numeric fields (see `_field_unit`).
+    row being walked down to its numeric fields (see `_field_unit`); ``hole``
+    the hole that row belongs to.
     """
     lowered = key.lower()
     if lowered and _IDENTIFIER_KEY_RE.search(lowered):
@@ -936,34 +1081,40 @@ def _walk_evidence(
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         reports_total = getattr(obj, "total_count", None) is not None
         grade_family, element = _row_grade_context(obj, grade_family, element)
+        hole = _row_hole(obj) or hole
         if structured:
             _add_interval_width(obj, ev)
+            _note_stat_set(obj, ev)
         for f in dataclasses.fields(obj):
             if reports_total and f.name == "count":
                 continue  # rows returned, not rows matched
             _walk_evidence(
                 getattr(obj, f.name), ev, structured=structured, key=f.name,
                 sample_sizes=sample_sizes and not reports_total,
-                grade_family=grade_family, element=element,
+                grade_family=grade_family, element=element, hole=hole,
             )
     elif isinstance(obj, BaseModel):
         grade_family, element = _row_grade_context(obj, grade_family, element)
+        hole = _row_hole(obj) or hole
         if structured:
             _add_interval_width(obj, ev)
+            _note_stat_set(obj, ev)
         for name in type(obj).model_fields:
             _walk_evidence(
                 getattr(obj, name), ev, structured=structured, key=name,
                 sample_sizes=sample_sizes,
-                grade_family=grade_family, element=element,
+                grade_family=grade_family, element=element, hole=hole,
             )
     elif isinstance(obj, dict):
         grade_family, element = _row_grade_context(obj, grade_family, element)
+        hole = _row_hole(obj) or hole
         if structured:
             _add_interval_width(obj, ev)
+            _note_stat_set(obj, ev)
         for k, v in obj.items():
             _walk_evidence(
                 v, ev, structured=structured, key=str(k), sample_sizes=sample_sizes,
-                grade_family=grade_family, element=element,
+                grade_family=grade_family, element=element, hole=hole,
             )
     elif isinstance(obj, (list, tuple, set, frozenset)):
         if structured and sample_sizes:
@@ -972,7 +1123,7 @@ def _walk_evidence(
         for v in obj:
             _walk_evidence(
                 v, ev, structured=structured, key=key, sample_sizes=sample_sizes,
-                grade_family=grade_family, element=element,
+                grade_family=grade_family, element=element, hole=hole,
             )
     elif isinstance(obj, bool) or obj is None:
         return
@@ -982,10 +1133,11 @@ def _walk_evidence(
         if structured:
             unit = _field_unit(lowered, grade_family, element)
             if unit is not None:
-                ev.add_quantity(number, *unit)
+                ev.add_quantity(number, *unit, hole=hole)
     elif isinstance(obj, str):
         ev.literal.update(_numbers_in(obj))
         ev.quantities.extend(_quantities_in(obj))
+        ev.scaled.extend(_scaled_in(obj))
 
 
 def _collect_evidence(tool_results: list[tuple[str, Any]]) -> _Evidence:
@@ -1001,11 +1153,147 @@ def _collect_evidence(tool_results: list[tuple[str, Any]]) -> _Evidence:
     return ev
 
 
+# ────────────────────────────────────────────────────────────────────────
+# What in an answer is not a claim (2026-10-10 review, finding 2)
+#
+# Layer 3 reads every number of an answer as a statement about the data. Some
+# are not: the "5" of "5. Holes range from ...", the "75" of "the 75th
+# percentile", the "5" of "the top 5 intervals", the index column of a table,
+# the "5" of "Zone 5". They give a place in the answer, a rank, the size of a
+# selection or a label; none can be found in a tool result, and every one was
+# reported as an ungrounded number on a correct answer -- which floors the
+# confidence and prints the banner (any Layer 3 finding forces a retry).
+# ────────────────────────────────────────────────────────────────────────
+
+#: First-column headings that make a table's leading column an index.
+_TABLE_INDEX_HEADERS: frozenset[str] = frozenset((
+    "#", "no", "no.", "nr", "nr.", "n°", "index", "idx", "rank", "item", "row", "s/n", "sn",
+    "seq", "sr", "sr.", "serial",
+))
+_TABLE_FIRST_CELL_RE = re.compile(r"^(\s*\|\s*)\d{1,4}(\s*\|)")
+
+
+def _strip_table_index_cells(text: str) -> str:
+    """Blank the leading cell of each row of a markdown table whose own first
+    column is an index ("#", "No.", "Rank" ...): its 4, 5, 6 count the rows."""
+    if "|" not in text:
+        return text
+    lines = text.split("\n")
+    in_table = index_column = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            in_table = index_column = False
+            continue
+        first = stripped[1:].split("|", 1)[0].strip().lower()
+        if not in_table:
+            in_table, index_column = True, first in _TABLE_INDEX_HEADERS
+        elif index_column and first.isdigit():
+            lines[i] = _TABLE_FIRST_CELL_RE.sub(r"\1 \2", line, count=1)
+    return "\n".join(lines)
+
+
+#: "1. ", "4) ", "(3) ", "- 2. ", "**5.**" at the start of a line.
+_LIST_MARKER_RE = re.compile(
+    r"(?m)^([ \t>]*(?:[-*+•][ \t]+)?\*{0,2})(?:\d{1,2}[.)]|\(\d{1,2}\))\*{0,2}(?=[ \t]+\S)"
+)
+#: "## 4. Results", "### 4.2 Summary".
+_HEADING_NUMBER_RE = re.compile(
+    r"(?m)^([ \t]{0,3}#{1,6}[ \t]*)\d{1,2}(?:\.\d{1,2}){0,3}\.?(?=[ \t]+\S)"
+)
+#: "75th", "1st", "22nd".
+_ORDINAL_RE = re.compile(r"(?<![\w.])\d+(?:st|nd|rd|th)\b", re.IGNORECASE)
+#: "75 percentile", "90-percentile" (the ordinal form is `_ORDINAL_RE`'s).
+_PERCENTILE_RANK_RE = re.compile(
+    r"(?<![\w.])\d+(?:\.\d+)?(?=[ \t-]*percentiles?\b)", re.IGNORECASE
+)
+#: "top 5", "the first 3", "last 10", "next 4": the size of a selection.
+_SELECTOR_SIZE_RE = re.compile(
+    r"\b(top|bottom|upper|lower|first|last|next|previous|preceding|following|leading|best|worst)"
+    r"([\s-]+(?:the\s+)?)(\d+)(?![\d.,]*\d)",
+    re.IGNORECASE,
+)
+#: "5 highest-grade intervals", "the 10 deepest holes".
+_SUPERLATIVE_COUNT_RE = re.compile(
+    r"(?<![\w.])\d+(?=[ \t]+(?:highest|lowest|deepest|shallowest|best|worst|richest|longest|"
+    r"shortest|largest|smallest|strongest|weakest|top)\b)",
+    re.IGNORECASE,
+)
+#: Nouns that take a number as a NAME: "Zone 5", "Phase 4", "Level 12", "Step 4".
+#: A plural only does in front of a list ("Zones 4 and 5"): "targets 50 holes"
+#: is a verb and a count.
+_LABEL_SINGULAR = (
+    r"(?:zone|lens|unit|phase|stage|level|area|block|vein|target|type|class|layer|seam|lode|"
+    r"cycle|series|group|bench|stope|grid|line|step|case|option|scenario|pit|domain|package|"
+    r"campaign|trench|adit|shaft|drift|action|recommendation|priority|tier|category|rank|"
+    r"finding)"
+)
+_LABEL_PLURAL = (
+    r"(?:zones|lenses|units|phases|stages|levels|areas|blocks|veins|targets|types|classes|"
+    r"layers|seams|lodes|cycles|groups|benches|stopes|grids|lines|steps|cases|options|"
+    r"scenarios|pits|domains|packages|campaigns|trenches|adits|shafts|drifts|actions|"
+    r"recommendations|priorities|tiers|categories|ranks|findings)"
+)
+# A label's number is short ("Zone 5", "Level 12", "Line 100E"): a plain
+# three-digit figure after one of these nouns ("area 450 ha") is a quantity,
+# and so is "zone 12m" -- a suffix letter is a capital ("Lens 2A").
+_LABEL_ID = r"(?:\d{1,2}(?-i:[A-Z])?|\d{3}(?-i:[A-Z]))"
+_LABEL_LIST = rf"{_LABEL_ID}(?:\s*(?:,|&|and|or|to|-|–)\s*{_LABEL_ID})"
+_LABEL_NUMBER_RE = re.compile(
+    rf"\b(?:{_LABEL_SINGULAR}\s+({_LABEL_ID}(?:\s*(?:,|&|and|or|to|-|–)\s*{_LABEL_ID})*)"
+    rf"|{_LABEL_PLURAL}\s+({_LABEL_LIST}+))"
+    r"(?![\w.,]*\d)",
+    re.IGNORECASE,
+)
+
+
+def _unit_follows(text: str, pos: int) -> bool:
+    return _QTY_AFTER_RE.match(text, pos) is not None
+
+
+def _keep_heading_number(match: re.Match[str]) -> str:
+    # "## 2.5 g/t cut-off" opens with a grade, not a section number.
+    return match.group(0) if _unit_follows(match.string, match.end()) else match.group(1)
+
+
+def _drop_selector_size(match: re.Match[str]) -> str:
+    selector, glue = match.group(1), match.group(2)
+    after = _QTY_AFTER_RE.match(match.string, match.end(3))
+    if after is not None:
+        # "first 150 m" is a length. Only "top 10 %" -- a fraction of the
+        # samples -- is a selection that carries a unit.
+        family = _CLAIM_UNIT_FAMILY.get(after.group("unit").lower())
+        if family != "conc_pct" or selector.lower() not in ("top", "bottom", "upper", "lower"):
+            return match.group(0)
+    return f"{selector}{glue}"
+
+
+def _drop_label_number(match: re.Match[str]) -> str:
+    group = 1 if match.group(1) is not None else 2
+    if _unit_follows(match.string, match.end(group)):
+        return match.group(0)  # "Level 5 m" is not a name
+    return match.group(0)[: match.start(group) - match.start(0)]
+
+
+def _strip_labels(text: str) -> str:
+    """``text`` without the numbers that are labels, ranks, list positions or
+    selection sizes -- see the header above."""
+    text = _strip_table_index_cells(text)
+    text = _LIST_MARKER_RE.sub(r"\1", text)
+    text = _HEADING_NUMBER_RE.sub(_keep_heading_number, text)
+    text = _ORDINAL_RE.sub(" ", text)
+    text = _PERCENTILE_RANK_RE.sub(" ", text)
+    text = _SELECTOR_SIZE_RE.sub(_drop_selector_size, text)
+    text = _SUPERLATIVE_COUNT_RE.sub(" ", text)
+    return _LABEL_NUMBER_RE.sub(_drop_label_number, text)
+
+
 def _strip_non_claims(text: str, identifiers: set[str] | frozenset[str] = frozenset()) -> str:
     """Remove everything in the answer whose digits are not a claim."""
     clean = _CITATION_MARKER_RE.sub(" ", text)
     clean = DESIGNATION_RE.sub(" ", clean)
     clean = _REFERENCE_RE.sub(" ", clean)
+    clean = _strip_labels(clean)
     for ident in sorted(identifiers, key=len, reverse=True):
         if any(ch.isdigit() for ch in ident) and len(ident) <= 40:
             pattern = r"(?<![\w-])" + re.escape(ident) + r"(?![\w-])"
@@ -1016,15 +1304,67 @@ def _strip_non_claims(text: str, identifiers: set[str] | frozenset[str] = frozen
 def _extract_claims(
     text: str, identifiers: set[str] | frozenset[str] = frozenset()
 ) -> list[_Quantity]:
-    """Every numerical claim in ``text``, with the unit it is written in.
+    """Every numerical claim in ``text``, with the unit it is written in and
+    the sentence it is written in (`_Quantity.context`).
 
-    The numbers `_SMALL_NUMBERS` calls too common to verify are left out.
+    The numbers `_SMALL_NUMBERS` calls too common to verify are left out of
+    the claims but stay among their sentence's ``peers``: "2.8 m from 100.0
+    to 102.8 m" still has two depths to take a difference of.
     """
+    clean = _strip_non_claims(text, identifiers)
+    spans: list[tuple[int, str]] = []
+    pos = 0
+    for unit in split_units(clean):
+        spans.append((pos, unit.text))
+        pos += len(unit.text) + len(unit.sep)
+    starts = [start for start, _ in spans]
+
+    located: list[tuple[int, _Quantity]] = []
+    for q in _scan_quantities(clean):
+        index = max(0, bisect.bisect_right(starts, q.start) - 1)
+        sentence_start, sentence = spans[index]
+        offset = max(0, q.start - sentence_start)
+        located.append((index, dataclasses.replace(
+            q,
+            context=sentence,
+            before=sentence[max(0, offset - 48):offset],
+            after=sentence[max(0, q.end - sentence_start):max(0, q.end - sentence_start) + 24],
+        )))
+    peers: dict[int, list[_Quantity]] = {}
+    ranges: dict[int, list[tuple[_Quantity, _Quantity]]] = {}
+    for index, q in located:
+        peers.setdefault(index, []).append(q)
+    for (index, first), (other, second) in zip(located, located[1:], strict=False):
+        if index == other and _written_as_range(clean, first, second):
+            ranges.setdefault(index, []).append((first, second))
+
+    peer_tuples = {index: tuple(found) for index, found in peers.items()}
+    range_tuples = {index: tuple(found) for index, found in ranges.items()}
     return [
-        quantity
-        for quantity in _scan_quantities(_strip_non_claims(text, identifiers))
-        if quantity.value not in _SMALL_NUMBERS
+        dataclasses.replace(q, peers=peer_tuples[index], ranges=range_tuples.get(index, ()))
+        for index, q in located
+        if q.value not in _SMALL_NUMBERS
     ]
+
+
+_RANGE_WORD_RE = re.compile(r"\s*(?:to|through|thru|-|–|—)\s*", re.IGNORECASE)
+_BETWEEN_BEFORE_RE = re.compile(r"\bbetween\s+$", re.IGNORECASE)
+_AND_RE = re.compile(r"\s*(?:and|&)\s*", re.IGNORECASE)
+
+
+def _written_as_range(text: str, first: _Quantity, second: _Quantity) -> bool:
+    """Whether ``first`` and ``second`` are the two ends of one range:
+    "145.2 to 152.5 m", "145.2 m to 152.5 m", "120-126 m", "between 100 m and
+    110 m". The unit after ``first`` may stand between them."""
+    unit = _QTY_AFTER_RE.match(text, first.end)
+    middle_from = unit.end() if unit is not None and unit.end() <= second.start else first.end
+    middle = text[middle_from:second.start]
+    if _RANGE_WORD_RE.fullmatch(middle):
+        return True
+    return bool(
+        _AND_RE.fullmatch(middle)
+        and _BETWEEN_BEFORE_RE.search(text[max(0, first.start - 12):first.start])
+    )
 
 
 def _extract_number_tokens(
@@ -1042,8 +1382,9 @@ def _extract_numbers_from_text(text: str) -> list[float]:
     """Extract all numbers from response text.
 
     Citation markers, drill-hole identifiers, standard designations
-    ("NI 43-101") and page/figure/section references are removed first --
-    none is a numerical claim, and all parse as one. See `_NUMBER_RE` and
+    ("NI 43-101"), page/figure/section references and the labels, ranks and
+    list positions of `_strip_labels` are removed first -- none is a
+    numerical claim, and all parse as one. See `_NUMBER_RE` and
     `_IDENTIFIER_TOKEN_RE`.
     """
     return [value for value, _exact, _rounded in _extract_number_tokens(text)]
@@ -1059,6 +1400,361 @@ def _matches_grounded(value: float, tolerance: float, grounded: list[float]) -> 
     return any(abs(target - abs(g)) <= tolerance + 1e-9 * max(1.0, abs(g)) for g in grounded)
 
 
+def _near_any(value: float, tolerance: float, magnitudes: list[float]) -> bool:
+    """`_matches_grounded` against a SORTED list of magnitudes: one bisect
+    where the scan was one comparison per number of the evidence, per claim --
+    a long answer against a few thousand collars took seconds of event loop."""
+    target = abs(value)
+    slack = tolerance + 1e-9 * max(1.0, target)
+    i = bisect.bisect_left(magnitudes, target - slack)
+    return i < len(magnitudes) and magnitudes[i] <= target + slack
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Figures the answer works out from the evidence (2026-10-10 review, 2 and 4)
+#
+# A number that is in no tool result can still be arithmetic on what is in
+# them. Four kinds are accepted, each only where the sentence says what it is:
+#
+#   * a statistic of a series -- a mean, median or percentile of the rows of
+#     one structured series lies inside that series' own range. Accepted when
+#     the sentence says it is a statistic (`_STATISTIC_RE`) and the number lies
+#     in the range of the series the sentence is about (`_series_ranges`).
+#     This is the one weak spot: a fabricated mean INSIDE the range cannot be
+#     told from a mean of some subset of the rows, so it passes.
+#   * a threshold -- "deeper than 250 m", "over 2.5 g/t": a bound the answer
+#     (or the question) picked, true of the data whenever it lies inside the
+#     range, since rows then sit on both sides of it.
+#   * a count or a share worked out from the rows -- "5 holes intersected
+#     more than 2 g/t", "42% of samples exceed 1 g/t": recounted from the rows
+#     (`_recomputed_count`). Equal to the recount, or flagged.
+#   * arithmetic on numbers the same sentence states -- a width that is the
+#     difference of two stated depths, a percentage that is 100 a/b of two
+#     stated counts. The operands are checked on their own.
+# ────────────────────────────────────────────────────────────────────────
+
+#: A sentence that says its figure is a statistic of a set.
+_STATISTIC_RE = re.compile(
+    r"\b(?:means?|averages?|averaged|averaging|avg|medians?|mid-?range|percentiles?|"
+    r"quartiles?|quantiles?|deciles?|typical(?:ly)?)\b",
+    re.IGNORECASE,
+)
+
+_FILLER_BEFORE = r"\s*(?:(?:a|an|the|of)\s+)?(?:(?:cut-?off|threshold|grade|value|depth)\s+(?:of\s+)?)?$"
+#: What stands in front of a bound: "deeper than ", "above a ", "exceeding ", "> ".
+_ABOVE_BEFORE_RE = re.compile(
+    r"(?:\b(?:more|greater|higher|larger|bigger|deeper|longer|thicker|wider)\s+than(?:\s+or\s+equal\s+to)?"
+    r"|\b(?:above|beyond|exceed(?:s|ed|ing)?|surpass(?:es|ed|ing)?|at\s+least)"
+    r"|>=?|≥)" + _FILLER_BEFORE,
+    re.IGNORECASE,
+)
+_BELOW_BEFORE_RE = re.compile(
+    r"(?:\b(?:less|lower|smaller|fewer|shallower|shorter|thinner|narrower)\s+than(?:\s+or\s+equal\s+to)?"
+    r"|\b(?:below|at\s+most)"
+    r"|<=?|≤)" + _FILLER_BEFORE,
+    re.IGNORECASE,
+)
+#: "over" / "under" bound a grade ("over 2.5 g/t") but also open an interval
+#: width ("7.44 g/t over 12.6 m"), so they count for a grade only.
+_OVER_BEFORE_RE = re.compile(r"\bover" + _FILLER_BEFORE, re.IGNORECASE)
+_UNDER_BEFORE_RE = re.compile(r"\bunder" + _FILLER_BEFORE, re.IGNORECASE)
+
+
+def _dimension(family: str | None) -> str:
+    return _FAMILY_SCALES[family][0] if family in _FAMILY_SCALES else ""
+
+
+def _bound_direction(number: _Quantity) -> str | None:
+    """``"above"`` / ``"below"`` when ``number`` is written as a bound
+    ("deeper than 250 m", "under 0.5 g/t"), else None."""
+    before = number.before
+    if _ABOVE_BEFORE_RE.search(before):
+        return "above"
+    if _BELOW_BEFORE_RE.search(before):
+        return "below"
+    if _dimension(number.family) == "grade":
+        if _OVER_BEFORE_RE.search(before):
+            return "above"
+        if _UNDER_BEFORE_RE.search(before):
+            return "below"
+    return None
+
+
+#: What a sentence is about, to the series of the evidence it can be about.
+#: A sentence that names its subject is checked against that series alone: the
+#: elevation of a collar is 512-523 m, and "the average depth is 515 m" is not
+#: a statistic of THAT.
+_SERIES_CLASSES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("depth", re.compile(
+        r"\b(?:depths?|deep(?:er|est)?|shallow(?:er|est)?|lengths?|long(?:er|est)?)\b", re.I)),
+    ("thickness", re.compile(r"\b(?:thick(?:er|est|ness(?:es)?)?|wid(?:th|ths|e|er|est))\b", re.I)),
+    ("elevation", re.compile(r"\b(?:elevations?|altitudes?|RL)\b", re.I)),
+    ("dip", re.compile(r"\bdips?\b", re.I)),
+    ("azimuth", re.compile(r"\b(?:azimuths?|bearings?|trends?)\b", re.I)),
+    ("plunge", re.compile(r"\bplunges?\b", re.I)),
+    ("strike", re.compile(r"\bstrikes?\b", re.I)),
+    ("rqd", re.compile(r"\brqd\b", re.I)),
+    ("recovery", re.compile(r"\brecover(?:y|ies)\b", re.I)),
+    ("grade", re.compile(r"\b(?:grades?|assays?|concentrations?|content)\b", re.I)),
+)
+_CLASS_SERIES: dict[str, frozenset[str]] = {
+    "depth": frozenset(("total_depth", "max_depth", "total_metres", "total_meters", "length")),
+    "thickness": frozenset(("thickness", "width", "true_width")),
+    "elevation": frozenset(("elevation",)),
+    "dip": frozenset(("dip", "dip_deg")),
+    "azimuth": frozenset(("azimuth", "trend", "trend_deg")),
+    "plunge": frozenset(("plunge", "plunge_deg")),
+    "strike": frozenset(("strike", "strike_deg")),
+    "rqd": frozenset(("rqd",)),
+    "recovery": frozenset(("recovery",)),
+}
+
+
+def _series_is_about(subject: str, family: str, series: str) -> bool:
+    if subject == "grade":
+        return series.startswith("grade:") or (
+            family.startswith("conc_") and series not in ("rqd", "recovery")
+        )
+    return series in _CLASS_SERIES.get(subject, ())
+
+
+_ELEMENT_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+
+
+@functools.lru_cache(maxsize=512)
+def _sentence_subjects(context: str) -> tuple[str, ...]:
+    """The series classes (`_SERIES_CLASSES`) a sentence names."""
+    return tuple(name for name, pattern in _SERIES_CLASSES if pattern.search(context))
+
+
+@functools.lru_cache(maxsize=512)
+def _named_element_prefixes(context: str) -> frozenset[str]:
+    """Lower-cased assay-key prefixes of the commodities a sentence names
+    ("gold" or "Au" -> "au"; "uranium" -> "u3o8", "eu3o8", "u")."""
+    from app.agent.tools import (  # noqa: PLC0415
+        COMMODITY_ELEMENT_PREFIXES,
+        commodities_in_query,
+    )
+
+    return frozenset(
+        prefix
+        for commodity in commodities_in_query(context)
+        for prefix in COMMODITY_ELEMENT_PREFIXES.get(commodity, ())
+    )
+
+
+def _series_in_scope(
+    context: str, family: str | None, ev: _Evidence
+) -> list[tuple[tuple[str, str], float]]:
+    """``((family, series), factor)`` for the series of ``ev`` a sentence can
+    be about, with the factor that takes the series' unit into ``family``.
+
+    A sentence that names its subject ("average depth", "dip", "grade") is
+    about the series of that subject and no other -- none in the evidence, none
+    in scope. One that names none can be about any series of the dimension of
+    ``family`` (RQD and recovery only for a percentage: a "g/t" figure is not
+    a statistic of them). A sentence that names a commodity ("gold", "Cu") is
+    about the grade series of that element only: a mean of copper in percent
+    is no mean of gold in ppm. A figure with no unit has no dimension to go
+    by: it needs a named subject.
+    """
+    subjects = _sentence_subjects(context)
+    elements = _named_element_prefixes(context)
+    scope: list[tuple[tuple[str, str], float]] = []
+    for key in ev.bounds:
+        series_family, series = key
+        if subjects:
+            if not any(_series_is_about(s, series_family, series) for s in subjects):
+                continue
+        elif family is None or (series in ("rqd", "recovery") and family != "conc_pct"):
+            continue
+        if elements and series.startswith("grade:"):
+            token = _ELEMENT_KEY_RE.match(series[len("grade:"):])
+            if token is None or token.group().lower() not in elements:
+                continue
+        scope.extend(
+            (key, factor)
+            for factor in _conversion_factors(series_family, family or series_family)
+        )
+    return scope
+
+
+def _series_ranges(claim: _Quantity, ev: _Evidence) -> list[tuple[float, float]]:
+    """The ``(low, high)`` of each series ``claim`` can be a statistic of, in
+    the claim's own unit."""
+    ranges: list[tuple[float, float]] = []
+    for key, factor in _series_in_scope(claim.context, claim.family, ev):
+        low, high = ev.bounds[key][0] * factor, ev.bounds[key][1] * factor
+        ranges.append((min(low, high), max(low, high)))
+    return ranges
+
+
+@functools.lru_cache(maxsize=512)
+def _says_statistic(context: str) -> bool:
+    return _STATISTIC_RE.search(context) is not None
+
+
+def _states_a_statistic_or_bound(claim: _Quantity) -> bool:
+    return _says_statistic(claim.context) or _bound_direction(claim) is not None
+
+
+#: What may follow a bare statistic: "average depth is 328.4." / "328.4 deep".
+#: Anything else ("200 holes", "12 samples") makes the number a count.
+_BARE_FIGURE_AFTER_RE = re.compile(
+    r"\s*(?:$|[.,;:)\]\-–—]|(?:deep|long|thick|wide|high|down|and|or|but|with|while|whereas|"
+    r"which|vs\.?|versus)\b)",
+    re.IGNORECASE,
+)
+
+
+def _within_a_series(claim: _Quantity, ev: _Evidence) -> bool:
+    """A statistic, or a bound, that lies inside the range of a series."""
+    if not _states_a_statistic_or_bound(claim):
+        return False
+    if claim.family is None and not _BARE_FIGURE_AFTER_RE.match(claim.after):
+        return False
+    tolerance = claim.exact * claim.magnitude
+    for low, high in _series_ranges(claim, ev):
+        slack = tolerance + 1e-9 * max(1.0, abs(low), abs(high))
+        if low - slack <= claim.scaled <= high + slack or low - slack <= -claim.scaled <= high + slack:
+            return True
+    return False
+
+
+def _is_count(claim: _Quantity) -> bool:
+    return claim.family is None and claim.magnitude == 1.0 and float(claim.value).is_integer()
+
+
+def _recomputed_count(claim: _Quantity, ev: _Evidence) -> bool:
+    """A count, or a percentage, that is the recount of the rows.
+
+    "5 holes intersected more than 2 g/t Au" and "42% of samples exceed 1 g/t"
+    state a bound ("more than 2 g/t") and a figure worked out against it. The
+    bound is read from the sentence, the rows of the series it is about are
+    counted -- samples, and the holes they belong to -- and the figure must be
+    one of those counts (or their share of the rows), whether the bound is
+    meant strictly or not. No bound in the sentence, no recount, and the
+    figure is literal or flagged: a count has no range to lie inside.
+    """
+    percent = claim.family == "conc_pct"
+    if not (percent or _is_count(claim)):
+        return False
+    for bound in claim.peers:
+        if bound.start == claim.start or bound.family is None:
+            continue
+        direction = _bound_direction(bound)
+        if direction is None:
+            continue
+        for key, factor in _series_in_scope(claim.context, bound.family, ev):
+            rows = ev.rows.get(key, [])
+            if not rows:
+                continue
+            limit = bound.scaled / factor if factor else 0.0
+            for strict in (True, False):
+                if direction == "above":
+                    hits = [r for r in rows if (r[0] > limit if strict else r[0] >= limit)]
+                else:
+                    hits = [r for r in rows if (r[0] < limit if strict else r[0] <= limit)]
+                counts = (
+                    (len(hits), len(rows)),
+                    (len({h for _, h in hits if h}), len({h for _, h in rows if h})),
+                )
+                for hit, total in counts:
+                    if percent:
+                        if total and abs(claim.value - 100.0 * hit / total) <= claim.exact + 1e-9:
+                            return True
+                    elif claim.value == hit:
+                        return True
+    return False
+
+
+def _length_factor(source: str | None, target: str | None) -> float:
+    """What takes a length of family ``source`` into ``target`` (0.0 if either
+    is not a length)."""
+    if source is None or target is None:
+        return 0.0
+    factors = _conversion_factors(source, target)
+    return factors[0] if len(factors) == 1 and _dimension(source) == "length" else 0.0
+
+
+def _stated_difference(claim: _Quantity) -> bool:
+    """A length that is the width of a range its own sentence states:
+    "7.3 m from 145.2 to 152.5 m" -- the width of a composite is the
+    difference of its two depths, and the depths are checked on their own.
+
+    Only a range's own two ends are subtracted, and only for a number that is
+    not one of its ends: any three numbers with a - b = c make each the
+    difference of the other two ("10 m from 140.2 to 150.2 m" would ground
+    140.2 as 150.2 - 10), and then nothing in the sentence would be checked.
+    """
+    if _dimension(claim.family) != "length":
+        return False
+    if any(claim.start in (first.start, second.start) for first, second in claim.ranges):
+        return False
+    claimed = abs(claim.scaled)
+    for first, second in claim.ranges:
+        to_first = _length_factor(first.family, claim.family)
+        to_second = _length_factor(second.family, claim.family)
+        if not (to_first and to_second):
+            continue
+        gap = abs(second.scaled * to_second - first.scaled * to_first)
+        tolerance = claim.exact + first.exact * to_first + second.exact * to_second
+        if abs(gap - claimed) <= tolerance + 1e-9 * max(1.0, gap):
+            return True
+    return False
+
+
+def _share_of_counts(claim: _Quantity) -> bool:
+    """A percentage that is 100 a/b of two counts its sentence states:
+    "8 of the 12 holes (67%)". The counts are checked on their own."""
+    if claim.family != "conc_pct":
+        return False
+    counts = [
+        p.value for p in claim.peers
+        if p.family is None and p.magnitude == 1.0 and p.value > 0
+        and float(p.value).is_integer() and p.start != claim.start
+    ]
+    return any(
+        part < whole and abs(claim.value - 100.0 * part / whole) <= claim.exact + 1e-9
+        for part in counts
+        for whole in counts
+    )
+
+
+#: "5 times the median", "a 3-fold increase" / "2.4 standard deviations above".
+_TIMES_AFTER_RE = re.compile(r"\s*(?:times\b|×|x\b|-?\s?fold\b)", re.IGNORECASE)
+_SIGMAS_AFTER_RE = re.compile(
+    r"\s*(?:standard\s+deviations?|std\.?\s*dev(?:iations?)?|sigmas?\b|σ|SDs?\b)", re.IGNORECASE
+)
+
+
+def _stated_multiple(claim: _Quantity, ev: _Evidence) -> bool:
+    """A multiple worked out from the tool's own aggregates of one result:
+    "about 5 times the median" is max / median, "2.4 standard deviations above
+    the mean" is (max - mean) / std. Only the aggregates of ONE result are
+    divided into each other (a ratio of any two grounded numbers would ground
+    nearly any figure), and only a figure written as a multiple is read so."""
+    if claim.family is not None or claim.magnitude != 1.0:
+        return False
+    in_sigmas = _SIGMAS_AFTER_RE.match(claim.after) is not None
+    if not in_sigmas and _TIMES_AFTER_RE.match(claim.after) is None:
+        return False
+    for stats in ev.stat_sets:
+        named = {name: value for name, value in stats.items() if name != "std"}
+        if in_sigmas:
+            std = stats.get("std")
+            candidates = [] if not std else [
+                abs(a - b) / std for x, a in named.items() for y, b in named.items() if x != y
+            ]
+        else:
+            candidates = [
+                abs(a / b) for x, a in named.items() for y, b in named.items() if x != y and b
+            ]
+        if any(abs(claim.value - c) <= claim.rounded + 1e-9 for c in candidates):
+            return True
+    return False
+
+
 def _grounding_route(claim: _Quantity, ev: _Evidence) -> str | None:
     """How ``ev`` supports ``claim``: ``"literal"``, ``"converted"``,
     ``"derived"``, or None when it does not.
@@ -1066,47 +1762,50 @@ def _grounding_route(claim: _Quantity, ev: _Evidence) -> str | None:
     * literal -- the same figure, give or take the rounding it was written
       with (`_written_tolerance`), under any unit; "71 million" is 71,000,000.
       Identifiers, scores, pages and section numbers are not content
-      (`_NON_CONTENT_KEYS`).
+      (`_NON_CONTENT_KEYS`). A figure the EVIDENCE scales with a "million"
+      grounds only a claim that states no unit (`_Evidence.scaled`): the
+      scaled figure carries its own unit, so "48.2 million tonnes" is never
+      48,200,000 ounces.
     * converted -- the same quantity in ANOTHER unit of its dimension, at the
       real factor between the two (`_conversion_factors`): 0.02 % is 200 ppm
       and never 20 ppm, 48,200,000 t is 48.2 Mt, 1.85 g/t is 0.054 oz/ton.
       Only a number written with a unit can be converted, and only from a
       value the evidence states with one.
-    * derived -- a number with a unit that lies inside the range of a
-      STRUCTURED series of its dimension. A mean, median or percentile of
-      collar depths lies between the shallowest and the deepest (the Phase 5
-      follow-up case of "average depth is 375.3 m" over 66 collars). Document
-      prose has no series, and a bare number ("87 drill holes") has no unit:
-      counts are literal or they are flagged.
+    * derived -- worked out from the evidence, in one of the ways listed under
+      "Figures the answer works out from the evidence" above. Document prose
+      has no series and no rows, so only arithmetic on the sentence's own
+      numbers applies to it.
     """
-    literal = [g for g in ev.literal if abs(g) < 1e9]
-    if _matches_grounded(claim.value, claim.rounded, literal):
+    literal = ev.literal_index()
+    if _near_any(claim.value, claim.rounded, literal):
         return "literal"
-    if claim.magnitude != 1.0 and _matches_grounded(
+    if claim.magnitude != 1.0 and _near_any(
         claim.scaled, claim.rounded * claim.magnitude, literal
     ):
         return "literal"
-    if claim.family is None:
-        return None
+    if claim.family is None and _matches_grounded(
+        claim.scaled, claim.rounded * claim.magnitude, [figure for figure, _ in ev.scaled]
+    ):
+        return "literal"
 
-    # The written precision, in the claim's own unit and with its "million".
-    tolerance = claim.exact * claim.magnitude
-    for value, family in ev.quantities:
-        if abs(value) >= 1e9:  # a sentinel, not a measurement
-            continue
-        for factor in _conversion_factors(family, claim.family):
-            converted = abs(value * factor)
-            if abs(abs(claim.scaled) - converted) <= tolerance + 1e-9 * max(1.0, converted):
-                return "converted"
-    for (family, _series), (low, high) in ev.bounds.items():
-        for factor in _conversion_factors(family, claim.family):
-            floor, ceiling = sorted((low * factor, high * factor))
-            slack = tolerance + 1e-9 * max(1.0, abs(floor), abs(ceiling))
-            if (
-                floor - slack <= claim.scaled <= ceiling + slack
-                or floor - slack <= -claim.scaled <= ceiling + slack
-            ):
-                return "derived"
+    if claim.family is not None:
+        # The written precision, in the claim's own unit and with its "million".
+        tolerance = claim.exact * claim.magnitude
+        target = abs(claim.scaled)
+        for family, values in ev.quantity_index().items():
+            for factor in _conversion_factors(family, claim.family):
+                # |target - value * factor| <= tolerance, as a window on value
+                if _near_any(target / factor, (tolerance + 1e-9 * max(1.0, target)) / factor, values):
+                    return "converted"
+
+    if (
+        _stated_difference(claim)
+        or _share_of_counts(claim)
+        or _stated_multiple(claim, ev)
+        or _recomputed_count(claim, ev)
+        or _within_a_series(claim, ev)
+    ):
+        return "derived"
     return None
 
 
@@ -1171,8 +1870,10 @@ def verify_numbers(
 
     # Grounding (reworked 2026-09-29, audit RAG-1; unit-aware since
     # 2026-10-10, see `_grounding_route`): literal, converted at the real
-    # factor between two units of one dimension, or -- for a number with a
-    # unit -- derived within the range of a structured series. The old
+    # factor between two units of one dimension, or derived -- worked out from
+    # the evidence in a way the sentence says it is (a statistic or a bound
+    # inside the range of the series it is about, a recount of the rows,
+    # arithmetic on its own numbers). The old
     # "equals the number of distinct grounded values" rule is gone: that
     # count is an artefact of serialisation, not of the data. Row counts ARE
     # grounded now; every list in a structured result adds its length
@@ -1184,9 +1885,10 @@ def verify_numbers(
         route = _grounding_route(claim, evidence)
         if route == "derived":
             logger.debug(
-                "Layer 3 derivation: %s %s lies inside a structured series of "
-                "its dimension, likely a mean/median/percentile",
-                claim.value, claim.family,
+                "Layer 3 derivation: %s %s is worked out from the evidence "
+                "(a statistic or bound inside a series, a recount, or "
+                "arithmetic on its own sentence): %.80s",
+                claim.value, claim.family, claim.context,
             )
         if route is not None:
             continue
@@ -1201,8 +1903,8 @@ def verify_numbers(
         logger.warning(
             "orchestrator_validators: %d ungrounded number(s) detected "
             "(threshold removed per Module 6 Chunk 3 tightening; a derived "
-            "statistic is accepted only inside the range of a structured "
-            "series in the same unit dimension)",
+            "figure is accepted only where its sentence says what it is and "
+            "the evidence bears it out -- see _grounding_route)",
             len(warnings),
         )
 
@@ -1299,8 +2001,6 @@ def verify_cited_number_support(
         CITATION_MARKER_CAPTURE_RE,
         canonical_marker,
     )
-    from app.agent.hallucination.claim_sentences import split_units  # noqa: PLC0415
-
     text = strip_proactive_insights(text, proactive_insights_offset)
     per_id = _evidence_by_citation_id(tool_results)
     if len(per_id) < 2:
@@ -1368,6 +2068,15 @@ _HOLE_ID_RE = HOLE_ID_RE
 _NUMERIC_HOLE_ID_RE = NUMERIC_HOLE_ID_RE
 _HOLE_CONTEXT_RE = HOLE_CONTEXT_RE
 _CITATION_PREFIX_SET = CITATION_PREFIXES
+
+#: Which of the given letter prefixes ("ZONE", "MAR") begin a hole of this
+#: project: the pool's answer to "is 'Zone-3' a place or a hole series?".
+_HOLE_SERIES_SQL = (
+    "SELECT DISTINCT substring(UPPER(hole_id) FROM '^[A-Z]+') AS prefix "
+    "FROM silver.collars "
+    "WHERE project_id = $1::uuid "
+    "AND substring(UPPER(hole_id) FROM '^[A-Z]+') = ANY($2::text[])"
+)
 
 # Known commodity codes (Module 4 identifier-boost list).
 # Any of these tokens, if mentioned bare, must appear in the cited evidence.
@@ -1682,8 +2391,6 @@ def _measured_holes(answer: str, hole_ids: list[str]) -> set[str]:
     sentence — "Unlike BH-21, BH-12 intersected 7.4 g/t" gives 7.4 g/t to
     BH-12 — or, when none precedes it, to the first one after it.
     """
-    from app.agent.hallucination.claim_sentences import split_units  # noqa: PLC0415
-
     measured: set[str] = set()
     for unit in split_units(answer):
         sentence = unit.text
@@ -1774,7 +2481,17 @@ async def verify_entities(
     # isotopes ("Pre-2010", "Zone-3", "Oct-2011", "Pb-206"): each used to be
     # reported as a critical fabricated drill hole (2026-10-10 audit,
     # finding 8). A hole word right in front of the token still makes it one.
-    candidates = find_lettered_hole_ids(clean)
+    #
+    # "Pre-2010" is a date, but "CO-99" and "SUB-77" are hole series that
+    # happen to be English: only a YEAR behind the prefix makes those a date
+    # (2026-10-10 review, item 5 -- the flat word list had made Layer 4 silent
+    # on a fabricated "CO-99"). The ones that stay ambiguous are a month with
+    # no year ("MAR-12") and a place ("Zone-3", "ZONE-3"): those are asked of
+    # the pool below -- a hole of that series in this project, or no hole.
+    candidates = find_lettered_hole_ids(clean, certain_only=True)
+    ambiguous: dict[str, str] = {}
+    for _token, _prefix in find_ambiguous_hole_ids(clean):
+        ambiguous.setdefault(_token.upper(), _prefix)
     # Compact IDs ("BH21", "DDH0023", "SRE0912") have no dash for HOLE_ID_RE to
     # find; they count with a drill-type prefix or a hole word in front, and a
     # compact spelling of a hole already named with its dash is the same hole
@@ -1816,6 +2533,13 @@ async def verify_entities(
         hid.upper() for hid in dict.fromkeys(candidates)
         if hid.split("-", 1)[0].upper() not in _CITATION_PREFIX_SET
     ]
+    # A token named a hole anywhere in the answer is a hole, ambiguous
+    # elsewhere or not.
+    ambiguous = {
+        token: prefix for token, prefix in ambiguous.items()
+        if token not in hole_ids and prefix not in _CITATION_PREFIX_SET
+    }
+    hole_ids.extend(ambiguous)
 
     warnings: list[str] = []
 
@@ -1836,34 +2560,56 @@ async def verify_entities(
     if hole_ids:
         try:
             canon_ids = [canonical_hole_id(h) for h in hole_ids]
-            async with pg_pool.acquire() as conn:
-                rows = await asyncio.wait_for(
-                    conn.fetch(
-                        # Case- and separator-insensitive (RAG-16): a hole
-                        # stored "Gh08-212" or "BH12" is the hole the answer
-                        # calls "GH08-212" / "BH-12". hole_id_canonical is
-                        # the ingest-side normal form (same rule as
-                        # canonical_hole_id); the regexp_replace arm covers
-                        # rows ingested before that column was populated.
-                        "SELECT hole_id, hole_id_canonical FROM silver.collars "
-                        "WHERE project_id = $2::uuid AND ("
-                        "UPPER(hole_id) = ANY($1) "
-                        "OR hole_id_canonical = ANY($3) "
-                        "OR regexp_replace(UPPER(hole_id), '[[:space:]_./-]+', '', 'g') = ANY($3))",
-                        hole_ids,
-                        project_id,
-                        canon_ids,
-                    ),
-                    timeout=settings.TIMEOUT_POSTGIS_S,
+            # ONE TIMEOUT_POSTGIS_S for the whole lookup, ``pool.acquire()``
+            # included (AL-10). Only the fetch used to be bounded; with every
+            # connection checked out the acquire is the call that waits, so an
+            # exhausted pool hung validation -- and the user's stream with
+            # it -- with no timeout at all. A TimeoutError lands in the
+            # fail-closed handler below, like any other lookup failure.
+            async with asyncio.timeout(settings.TIMEOUT_POSTGIS_S), pg_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    # Case- and separator-insensitive (RAG-16): a hole
+                    # stored "Gh08-212" or "BH12" is the hole the answer
+                    # calls "GH08-212" / "BH-12". hole_id_canonical is
+                    # the ingest-side normal form (same rule as
+                    # canonical_hole_id); the regexp_replace arm covers
+                    # rows ingested before that column was populated.
+                    "SELECT hole_id, hole_id_canonical FROM silver.collars "
+                    "WHERE project_id = $2::uuid AND ("
+                    "UPPER(hole_id) = ANY($1) "
+                    "OR hole_id_canonical = ANY($3) "
+                    "OR regexp_replace(UPPER(hole_id), '[[:space:]_./-]+', '', 'g') = ANY($3))",
+                    hole_ids,
+                    project_id,
+                    canon_ids,
                 )
-            # The SQL above fetches CANDIDATES by the separator-free canonical
-            # form (that is what silver.collars.hole_id_canonical holds), which
-            # merges "PLS-2-28" with "PLS-22-8". The match itself is confirmed
-            # on hole_id_key, which keeps the separator between digit groups,
-            # so a fabricated hole no longer passes as a real neighbour
-            # (audit item 24).
-            found: set[str] = {hole_id_key(r["hole_id"]) for r in rows}
-            for hid in hole_ids:
+                # The SQL above fetches CANDIDATES by the separator-free canonical
+                # form (that is what silver.collars.hole_id_canonical holds), which
+                # merges "PLS-2-28" with "PLS-22-8". The match itself is confirmed
+                # on hole_id_key, which keeps the separator between digit groups,
+                # so a fabricated hole no longer passes as a real neighbour
+                # (audit item 24).
+                found: set[str] = {hole_id_key(r["hole_id"]) for r in rows}
+                # A month or a place that is not a hole of this project is a
+                # date or a name -- unless the project has holes of that very
+                # series, in which case "ZONE-77" is a fabricated one. Same
+                # connection and same deadline as the lookup above.
+                absent = {
+                    prefix for token, prefix in ambiguous.items()
+                    if hole_id_key(token) not in found
+                }
+                series: set[str] = set()
+                if absent:
+                    series = {
+                        str(r["prefix"]).upper()
+                        for r in await conn.fetch(_HOLE_SERIES_SQL, project_id, sorted(absent))
+                    }
+            labels = {
+                token for token, prefix in ambiguous.items()
+                if hole_id_key(token) not in found and prefix not in series
+            }
+            named_holes = [hid for hid in hole_ids if hid not in labels]
+            for hid in named_holes:
                 key = hole_id_key(hid)
                 in_evidence = key in evidence_holes or hid.lower() in grounded_tokens
                 if key in found:
@@ -1872,7 +2618,7 @@ async def verify_entities(
                     # intercept onto real hole BH-21 used to pass silently
                     # (RAG-16).
                     if tool_results and not in_evidence:
-                        warnings.append(_not_in_evidence_warning(hid, clean, hole_ids))
+                        warnings.append(_not_in_evidence_warning(hid, clean, named_holes))
                     continue
                 if hid in numeric_far:
                     warnings.append(

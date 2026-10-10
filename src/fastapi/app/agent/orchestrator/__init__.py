@@ -686,7 +686,7 @@ def _is_cacheable_response(result: GeoRAGResponse) -> bool:
     retry inside five minutes was served the cached apology.
     """
     from app.agent.guards import _drop_sentinel_citations  # noqa: PLC0415
-    from app.agent.hallucination.layer1_retrieval import build_refusal_text  # noqa: PLC0415
+    from app.agent.hallucination.layer1_retrieval import refusal_texts  # noqa: PLC0415
     from app.agent.llm_common import BUDGET_EXHAUSTED_FALLBACK  # noqa: PLC0415
 
     text = (result.text or "").strip()
@@ -696,7 +696,7 @@ def _is_cacheable_response(result: GeoRAGResponse) -> bool:
         and not result.degraded_sources
         and bool(_drop_sentinel_citations(result.citations))
         and BUDGET_EXHAUSTED_FALLBACK.strip() not in text
-        and build_refusal_text().strip() not in text
+        and not any(refusal.strip() in text for refusal in refusal_texts())
     )
 
 

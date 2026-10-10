@@ -272,13 +272,13 @@ _H2_RE = re.compile(r"^\s*##\s+(?P<title>[^#].*?)\s*$")
 def _is_system_text(text: str) -> bool:
     """Canned text written by the system, never by the model."""
     from app.agent.hallucination.layer1_retrieval import (  # noqa: PLC0415
-        build_refusal_text,
+        refusal_texts,
     )
     from app.agent.llm_common import BUDGET_EXHAUSTED_FALLBACK  # noqa: PLC0415
 
     stripped = text.strip()
     return stripped in (
-        build_refusal_text(),
+        *refusal_texts(),
         CITATION_REFUSAL_TEXT,
         BUDGET_EXHAUSTED_FALLBACK,
         MODEL_NO_OUTPUT_TEXT,

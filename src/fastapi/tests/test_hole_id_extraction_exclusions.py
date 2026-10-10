@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from itertools import takewhile
 from typing import Any
 
 import pytest
@@ -100,7 +101,8 @@ class TestRetrievalSideExtraction:
     def test_a_hole_word_in_front_makes_an_odd_prefix_a_hole(self) -> None:
         """"CO" and "SUB" are prefixes of English words and of some hole series."""
         assert extract_hole_ids("assays for hole SUB-12 please") == ["SUB-12"]
-        assert extract_hole_ids("assays for the CO-12 area") == []
+        assert extract_hole_ids("assays for hole Zone-3 please") == ["ZONE-3"]
+        assert extract_hole_ids("assays for hole Yr-2 please") == ["YR-2"]
 
     def test_the_numeric_tail_of_a_lettered_id_is_still_dropped_by_the_wrapper(self) -> None:
         assert _hole_ids_from_query("assays in hole PLS-22-08") == ["PLS-22-08"]
@@ -110,6 +112,68 @@ class TestRetrievalSideExtraction:
             "Since pre-2010, Zone-3 and Lens-2 were drilled; hole PLS-22-08 is the deepest.", 1
         )
         assert [m.surface_form for m in mentions if m.entity_type == "hole"] == ["PLS-22-08"]
+
+
+class TestSeriesThatAreAlsoWords:
+    """"CO", "SUB", "MID", "PRE", "MAR", "ZONE" ... are English and hole series.
+
+    The first fix for finding 8 excluded the prefixes outright, so a question
+    about hole CO-12 named no hole at all and was routed as a synthesis query
+    (2026-10-10 review, item 5). A prefix is now a date only when a YEAR follows
+    it; a place name is told from a hole by its capitals (retrieval has no pool
+    to ask; Layer 4 does).
+    """
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            ("Show assays for CO-12", ["CO-12"]),
+            ("What is the total depth of CO-12?", ["CO-12"]),
+            ("Compare CO-12 and CO-13", ["CO-12", "CO-13"]),
+            ("Show assays for holes CO-12 and CO-13", ["CO-12", "CO-13"]),
+            ("Show assay results for SUB-3", ["SUB-3"]),
+            ("grade in MID-1", ["MID-1"]),
+            ("depth of PRE-12", ["PRE-12"]),
+            ("show me MAR-12", ["MAR-12"]),
+            ("OCT-1 collar", ["OCT-1"]),
+            ("results for TARGET-4", ["TARGET-4"]),
+            ("STOPE-12 assays", ["STOPE-12"]),
+            ("BLOCK-12 intercepts", ["BLOCK-12"]),
+            ("LINE-12 summary", ["LINE-12"]),
+            ("ZONE-4 hole summary", ["ZONE-4"]),
+            ("AREA-5 depth", ["AREA-5"]),
+            ("GRID-4 dip", ["GRID-4"]),
+        ],
+    )
+    def test_a_real_series_with_an_english_prefix_is_found(
+        self, query: str, expected: list[str]
+    ) -> None:
+        assert extract_hole_ids(query) == expected
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "pre-2010 drilling results",
+            "post-2015 holes",
+            "How many holes were drilled mid-2019?",
+            "Oct-2011 program results",
+            "Tell me about the Zone-3 vein",
+            "The Lens-2 structure strikes north",
+            "Phase-2 drilling results",
+            "Which holes returned sub-3 g/t Au?",
+            "Intervals of sub-10 m were excluded",
+            "Yr-2 results",
+            "ISO-9001 certified labs",
+        ],
+    )
+    def test_a_date_a_place_or_a_figure_is_still_not_a_hole(self, query: str) -> None:
+        assert extract_hole_ids(query) == []
+
+    def test_a_question_about_such_a_hole_is_routed_as_a_hole_lookup(self) -> None:
+        for query in ("Show assays for CO-12", "grade in MID-1", "ZONE-4 hole summary"):
+            assert "hole_id_detected" in classify_intent_sync(query).matched_triggers, query
+        for query in ("Tell me about the Zone-3 vein", "What are the pre-2010 drilling results?"):
+            assert "hole_id_detected" not in classify_intent_sync(query).matched_triggers, query
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +212,33 @@ class TestCompactHoleIds:
     )
     def test_standards_datums_and_formulas_are_not_holes(self, query: str) -> None:
         assert extract_hole_ids(query) == []
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "RC2012 program results",
+            "What was found in the DD2021 campaign?",
+            "The RC2020 program comprised 14 holes",
+            "Hole depths are measured from the CGVD28 datum",
+            "Hole (CGVD28 datum) elevations",
+            "holes, NAVD88 elevations",
+        ],
+    )
+    def test_a_program_year_or_a_datum_is_not_a_hole(self, query: str) -> None:
+        """A drill-type prefix in front of a YEAR names a program; CGVD28 is a
+        vertical datum. Neither is a hole, and "RC2012 program results" used to
+        be routed as a collar lookup at confidence 1.0."""
+        assert extract_hole_ids(query) == []
+        assert "hole_id_detected" not in classify_intent_sync(query).matched_triggers
+
+    def test_a_hole_word_makes_a_program_year_a_hole(self) -> None:
+        assert extract_hole_ids("Hole RC2012 returned 5 g/t") == ["RC2012"]
+        assert extract_hole_ids("holes RC2012, RC2013 and RC2014") == ["RC2012", "RC2013", "RC2014"]
+
+    def test_other_drill_prefixed_numbers_stay_holes(self) -> None:
+        assert extract_hole_ids("depth of AC1000") == ["AC1000"]
+        assert extract_hole_ids("RC15 results") == ["RC15"]
+        assert extract_hole_ids("results for DD02021") == ["DD02021"]
 
     def test_a_dashed_id_is_not_also_read_as_its_own_compact_head(self) -> None:
         assert extract_hole_ids("assays for SRE09-12") == ["SRE09-12"]
@@ -207,17 +298,31 @@ def _canon(hole_id: str) -> str:
 
 
 class _CollarPool:
-    """silver.collars as the Layer 4 query sees it, holding ``stored`` holes."""
+    """silver.collars as the Layer 4 queries see them, holding ``stored`` holes.
+
+    ``calls`` records the hole lookups ``(sql, upper_ids, project_id,
+    canon_ids)``; ``series_calls`` the questions "which of these letter
+    prefixes begin a hole of this project?" ``(sql, project_id, prefixes)``.
+    """
 
     def __init__(self, stored: list[str]) -> None:
         self.stored = stored
         self.calls: list[tuple[Any, ...]] = []
+        self.series_calls: list[tuple[Any, ...]] = []
 
     def acquire(self):  # noqa: ANN201 -- asyncpg-shaped context manager
         pool = self
 
         class _Conn:
-            async def fetch(self, sql: str, upper_ids: list[str], project_id: str, canon_ids: list[str]):
+            async def fetch(self, sql: str, *args: Any):
+                if "SELECT DISTINCT substring" in sql:
+                    project_id, prefixes = args
+                    pool.series_calls.append((sql, project_id, prefixes))
+                    letters = {
+                        "".join(takewhile(str.isalpha, h.upper())) for h in pool.stored
+                    }
+                    return [{"prefix": p} for p in prefixes if p in letters]
+                upper_ids, project_id, canon_ids = args
                 pool.calls.append((sql, upper_ids, project_id, canon_ids))
                 return [
                     {"hole_id": h, "hole_id_canonical": _canon(h)}
@@ -246,8 +351,8 @@ class TestLayer4WordDigitTokens:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "token",
-        ["Pre-2010", "Post-2015", "mid-2019", "Zone-3", "Lens-2", "Pb-206",
-         "Oct-2011", "ISO-9001", "FY2021-22", "Sr-87", "Phase-2"],
+        ["Pre-2010", "Post-2015", "mid-2019", "Pb-206", "Oct-2011", "ISO-9001", "FY2021-22",
+         "Sr-87", "Phase-2", "Yr-2", "Figure-3"],
     )
     async def test_an_ordinary_token_is_not_a_fabricated_hole(self, token: str) -> None:
         pool = _CollarPool([])
@@ -256,6 +361,101 @@ class TestLayer4WordDigitTokens:
         )
         assert _critical(warnings) == [], warnings
         assert not pool.calls, "nothing here is a hole, so the database is not asked"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("token", ["Zone-3", "Lens-2", "ZONE-3", "Mar-12", "Target-4", "Stope-12"])
+    async def test_a_place_or_a_month_is_asked_of_the_pool_and_is_no_hole_there(self, token: str) -> None:
+        """"Zone-3" is a place -- unless this project drilled a ZONE series.
+        The pool is asked, finds no hole of that series, and nothing is reported."""
+        pool = _CollarPool(["PLS-22-08"])
+        warnings = await verify_entities(
+            f"Results from {token} returned 0.12% eU3O8 [NI43-1].", PROJECT, pool, None, EVIDENCE,
+        )
+        assert _critical(warnings) == [], warnings
+        assert pool.series_calls, "the pool is asked whether the series exists"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("token", ["Zone-77", "ZONE-77", "Stope-99", "MAR-98"])
+    async def test_a_place_in_a_project_that_drilled_that_series_is_a_fabricated_hole(
+        self, token: str
+    ) -> None:
+        stored = ["ZONE-1", "ZONE-2", "STOPE-1", "MAR-12", "PLS-22-08"]
+        warnings = await verify_entities(
+            f"{token} returned 3.1 g/t Au over 2 m [DATA-1].", PROJECT, _CollarPool(stored), None, EVIDENCE,
+        )
+        assert any(f"'{token.upper()}'" in w for w in _critical(warnings)), warnings
+
+    @pytest.mark.asyncio
+    async def test_a_real_place_named_hole_resolves_without_a_warning(self) -> None:
+        warnings = await verify_entities(
+            "ZONE-2 returned 3.1 g/t Au over 2 m [DATA-1].", PROJECT,
+            _CollarPool(["ZONE-1", "ZONE-2"]), None,
+            [("query_spatial_collars", {"count": 1, "collars": [{"hole_id": "ZONE-2"}]})],
+        )
+        assert _critical(warnings) == [], warnings
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_token_with_a_hole_word_is_certain(self) -> None:
+        """"hole Zone-77" is a hole, whatever the project drilled."""
+        warnings = await verify_entities(
+            "Hole Zone-77 returned 3.1 g/t Au over 2 m [DATA-1].", PROJECT,
+            _CollarPool(["PLS-22-08"]), None, EVIDENCE,
+        )
+        assert any("'ZONE-77'" in w for w in _critical(warnings)), warnings
+
+    @pytest.mark.asyncio
+    async def test_the_pool_is_asked_once_for_both_questions_on_one_connection(self) -> None:
+        pool = _CollarPool(["ZONE-1"])
+        await verify_entities(
+            "Zone-3 and Zone-77 were drilled [DATA-1].", PROJECT, pool, None, EVIDENCE,
+        )
+        assert len(pool.calls) == 1 and len(pool.series_calls) == 1
+        assert pool.series_calls[0][2] == ["ZONE"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Samples below sub-3 g/t were re-assayed [NI43-1].",
+            "Intervals of sub-10 m were excluded [NI43-1].",
+            "Grades under zone-3 ppm are background [NI43-1].",
+        ],
+    )
+    async def test_a_word_like_prefix_before_a_unit_is_a_figure(self, text: str) -> None:
+        pool = _CollarPool([])
+        warnings = await verify_entities(text, PROJECT, pool, None, EVIDENCE)
+        assert _critical(warnings) == [], warnings
+        assert not pool.calls and not pool.series_calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "CO-99 returned 3.1 g/t Au over 2 m [NI43-1].",
+            "| CO-99 | 3.1 g/t |",
+            "SUB-77 intersected 5 m of 2 g/t [NI43-1].",
+            "MID-5 intersected 5 m of 2 g/t [NI43-1].",
+            "PRE-9 intersected 5 m of 2 g/t [NI43-1].",
+            "Holes CO-12 and CO-99 intersected mineralisation [NI43-1].",
+        ],
+    )
+    async def test_a_fabricated_hole_with_an_english_prefix_is_critical(self, text: str) -> None:
+        """"CO", "SUB", "MID", "PRE" are words and also hole series; only a YEAR
+        behind them makes them a date. Silent on origin/main's successor."""
+        warnings = await verify_entities(
+            text, PROJECT, _CollarPool(["CO-12", "PLS-22-08"]), None, EVIDENCE
+        )
+        flagged = " ".join(_critical(warnings))
+        assert any(token in flagged for token in ("CO-99", "SUB-77", "MID-5", "PRE-9")), warnings
+        assert "'CO-12'" not in flagged
+
+    @pytest.mark.asyncio
+    async def test_a_real_hole_with_an_english_prefix_resolves(self) -> None:
+        warnings = await verify_entities(
+            "Show assays for CO-12 [NI43-1].", PROJECT, _CollarPool(["CO-12"]), None,
+            [("query_spatial_collars", {"count": 1, "collars": [{"hole_id": "CO-12"}]})],
+        )
+        assert _critical(warnings) == [], warnings
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("hole", ["DDH-1234", "BH-21", "PLS-22-08", "GH08-212", "SRE09-12", "IC-11", "DH-2547"])

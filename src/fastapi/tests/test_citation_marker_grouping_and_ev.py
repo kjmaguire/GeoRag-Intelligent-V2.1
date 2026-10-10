@@ -85,6 +85,12 @@ GROUPED_FORMS = [
     "[NI43-1, 2]",
     "[NI43-1,NI43-2]",
     "[NI43-1 ; 2]",
+    # review 2026-10-10, item 9: a range, a space, "and"
+    "[NI43-1-2]",
+    "[NI43-1–2]",
+    "[NI43-1 NI43-2]",
+    "[NI43-1 and NI43-2]",
+    "[NI43-1 & 2]",
 ]
 
 
@@ -124,10 +130,44 @@ class TestNormalizeGroupedMarkers:
             "Drilled in 2011, 2012 and 2013, [see NI43-1, 2].",
             "No brackets, only commas; and semicolons.",
             "",
+            # a space joins FULL items only: "12" here is a stray number, not a citation
+            "Claim [NI43-1 12].",
+            "Claim [NI43-1 and].",
+            "Claim (NI43-1 NI43-2).",
+            # a range runs upward and stays small
+            "Claim [NI43-3-1].",
+            "Claim [NI43-1-9].",
         ],
     )
     def test_anything_else_is_left_alone(self, text: str) -> None:
         assert normalize_grouped_markers(text) == text
+
+    def test_a_range_expands_to_every_id_in_it(self) -> None:
+        assert normalize_grouped_markers("[NI43-1-3]") == "[NI43-1][NI43-2][NI43-3]"
+        assert normalize_grouped_markers("[NI43:2–4]") == "[NI43:2][NI43:3][NI43:4]"
+        assert normalize_grouped_markers("[NI43-1-2, NI43-5]") == "[NI43-1][NI43-2][NI43-5]"
+        assert normalize_grouped_markers("[DATA-1, NI43-2 and 5]") == "[DATA-1][NI43-2][NI43-5]"
+
+    def test_a_range_invents_no_citation_an_invented_id_still_costs_itself(self) -> None:
+        """"[NI43-1-4]" is four markers; only the ones that were retrieved
+        survive Layers 2 and 5 (here 3 and 4 are not citations at all)."""
+        response = _response("The resource is 8.6 Mt [NI43-1-4].", ids=(1, 2))
+        out, _findings = validate_and_repair_with_findings(response)
+        assert "[NI43-1]" in out.text and "[NI43-2]" in out.text
+        assert "[NI43-3]" not in out.text and "[NI43-4]" not in out.text
+
+    def test_pathological_input_stays_linear(self) -> None:
+        import time
+
+        for text in (
+            "[NI43-1" + " NI43-1" * 50_000,
+            "[NI43-1" + " and 1" * 50_000,
+            "[NI43-1" + " " * 200_000,
+            "[NI43-1-2" * 20_000,
+        ):
+            start = time.perf_counter()
+            normalize_grouped_markers(text)
+            assert time.perf_counter() - start < 2.0
 
     def test_a_year_after_a_marker_is_not_a_second_citation_by_accident(self) -> None:
         """"[NI43-1, 2012]" reads as ids 1 and 2012 -- the second is not a
