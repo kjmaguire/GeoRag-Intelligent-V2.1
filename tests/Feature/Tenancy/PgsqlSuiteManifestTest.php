@@ -46,6 +46,15 @@ final class PgsqlSuiteManifestTest extends TestCase
         // bronze provenance autofill trigger.
         "getDriverName() === 'sqlite'",
         'getDriverName() === "sqlite"',
+        // 2026-10-10: the detector's hole, a third time. A test that NAMES the
+        // pgsql connection cannot run on SQLite either, whatever it does when
+        // the connection is unreachable. ProjectLifecycleTest gated itself with
+        // "connect to pgsql_migrations or markTestSkipped": no pattern above
+        // matched, so it sat outside the config and skipped everywhere.
+        "connection('pgsql')",
+        'connection("pgsql")',
+        "connection('pgsql_migrations')",
+        'connection("pgsql_migrations")',
     ];
 
     public function test_every_postgres_gated_feature_test_is_in_the_pgsql_suite(): void
@@ -121,6 +130,11 @@ final class PgsqlSuiteManifestTest extends TestCase
         $positive = "if (DB::connection()->getDriverName() === 'sqlite') {";
         $this->assertTrue($this->isPostgresGated($positive));
         $this->assertFalse($this->isPostgresGated('$this->markTestSkipped("No projects in DB.");'));
+
+        // Naming the pgsql connection is a gate too (ProjectLifecycleTest).
+        $this->assertTrue($this->isPostgresGated("DB::connection('pgsql_migrations')->getPdo();"));
+        $this->assertTrue($this->isPostgresGated("DB::connection('pgsql')->table('x');"));
+        $this->assertFalse($this->isPostgresGated("DB::connection('sqlite')->table('x');"));
     }
 
     private function isPostgresGated(string $source): bool
