@@ -71,7 +71,16 @@ locals {
     cost-burn-threshold-exceeded = {
       log_group   = "services"
       pattern     = "COST_BURN_THRESHOLD_EXCEEDED"
-      description = "cost_burn_watcher (*/5 * * * *): a workspace spent past its hourly ceiling. At 2x the watcher suspends its LLM activity by itself."
+      description = "cost_burn_watcher (*/5 * * * *): a workspace spent past its hourly ceiling. At 2x the watcher suspends its LLM activity by itself - if the workspace has a usage.workspace_cost_ceilings row; see cost-burn-hard-stop-unenforceable for the ones that do not."
+    }
+    cost-burn-hard-stop-unenforceable = {
+      # Emitted by cost_burn_watcher._suspend_workspace, in the hatchet-worker
+      # (services group). The hard stop is configured per workspace, so a
+      # workspace measured only against the env-default threshold has no row
+      # to suspend; before 2026-10-10 that was silent.
+      log_group   = "services"
+      pattern     = "COST_BURN_HARD_STOP_UNENFORCEABLE"
+      description = "cost_burn_watcher (*/5 * * * *): a workspace is past 2x its hourly cost threshold but has no usage.workspace_cost_ceilings row, so the hard stop could not suspend it and it keeps spending. The COST_BURN_THRESHOLD_EXCEEDED alert for the same overrun has already gone out; this one says nothing will stop it automatically. Give the workspace a ceiling row (monthly_ceiling_usd) if it should be stoppable, or suspend it by hand. The log line names the workspace."
     }
     qdrant-partial-loss = {
       log_group   = "services"
