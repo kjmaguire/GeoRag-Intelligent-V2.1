@@ -246,6 +246,10 @@
                  names a transaction-mode PgBouncer with a pool of one. -->
             <file>tests/Feature/Tenancy/WorkspaceBindFailsClosedTest.php</file>
             <file>tests/Feature/Tenancy/PooledRlsBindingTest.php</file>
+            <!-- 2026-10-10: workspace.{id}.activity channel authorisation,
+                 called through the registered closure. Its projects need real
+                 silver.workspaces rows here (projects_workspace_id_fkey). -->
+            <file>tests/Feature/Tenancy/WorkspaceActivityChannelAuthTest.php</file>
             <file>tests/Feature/Tenancy/TargetBacktestsRlsTest.php</file>
             <!-- 2026-08-25: storage_tier_policy platform-default visibility
                  (2026_08_25_200000). This note used to say the test self-skips

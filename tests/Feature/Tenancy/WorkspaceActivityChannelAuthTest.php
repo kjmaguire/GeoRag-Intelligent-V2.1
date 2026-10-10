@@ -52,10 +52,32 @@ class WorkspaceActivityChannelAuthTest extends TestCase
 
         $this->workspaceA = (string) Str::uuid();
         $this->workspaceB = (string) Str::uuid();
+        $this->createWorkspaces($this->workspaceA, $this->workspaceB);
 
         $this->inA = $this->userWithProjectIn($this->workspaceA);
         $this->inB = $this->userWithProjectIn($this->workspaceB);
         $this->nowhere = User::factory()->create();
+    }
+
+    /**
+     * Under Postgres, projects_workspace_id_fkey needs the silver.workspaces
+     * row before a project can be moved into it (SQLSTATE 23503 otherwise).
+     */
+    private function createWorkspaces(string ...$workspaceIds): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
+        foreach ($workspaceIds as $workspaceId) {
+            DB::table('silver.workspaces')->insert([
+                'workspace_id' => $workspaceId,
+                'name' => 'Activity channel '.substr($workspaceId, 0, 8),
+                'slug' => 'activity-channel-'.substr($workspaceId, 0, 8),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
     }
 
     private function userWithProjectIn(string $workspaceId): User
