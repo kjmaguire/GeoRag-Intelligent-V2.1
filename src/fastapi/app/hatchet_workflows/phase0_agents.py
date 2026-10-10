@@ -404,6 +404,9 @@ class StoreReconciliationRunOutput(BaseModel):
     cross_store_drift: dict[str, Any] | None = None
     # Set when no cross-store comparison could be made at all (nothing to compare).
     cross_store_skipped: str | None = None
+    # Set when the per-workspace outbox passes could not run (the workspace list
+    # could not be read); only the platform rows were scanned.
+    outbox_skipped: str | None = None
 
 
 store_reconciliation_run = hatchet.workflow(

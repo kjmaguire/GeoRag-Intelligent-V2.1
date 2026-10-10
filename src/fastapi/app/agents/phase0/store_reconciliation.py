@@ -24,12 +24,24 @@ compares that one; called without (the nightly cron) it enumerates
 ``silver.workspaces`` and compares each with its scope bound. It used to count
 ``WHERE workspace_id = NULL`` in Postgres and filter Qdrant on the string
 ``"None"``, so the cron compared zero to zero every night.
+
+The outbox reads are scoped the same way, for a different reason. The two
+``outbox.*`` tables are fail-closed (2026_10_10_100300): a session with no
+workspace bound sees and writes only platform rows (``workspace_id`` NULL), and
+a bound one only its own workspace's. One unbound read, which is what this used
+to be, therefore sees nothing but platform rows and finds no tenant's drift. The
+three reads run once per workspace with that workspace's scope bound (findings
+are written on the same connection, under the same scope), then, when no single
+workspace was asked for, once more with the scope cleared for the platform
+rows, the way ``outbox_dispatcher`` claims them.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from app.agents import AgentContext, georag_agent
@@ -38,6 +50,182 @@ from app.db import list_workspace_ids, scoped_connection
 from app.services.qdrant_conn import qdrant_client_kwargs
 
 logger = logging.getLogger(__name__)
+
+
+#: Pins each outbox pass to its own rows, the predicate ``outbox_dispatcher``
+#: uses. Under the fail-closed policy it restates what RLS already does; under
+#: the fail-open shape ``db:apply-raw`` used to leave behind it is what keeps the
+#: cleared-scope platform pass from reading every tenant's rows as well.
+_SCOPE = (
+    "workspace_id IS NOT DISTINCT FROM "
+    "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
+)
+
+_DEAD_LETTERED_SQL = f"""
+    SELECT id, workspace_id, source_schema, source_table, source_id,
+           target_store, target_collection, dead_lettered_at
+    FROM outbox.pending_propagations
+    WHERE status = 'dead_lettered'
+      AND dead_lettered_at >= now() - interval '7 days'
+      AND {_SCOPE}
+"""
+
+_STUCK_SQL = f"""
+    SELECT id, workspace_id, source_schema, source_table, source_id,
+           target_store, last_attempted_at
+    FROM outbox.pending_propagations
+    WHERE status = 'in_flight'
+      AND (last_attempted_at IS NULL
+           OR last_attempted_at < now() - ($1 || ' minutes')::interval)
+      AND {_SCOPE}
+"""
+
+_MISSING_SQL = f"""
+    SELECT p.id, p.workspace_id, p.source_schema, p.source_table, p.source_id,
+           p.target_store, p.enqueued_at
+    FROM outbox.pending_propagations p
+    WHERE p.status = 'pending'
+      AND p.enqueued_at < now() - ($1 || ' minutes')::interval
+      AND p.{_SCOPE}
+      AND NOT EXISTS (
+          SELECT 1 FROM outbox.propagation_attempts a WHERE a.propagation_id = p.id
+      )
+"""
+
+
+@asynccontextmanager
+async def _outbox_connection(pool: Any, scope: str | None) -> AsyncIterator[Any]:
+    """A transaction scoped to one workspace's outbox rows, or the platform rows.
+
+    ``scope`` is a workspace id, or ``None`` for the platform rows
+    (``workspace_id`` NULL), for which the scope is explicitly cleared rather
+    than assumed unset on a pooled connection.
+    """
+    if scope is not None:
+        async with scoped_connection(
+            pool, workspace_id=scope, site="phase0.store_reconciliation.outbox",
+        ) as conn:
+            yield conn
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.workspace_id', '', true)")
+            yield conn
+
+
+async def _workspaces_in_scope(ctx: AgentContext, pool: Any, summary: dict[str, Any]) -> list[str]:
+    """The workspaces this run covers: the one asked for, else every workspace.
+
+    An enumeration that fails, or finds nothing, is reported on ``summary``
+    rather than treated as "nothing to reconcile".
+    """
+    if ctx.workspace_id is not None:
+        return [str(ctx.workspace_id)]
+    try:
+        async with pool.acquire() as conn:
+            workspace_ids = await list_workspace_ids(
+                conn, site="phase0.store_reconciliation",
+            )
+    except Exception as exc:
+        logger.warning("store_reconciliation: workspace enumeration failed: %s", exc)
+        reason = f"workspace enumeration failed: {type(exc).__name__}"
+        summary["cross_store_skipped"] = reason
+        summary["outbox_skipped"] = reason
+        return []
+    if not workspace_ids:
+        summary["cross_store_skipped"] = "no workspaces to compare"
+    return workspace_ids
+
+
+async def _record_outbox_drift(
+    conn: Any,
+    summary: dict[str, Any],
+    *,
+    stuck_threshold_minutes: int,
+    missing_threshold_minutes: int,
+) -> None:
+    """Sections 1-3 for the scope ``conn`` is bound to; findings go on ``conn`` too."""
+    # ---- 1. Dead-lettered propagations -------------------------------------
+    dead = await conn.fetch(_DEAD_LETTERED_SQL)
+    for r in dead:
+        if r["workspace_id"] is None:
+            summary["unscoped_skipped"] += 1
+            continue
+        await conn.execute(
+            """
+            INSERT INTO silver.store_reconciliation_findings
+                (workspace_id, drift_type, severity, source_store, target_store,
+                 source_id, details, discovered_by)
+            VALUES ($1, 'outbox_dead_letter', 'high', 'postgres', $2,
+                    $3, $4::jsonb, 'Store Reconciliation Agent')
+            """,
+            r["workspace_id"],
+            r["target_store"],
+            r["source_id"],
+            json.dumps(
+                {
+                    "propagation_id": str(r["id"]),
+                    "source": f"{r['source_schema']}.{r['source_table']}",
+                    "target_collection": r["target_collection"],
+                    "dead_lettered_at": r["dead_lettered_at"].isoformat() if r["dead_lettered_at"] else None,
+                }
+            ),
+        )
+        summary["dead_lettered"] += 1
+
+    # ---- 2. Stuck propagations (in_flight > N minutes) ---------------------
+    stuck = await conn.fetch(_STUCK_SQL, str(stuck_threshold_minutes))
+    for r in stuck:
+        if r["workspace_id"] is None:
+            summary["unscoped_skipped"] += 1
+            continue
+        await conn.execute(
+            """
+            INSERT INTO silver.store_reconciliation_findings
+                (workspace_id, drift_type, severity, source_store, target_store,
+                 source_id, details, discovered_by)
+            VALUES ($1, 'stuck_propagation', 'medium', 'postgres', $2,
+                    $3, $4::jsonb, 'Store Reconciliation Agent')
+            """,
+            r["workspace_id"],
+            r["target_store"],
+            r["source_id"],
+            json.dumps(
+                {
+                    "propagation_id": str(r["id"]),
+                    "stuck_minutes": stuck_threshold_minutes,
+                    "last_attempted_at": r["last_attempted_at"].isoformat() if r["last_attempted_at"] else None,
+                }
+            ),
+        )
+        summary["stuck"] += 1
+
+    # ---- 3. Pending without any attempt > N minutes (dispatcher missed) ---
+    missing = await conn.fetch(_MISSING_SQL, str(missing_threshold_minutes))
+    for r in missing:
+        if r["workspace_id"] is None:
+            summary["unscoped_skipped"] += 1
+            continue
+        await conn.execute(
+            """
+            INSERT INTO silver.store_reconciliation_findings
+                (workspace_id, drift_type, severity, source_store, target_store,
+                 source_id, details, discovered_by)
+            VALUES ($1, 'missing_in_b', 'medium', 'postgres', $2,
+                    $3, $4::jsonb, 'Store Reconciliation Agent')
+            """,
+            r["workspace_id"],
+            r["target_store"],
+            r["source_id"],
+            json.dumps(
+                {
+                    "propagation_id": str(r["id"]),
+                    "enqueued_at": r["enqueued_at"].isoformat(),
+                    "note": "no propagation_attempts row exists — dispatcher likely missed it",
+                }
+            ),
+        )
+        summary["missing_in_b"] += 1
 
 
 @georag_agent(
@@ -61,117 +249,23 @@ async def store_reconciliation_run(
         "cross_store_drift": {},
     }
 
-    # ---- 1. Dead-lettered propagations -------------------------------------
-    dead = await rt.pg_pool.fetch(
-        """
-        SELECT id, workspace_id, source_schema, source_table, source_id,
-               target_store, target_collection, dead_lettered_at
-        FROM outbox.pending_propagations
-        WHERE status = 'dead_lettered'
-          AND dead_lettered_at >= now() - interval '7 days'
-        """
-    )
-    for r in dead:
-        if r["workspace_id"] is None:
-            summary["unscoped_skipped"] += 1
-            continue
-        await rt.pg_pool.execute(
-            """
-            INSERT INTO silver.store_reconciliation_findings
-                (workspace_id, drift_type, severity, source_store, target_store,
-                 source_id, details, discovered_by)
-            VALUES ($1, 'outbox_dead_letter', 'high', 'postgres', $2,
-                    $3, $4::jsonb, 'Store Reconciliation Agent')
-            """,
-            r["workspace_id"],
-            r["target_store"],
-            r["source_id"],
-            json.dumps(
-                {
-                    "propagation_id": str(r["id"]),
-                    "source": f"{r['source_schema']}.{r['source_table']}",
-                    "target_collection": r["target_collection"],
-                    "dead_lettered_at": r["dead_lettered_at"].isoformat() if r["dead_lettered_at"] else None,
-                }
-            ),
-        )
-        summary["dead_lettered"] += 1
+    workspace_ids = await _workspaces_in_scope(ctx, rt.pg_pool, summary)
 
-    # ---- 2. Stuck propagations (in_flight > N minutes) ---------------------
-    stuck = await rt.pg_pool.fetch(
-        """
-        SELECT id, workspace_id, source_schema, source_table, source_id,
-               target_store, last_attempted_at
-        FROM outbox.pending_propagations
-        WHERE status = 'in_flight'
-          AND (last_attempted_at IS NULL
-               OR last_attempted_at < now() - ($1 || ' minutes')::interval)
-        """,
-        str(stuck_threshold_minutes),
-    )
-    for r in stuck:
-        if r["workspace_id"] is None:
-            summary["unscoped_skipped"] += 1
-            continue
-        await rt.pg_pool.execute(
-            """
-            INSERT INTO silver.store_reconciliation_findings
-                (workspace_id, drift_type, severity, source_store, target_store,
-                 source_id, details, discovered_by)
-            VALUES ($1, 'stuck_propagation', 'medium', 'postgres', $2,
-                    $3, $4::jsonb, 'Store Reconciliation Agent')
-            """,
-            r["workspace_id"],
-            r["target_store"],
-            r["source_id"],
-            json.dumps(
-                {
-                    "propagation_id": str(r["id"]),
-                    "stuck_minutes": stuck_threshold_minutes,
-                    "last_attempted_at": r["last_attempted_at"].isoformat() if r["last_attempted_at"] else None,
-                }
-            ),
-        )
-        summary["stuck"] += 1
-
-    # ---- 3. Pending without any attempt > N minutes (dispatcher missed) ---
-    missing = await rt.pg_pool.fetch(
-        """
-        SELECT p.id, p.workspace_id, p.source_schema, p.source_table, p.source_id,
-               p.target_store, p.enqueued_at
-        FROM outbox.pending_propagations p
-        WHERE p.status = 'pending'
-          AND p.enqueued_at < now() - ($1 || ' minutes')::interval
-          AND NOT EXISTS (
-              SELECT 1 FROM outbox.propagation_attempts a WHERE a.propagation_id = p.id
-          )
-        """,
-        str(missing_threshold_minutes),
-    )
-    for r in missing:
-        if r["workspace_id"] is None:
-            summary["unscoped_skipped"] += 1
-            continue
-        await rt.pg_pool.execute(
-            """
-            INSERT INTO silver.store_reconciliation_findings
-                (workspace_id, drift_type, severity, source_store, target_store,
-                 source_id, details, discovered_by)
-            VALUES ($1, 'missing_in_b', 'medium', 'postgres', $2,
-                    $3, $4::jsonb, 'Store Reconciliation Agent')
-            """,
-            r["workspace_id"],
-            r["target_store"],
-            r["source_id"],
-            json.dumps(
-                {
-                    "propagation_id": str(r["id"]),
-                    "enqueued_at": r["enqueued_at"].isoformat(),
-                    "note": "no propagation_attempts row exists — dispatcher likely missed it",
-                }
-            ),
-        )
-        summary["missing_in_b"] += 1
+    # ---- 1-3. Outbox drift, one scope at a time -----------------------------
+    # Each workspace with its scope bound; then the platform rows with the scope
+    # cleared, unless the run was asked about one workspace only (platform rows
+    # belong to none, and can only ever be counted in ``unscoped_skipped``).
+    scopes: list[str | None] = list(workspace_ids)
+    if ctx.workspace_id is None:
+        scopes.append(None)
+    for scope in scopes:
+        async with _outbox_connection(rt.pg_pool, scope) as conn:
+            await _record_outbox_drift(
+                conn,
+                summary,
+                stuck_threshold_minutes=stuck_threshold_minutes,
+                missing_threshold_minutes=missing_threshold_minutes,
+            )
 
     if summary["unscoped_skipped"]:
         logger.warning(
@@ -224,25 +318,6 @@ async def store_reconciliation_run(
             "rel_drift": round(rel, 4),
             "is_drift": abs_diff > 10 and rel > 0.05,
         }
-
-    workspace_ids: list[str]
-    if ctx.workspace_id is not None:
-        workspace_ids = [str(ctx.workspace_id)]
-    else:
-        try:
-            async with rt.pg_pool.acquire() as conn:
-                workspace_ids = await list_workspace_ids(
-                    conn, site="phase0.store_reconciliation",
-                )
-        except Exception as exc:
-            logger.warning("cross_store_drift: workspace enumeration failed: %s", exc)
-            workspace_ids = []
-            summary["cross_store_skipped"] = (
-                f"workspace enumeration failed: {type(exc).__name__}"
-            )
-        else:
-            if not workspace_ids:
-                summary["cross_store_skipped"] = "no workspaces to compare"
 
     qc = None
     if workspace_ids:
@@ -306,19 +381,27 @@ async def store_reconciliation_run(
             for store_name, finding in findings.items():
                 if finding.get("is_drift"):
                     try:
-                        await rt.pg_pool.execute(
-                            """
-                            INSERT INTO silver.store_reconciliation_findings
-                                (workspace_id, drift_type, severity, source_store, target_store,
-                                 source_id, details, discovered_by)
-                            VALUES ($1, 'cross_store_drift', 'high', 'postgres', $2,
-                                    $3, $4::jsonb, 'Store Reconciliation Agent')
-                            """,
-                            workspace_id,
-                            store_name,
-                            store_name,
-                            json.dumps(finding),
-                        )
+                        # Written under the workspace it is about, like the
+                        # outbox findings above, so a tightened policy on the
+                        # findings table cannot turn this into a logged no-op.
+                        async with scoped_connection(
+                            rt.pg_pool,
+                            workspace_id=workspace_id,
+                            site="phase0.store_reconciliation.finding",
+                        ) as conn:
+                            await conn.execute(
+                                """
+                                INSERT INTO silver.store_reconciliation_findings
+                                    (workspace_id, drift_type, severity, source_store, target_store,
+                                     source_id, details, discovered_by)
+                                VALUES ($1, 'cross_store_drift', 'high', 'postgres', $2,
+                                        $3, $4::jsonb, 'Store Reconciliation Agent')
+                                """,
+                                workspace_id,
+                                store_name,
+                                store_name,
+                                json.dumps(finding),
+                            )
                     except Exception as exc:
                         logger.warning("cross_store_drift insert failed: %s", exc)
     finally:

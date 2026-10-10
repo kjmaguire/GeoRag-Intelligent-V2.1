@@ -37,7 +37,7 @@ import httpx
 from app.agents import AgentContext, georag_agent
 from app.agents.runtime import get_runtime
 from app.audit import emit_audit
-from app.db import bind_workspace_scope
+from app.db import bind_workspace_scope, scoped_connection
 
 logger = logging.getLogger(__name__)
 
@@ -344,35 +344,48 @@ async def support_packet_assemble(
     dispatch_error: str | None = None
     if upload_ok:
         try:
-            await rt.pg_pool.execute(
-                """
-                INSERT INTO outbox.pending_propagations
-                    (workspace_id, source_schema, source_table, source_id,
-                     target_store, target_collection, operation,
-                     payload, idempotency_key)
-                VALUES ($1::uuid, 'silver', 'support_packets', $2,
-                        'external_webhook', 'support_packet', 'upsert',
-                        $3::jsonb, $4)
-                ON CONFLICT (target_store, idempotency_key)
-                    WHERE status IN ('pending', 'in_flight')
-                    DO NOTHING
-                """,
-                str(ctx.workspace_id),
-                str(packet_id),
-                json.dumps({
-                    "packet_id": str(packet_id),
-                    "incident_id": incident_id,
-                    "workspace_id": str(ctx.workspace_id),
-                    "storage_uri": storage_uri,
-                    "bundle_bytes": len(bundle_bytes),
-                    "counts": manifest["counts"],
-                    "requested_by": requested_by,
-                }),
-                # R2 idempotency — the agent is already idempotent on
-                # incident_id, so re-assembly of the same incident must not
-                # produce a second notification.
-                f"support_packet:{incident_id}",
-            )
+            # This is a TENANT row (workspace_id = the incident's workspace), and
+            # outbox.pending_propagations is fail-closed since 2026_10_10_100300:
+            # an unbound session may only write platform rows (workspace_id
+            # NULL), so the INSERT is refused by the table's WITH CHECK and was
+            # swallowed below as a logged dispatch_enqueued=False. Bind the
+            # workspace for the statement, as the support_packets INSERT above
+            # does. Its own transaction, not that one: a failed notification
+            # must not undo the packet record.
+            async with scoped_connection(
+                rt.pg_pool,
+                workspace_id=str(ctx.workspace_id),
+                site="phase0.support_packet.outbox",
+            ) as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO outbox.pending_propagations
+                        (workspace_id, source_schema, source_table, source_id,
+                         target_store, target_collection, operation,
+                         payload, idempotency_key)
+                    VALUES ($1::uuid, 'silver', 'support_packets', $2,
+                            'external_webhook', 'support_packet', 'upsert',
+                            $3::jsonb, $4)
+                    ON CONFLICT (target_store, idempotency_key)
+                        WHERE status IN ('pending', 'in_flight')
+                        DO NOTHING
+                    """,
+                    str(ctx.workspace_id),
+                    str(packet_id),
+                    json.dumps({
+                        "packet_id": str(packet_id),
+                        "incident_id": incident_id,
+                        "workspace_id": str(ctx.workspace_id),
+                        "storage_uri": storage_uri,
+                        "bundle_bytes": len(bundle_bytes),
+                        "counts": manifest["counts"],
+                        "requested_by": requested_by,
+                    }),
+                    # R2 idempotency — the agent is already idempotent on
+                    # incident_id, so re-assembly of the same incident must not
+                    # produce a second notification.
+                    f"support_packet:{incident_id}",
+                )
             dispatch_enqueued = True
         except Exception as exc:  # noqa: BLE001 — never fail assembly on notify
             dispatch_error = f"{type(exc).__name__}:{exc}"

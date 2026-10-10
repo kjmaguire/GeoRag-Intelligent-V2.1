@@ -10,6 +10,9 @@ Findings pinned here:
 * 9  model_cost_summary's soft warning never re-armed after the first month.
 * 10 the nightly store reconciliation compared zero to zero.
 * 11 the circuit breaker was re-armed by the calls it rejected.
+* follow-up to the outbox.* tables going fail-closed (2026_10_10_100300): Support
+  Packet's tenant enqueue ran unbound and was refused (and swallowed), and Store
+  Reconciliation's cross-tenant outbox reads saw platform rows only.
 
 The agents run through the REAL ``@georag_agent`` wrapper and the REAL
 ``_ctx_from`` context the Hatchet task builds. Only the wrapper's database
@@ -20,6 +23,7 @@ that rejected the R2 agents) is pure code and must not be stubbed away.
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
@@ -27,6 +31,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import asyncpg
 import pytest
 from hatchet_sdk import NonRetryableException
 
@@ -431,15 +436,21 @@ def recon(monkeypatch: pytest.MonkeyPatch, wrapper_hooks: SimpleNamespace) -> Si
     monkeypatch.setattr("qdrant_client.AsyncQdrantClient", _FakeQdrant)
 
     pg_counts: dict[str, int] = {}
-    scoped_to: list[str] = []
+    scoped_to: list[tuple[str, str]] = []
 
     @asynccontextmanager
     async def _scoped(pool: Any, *, workspace_id: str, site: str = "unknown"):  # type: ignore[no-untyped-def]
-        scoped_to.append(workspace_id)
+        scoped_to.append((workspace_id, site))
 
         class _C:
             async def fetchval(self, sql: str, *_a: Any) -> int:
                 return pg_counts.get(workspace_id, 0) if "document_passages" in sql else 1
+
+            async def fetch(self, sql: str, *a: Any) -> list[dict[str, Any]]:
+                return await pool.fetch(sql, *a)
+
+            async def execute(self, sql: str, *a: Any) -> str:
+                return await pool.execute(sql, *a)
 
         yield _C()
 
@@ -511,7 +522,11 @@ async def test_the_nightly_run_compares_every_workspace_not_none(
 
     assert result.outcome == "success", result.error
     listed.assert_awaited_once()
-    assert recon.scoped_to == [WORKSPACE, OTHER_WORKSPACE]  # counted with each scope bound
+    # Counted with each scope bound (and the outbox read the same way, below).
+    counted = [ws for ws, site in recon.scoped_to if site == "phase0.store_reconciliation"]
+    assert counted == [WORKSPACE, OTHER_WORKSPACE]
+    outbox = [ws for ws, site in recon.scoped_to if site.endswith(".outbox")]
+    assert outbox == [WORKSPACE, OTHER_WORKSPACE]
     assert recon.qdrant.asked == [WORKSPACE, OTHER_WORKSPACE]
     assert "None" not in recon.qdrant.asked
     assert recon.qdrant.closed == 1  # one client for the whole sweep, closed
@@ -624,3 +639,356 @@ async def test_a_workspace_never_warned_before_is_warned(
 
     assert result.value["warnings_emitted"] == 1
     audit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# The outbox tables are fail-closed (2026_10_10_100300)
+#
+# outbox.pending_propagations / propagation_attempts carry
+#     workspace_id IS NOT DISTINCT FROM NULLIF(current_setting('app.workspace_id', true), '')::uuid
+# for both USING and WITH CHECK, with no unbound branch: a session with no
+# workspace bound sees and writes ONLY platform rows (workspace_id NULL); a bound
+# one only its own workspace's. ``_RlsPool`` enforces exactly that, so an agent
+# that touches the tables on an unbound connection fails here the way it does
+# against the migrated database.
+# ---------------------------------------------------------------------------
+def _scope(value: Any) -> str | None:
+    """``NULLIF(current_setting('app.workspace_id', true), '')::uuid`` as a comparable."""
+    text = None if value is None else str(value).strip().lower()
+    return text or None
+
+
+class _RlsTx:
+    def __init__(self, conn: _RlsConn) -> None:
+        self.conn = conn
+
+    async def __aenter__(self) -> _RlsConn:
+        self.conn.in_tx = True
+        self.conn.scope_at_start = self.conn.scope
+        return self.conn
+
+    async def __aexit__(self, *exc: object) -> bool:
+        # set_config(..., true) is SET LOCAL: it ends with the transaction.
+        self.conn.in_tx = False
+        self.conn.scope = self.conn.scope_at_start
+        return False
+
+
+class _RlsConn:
+    def __init__(self, pool: _RlsPool) -> None:
+        self.pool = pool
+        self.scope: str | None = None  # a fresh pooled connection has no workspace bound
+        self.scope_at_start: str | None = None
+        self.in_tx = False
+
+    def is_in_transaction(self) -> bool:
+        return self.in_tx
+
+    def transaction(self) -> _RlsTx:
+        return _RlsTx(self)
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        if "set_config('app.workspace_id'" in sql:
+            self.scope = _scope(args[0] if "$1" in sql else "")
+            return "SELECT 1"
+        if "INSERT INTO outbox.pending_propagations" in sql:
+            if self.pool.refuse_outbox or _scope(args[0]) != self.scope:
+                raise asyncpg.exceptions.InsufficientPrivilegeError(
+                    'new row violates row-level security policy for table "pending_propagations"'
+                )
+            self.pool.enqueued.append(
+                {"workspace_id": _scope(args[0]), "scope": self.scope, "key": args[3]}
+            )
+            return "INSERT 0 1"
+        if "INSERT INTO silver.store_reconciliation_findings" in sql:
+            drift_type = re.search(r"VALUES \(\$1, '(\w+)'", sql)
+            self.pool.findings.append(
+                {
+                    "workspace_id": _scope(args[0]),
+                    "drift_type": drift_type.group(1) if drift_type else None,
+                    "scope": self.scope,
+                }
+            )
+            return "INSERT 0 1"
+        self.pool.other.append(sql)
+        return "OK"
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "FROM outbox.pending_propagations" in sql:
+            return self.pool.read_outbox(sql, self.scope)
+        return []
+
+    async def fetchval(self, sql: str, *args: Any) -> int:
+        return self.pool.pg_count
+
+    async def fetchrow(self, sql: str, *args: Any) -> None:
+        return None
+
+
+class _RlsAcquire:
+    def __init__(self, conn: _RlsConn) -> None:
+        self.conn = conn
+
+    async def __aenter__(self) -> _RlsConn:
+        return self.conn
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _RlsPool:
+    """asyncpg pool over outbox rows hidden from a connection by the policy above."""
+
+    def __init__(
+        self,
+        outbox: list[dict[str, Any]] | None = None,
+        *,
+        refuse_outbox: bool = False,
+        pg_count: int = 0,
+    ) -> None:
+        self.outbox = outbox or []
+        self.refuse_outbox = refuse_outbox
+        self.pg_count = pg_count  # what every count(*) answers
+        self.enqueued: list[dict[str, Any]] = []
+        self.findings: list[dict[str, Any]] = []
+        self.reads: list[tuple[str, str | None]] = []  # (which read, scope it ran under)
+        self.other: list[str] = []
+
+    def read_outbox(self, sql: str, scope: str | None) -> list[dict[str, Any]]:
+        visible = [r for r in self.outbox if _scope(r["workspace_id"]) == scope]
+        if "NOT EXISTS" in sql:
+            kind, status = "missing", "pending"
+        elif "status = 'in_flight'" in sql:
+            kind, status = "stuck", "in_flight"
+        else:
+            kind, status = "dead", "dead_lettered"
+        self.reads.append((kind, scope))
+        return [r for r in visible if r["status"] == status]
+
+    # Pool-level calls run on a pooled connection nobody has bound.
+    def acquire(self) -> _RlsAcquire:
+        return _RlsAcquire(_RlsConn(self))
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        return await _RlsConn(self).fetch(sql, *args)
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        return await _RlsConn(self).execute(sql, *args)
+
+    async def fetchval(self, sql: str, *args: Any) -> int:
+        return self.pg_count
+
+    async def fetchrow(self, sql: str, *args: Any) -> None:
+        return None
+
+
+def _outbox_row(workspace_id: str | None, status: str, source_id: str) -> dict[str, Any]:
+    return {
+        "id": uuid4(),
+        "workspace_id": workspace_id,
+        "status": status,
+        "source_schema": "silver",
+        "source_table": "collars",
+        "source_id": source_id,
+        "target_store": "qdrant",
+        "target_collection": "georag_chunks",
+        "dead_lettered_at": datetime(2026, 10, 9, tzinfo=UTC),
+        "last_attempted_at": None,
+        "enqueued_at": datetime(2026, 10, 9, tzinfo=UTC),
+    }
+
+
+def test_the_fake_policy_hides_tenant_rows_from_an_unbound_session() -> None:
+    """Guards the fake itself: unbound sees platform rows only, bound sees its own."""
+    pool = _RlsPool(
+        [_outbox_row(WORKSPACE, "dead_lettered", "a"), _outbox_row(None, "dead_lettered", "p")]
+    )
+
+    assert [r["source_id"] for r in pool.read_outbox("status = 'dead_lettered'", None)] == ["p"]
+    assert [r["source_id"] for r in pool.read_outbox("status = 'dead_lettered'", WORKSPACE)] == ["a"]
+    assert pool.read_outbox("status = 'dead_lettered'", OTHER_WORKSPACE) == []
+
+
+@pytest.fixture
+def rls_recon(monkeypatch: pytest.MonkeyPatch, wrapper_hooks: SimpleNamespace) -> SimpleNamespace:
+    """Store reconciliation on the RLS pool, through the REAL ``scoped_connection``."""
+    from app.agents.phase0 import store_reconciliation as sr
+
+    _FakeQdrant.counts = {WORKSPACE: 0, OTHER_WORKSPACE: 0}
+    _FakeQdrant.asked = []
+    _FakeQdrant.closed = 0
+    monkeypatch.setattr("qdrant_client.AsyncQdrantClient", _FakeQdrant)
+    monkeypatch.setattr(
+        sr, "list_workspace_ids", AsyncMock(return_value=[WORKSPACE, OTHER_WORKSPACE])
+    )
+    return SimpleNamespace(module=sr, monkeypatch=monkeypatch)
+
+
+async def test_the_nightly_run_finds_every_tenants_outbox_drift_under_the_fail_closed_policy(
+    rls_recon: SimpleNamespace,
+) -> None:
+    """Unbound, the three reads saw platform rows only: no tenant's dead letter,
+    stuck or unattempted propagation was ever found."""
+    pool = _RlsPool(
+        [
+            _outbox_row(WORKSPACE, "dead_lettered", "a-dead"),
+            _outbox_row(OTHER_WORKSPACE, "dead_lettered", "b-dead"),
+            _outbox_row(OTHER_WORKSPACE, "in_flight", "b-stuck"),
+            _outbox_row(WORKSPACE, "pending", "a-missing"),
+            _outbox_row(None, "dead_lettered", "platform-dead"),
+        ]
+    )
+    register_runtime(pg_pool=pool, redis=None)  # type: ignore[arg-type]
+
+    result = await rls_recon.module.store_reconciliation_run(ctx=AgentContext(workspace_id=None))
+
+    assert result.outcome == "success", result.error
+    assert result.value["dead_lettered"] == 2
+    assert result.value["stuck"] == 1
+    assert result.value["missing_in_b"] == 1
+    assert result.value["unscoped_skipped"] == 1  # the platform dead letter: no workspace to file it under
+    # Every finding is filed under its own workspace AND written inside that
+    # workspace's scope.
+    assert {(f["workspace_id"], f["drift_type"], f["scope"]) for f in pool.findings} == {
+        (WORKSPACE, "outbox_dead_letter", WORKSPACE),
+        (OTHER_WORKSPACE, "outbox_dead_letter", OTHER_WORKSPACE),
+        (OTHER_WORKSPACE, "stuck_propagation", OTHER_WORKSPACE),
+        (WORKSPACE, "missing_in_b", WORKSPACE),
+    }
+
+
+async def test_the_outbox_is_read_per_workspace_then_once_more_with_the_scope_cleared(
+    rls_recon: SimpleNamespace,
+) -> None:
+    pool = _RlsPool()
+    register_runtime(pg_pool=pool, redis=None)  # type: ignore[arg-type]
+
+    await rls_recon.module.store_reconciliation_run(ctx=AgentContext(workspace_id=None))
+
+    for kind in ("dead", "stuck", "missing"):
+        scopes = [scope for read, scope in pool.reads if read == kind]
+        assert scopes == [WORKSPACE, OTHER_WORKSPACE, None], kind  # None = platform pass
+
+
+async def test_a_run_for_one_workspace_reads_only_that_workspaces_outbox(
+    rls_recon: SimpleNamespace,
+) -> None:
+    pool = _RlsPool(
+        [
+            _outbox_row(WORKSPACE, "dead_lettered", "a-dead"),
+            _outbox_row(OTHER_WORKSPACE, "dead_lettered", "b-dead"),
+            _outbox_row(None, "dead_lettered", "platform-dead"),
+        ]
+    )
+    register_runtime(pg_pool=pool, redis=None)  # type: ignore[arg-type]
+
+    result = await rls_recon.module.store_reconciliation_run(ctx=AgentContext(workspace_id=WORKSPACE))
+
+    assert result.outcome == "success", result.error
+    assert [f["workspace_id"] for f in pool.findings] == [WORKSPACE]
+    assert {scope for _kind, scope in pool.reads} == {WORKSPACE}  # no platform pass
+    assert result.value["unscoped_skipped"] == 0
+
+
+async def test_a_failed_workspace_listing_still_scans_the_platform_rows_and_says_so(
+    rls_recon: SimpleNamespace,
+) -> None:
+    pool = _RlsPool([_outbox_row(WORKSPACE, "dead_lettered", "a-dead")])
+    register_runtime(pg_pool=pool, redis=None)  # type: ignore[arg-type]
+    rls_recon.monkeypatch.setattr(
+        rls_recon.module, "list_workspace_ids", AsyncMock(side_effect=RuntimeError("pg down"))
+    )
+
+    result = await rls_recon.module.store_reconciliation_run(ctx=AgentContext(workspace_id=None))
+
+    assert result.outcome == "success", result.error
+    assert result.value["outbox_skipped"] == "workspace enumeration failed: RuntimeError"
+    assert {scope for _kind, scope in pool.reads} == {None}
+    assert pool.findings == []
+    assert result.value["dead_lettered"] == 0
+
+
+async def test_a_cross_store_drift_finding_is_filed_inside_its_workspaces_scope(
+    rls_recon: SimpleNamespace,
+) -> None:
+    pool = _RlsPool(pg_count=100)
+    register_runtime(pg_pool=pool, redis=None)  # type: ignore[arg-type]
+    _FakeQdrant.counts[WORKSPACE] = 10  # 100 passages in Postgres, 10 points in Qdrant: drift
+    _FakeQdrant.counts[OTHER_WORKSPACE] = 100
+
+    await rls_recon.module.store_reconciliation_run(ctx=AgentContext(workspace_id=None))
+
+    drift = [f for f in pool.findings if f["drift_type"] == "cross_store_drift"]
+    assert [(f["workspace_id"], f["scope"]) for f in drift] == [(WORKSPACE, WORKSPACE)]
+
+
+async def test_support_packet_enqueues_its_notification_under_the_incidents_workspace(
+    monkeypatch: pytest.MonkeyPatch, wrapper_hooks: SimpleNamespace
+) -> None:
+    """The enqueue wrote a tenant row on an unbound connection, which the table's
+    WITH CHECK refuses; the error was caught and logged, so the run came back
+    green with ``dispatch_enqueued=False`` and the on-call was never told."""
+    from app.agents.phase0 import support_packet as sp
+
+    _fake_object_storage(monkeypatch)
+    monkeypatch.setattr(sp, "emit_audit", AsyncMock(return_value=None))
+    pool = _RlsPool()
+    _use_pool(monkeypatch, pool)  # type: ignore[arg-type]
+
+    out = await p0._run_support_packet.aio_mock_run(
+        p0.AgentRunInput(workspace_id=WORKSPACE, kwargs={"incident_id": "INC-9"})
+    )
+
+    assert out.upload_ok is True
+    assert out.dispatch_error is None
+    assert out.dispatch_enqueued is True
+    assert pool.enqueued == [
+        {"workspace_id": WORKSPACE, "scope": WORKSPACE, "key": "support_packet:INC-9"}
+    ]
+
+
+async def test_a_refused_enqueue_is_reported_without_undoing_the_packet(
+    monkeypatch: pytest.MonkeyPatch, wrapper_hooks: SimpleNamespace
+) -> None:
+    from app.agents.phase0 import support_packet as sp
+
+    _fake_object_storage(monkeypatch)
+    monkeypatch.setattr(sp, "emit_audit", AsyncMock(return_value=None))
+    pool = _RlsPool(refuse_outbox=True)
+    _use_pool(monkeypatch, pool)  # type: ignore[arg-type]
+
+    out = await p0._run_support_packet.aio_mock_run(
+        p0.AgentRunInput(workspace_id=WORKSPACE, kwargs={"incident_id": "INC-9"})
+    )
+
+    assert out.dispatch_enqueued is False
+    assert out.dispatch_error and "InsufficientPrivilegeError" in out.dispatch_error
+    assert out.packet_id  # the assembled packet survives a failed notification
+    assert any("INSERT INTO silver.support_packets" in sql for sql in pool.other)
+
+
+def _fake_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let the packet upload succeed so the notification branch runs."""
+    import aioboto3
+    import georag_object_storage
+
+    class _S3:
+        async def put_object(self, **_kw: Any) -> None:
+            return None
+
+    class _Client:
+        async def __aenter__(self) -> _S3:
+            return _S3()
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    class _Session:
+        def client(self, *_a: Any, **_kw: Any) -> _Client:
+            return _Client()
+
+    monkeypatch.setattr(aioboto3, "Session", _Session)
+    monkeypatch.setattr(
+        georag_object_storage.StorageConfig, "from_env", staticmethod(lambda: object())
+    )
+    monkeypatch.setattr(georag_object_storage, "async_client_kwargs", lambda _cfg: {})
