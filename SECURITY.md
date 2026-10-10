@@ -1,21 +1,32 @@
 # Security Policy
 
-## Supported Versions
+## Reporting a vulnerability
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Please report suspected security vulnerabilities **privately**. Do not open a
+public issue, pull request or discussion for one.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+Use GitHub's private vulnerability reporting for this repository: open the
+**Security** tab, choose **Advisories**, and select **Report a vulnerability**.
+That creates a private security advisory that only the maintainers and you can
+see, and the discussion and any fix are coordinated there.
 
-## Reporting a Vulnerability
+A useful report says which component and file or endpoint is affected, how to
+reproduce the problem, what an attacker gains, and which commit or deployment
+you tested. Do not include real credentials, customer data, or geological data
+you are not entitled to share; if a credential has been exposed (in the
+repository, its history, or a log), say so, so that it can be rotated — the
+procedures are in [`ops/runbooks/secret-rotation.md`](ops/runbooks/secret-rotation.md).
 
-Use this section to tell people how to report a vulnerability.
+No response-time commitment is published.
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+## Supported versions
+
+The project has not made any commitment to support, or to backport security
+fixes to, any particular version or release, so there is no supported-versions
+table. Please report against the current default branch (`main`).
+
+## Security posture
+
+How the domain service enforces tenant isolation and service-to-service
+authentication, and which settings control it, is documented in
+[`src/fastapi/SECURITY.md`](src/fastapi/SECURITY.md).
