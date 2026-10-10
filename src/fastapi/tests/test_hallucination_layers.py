@@ -349,6 +349,81 @@ class TestLayer6MultiNumberSentences:
         assert governing[0].name == "azimuth_range"
 
 
+class TestLayer6MoneyIsNotAGrade:
+    """A commodity price or an economic measure is not a measurement.
+
+    Layer 6 attaches a number to the NEAREST constraint keyword, and an
+    economics paragraph is full of commodity names beside large numbers: "a gold
+    price of US$1,900/oz" tested 1,900 against the 1,000 ppm gold ceiling, and
+    "US$65/lb U3O8 and a long-term price of 80" tested 65 and 80 as uranium
+    grades over the 50 % ceiling (2026-10-10 audit, finding 4). Each is a
+    high-severity finding -- confidence floored to 0.2, fabrication banner --
+    on a correct answer.
+    """
+
+    PRICES = [
+        "At a gold price of US$1,900/oz, the after-tax NPV is US$425 million [NI43-1].",
+        "The study assumes a gold price of $1,800 per ounce [NI43-1].",
+        "The economics use US$65/lb U3O8 and a long-term price of 80 [NI43-1].",
+        "In the second quarter, gold was $1,750 [NI43-1].",
+        "Gold was trading at C$2,400 per ounce when the PEA was released [NI43-1].",
+        "A uranium price of US$75 per pound U3O8 gives an IRR of 35% [NI43-1].",
+        "At a U3O8 price of $60/lb the NPV is $120 million with capex of US$300 million.",
+        "Metal prices: gold 1,900 US$/oz, silver 25 US$/oz [NI43-1].",
+        "The base case uses a gold price of 1,850 per ounce [NI43-1].",
+        "Gold price (US$/oz) 1,900 [NI43-1].",
+        "The spot gold price was US$ 1,950 [NI43-1].",
+        "Gold: $1,750 [NI43-1].",
+        "The after-tax IRR is 61% at a uranium price of 80 [NI43-1].",
+    ]
+
+    @pytest.mark.parametrize("text", PRICES)
+    def test_a_price_is_not_checked_as_a_grade(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        found = _find_violations(text)
+        assert found == [], [(v.value, v.constraint.name) for v in found]
+
+    @pytest.mark.parametrize("text", PRICES)
+    def test_and_the_layer_raises_nothing(self, text: str) -> None:
+        from app.agent.hallucination.orchestrator_validators import verify_constraints
+
+        assert verify_constraints(text) == []
+
+    @pytest.mark.parametrize(
+        ("text", "value", "constraint_name"),
+        [
+            # A price clause in the same sentence must not shield a grade.
+            (
+                "At a gold price of US$1,900/oz the zone averages 2,500 g/t Au [NI43-1].",
+                2500.0, "grade_gold_max_ppm",
+            ),
+            (
+                "Uranium grades reach 61 % U3O8, well above the US$65/lb price case [NI43-1].",
+                61.0, "grade_uranium_max_pct",
+            ),
+            (
+                "The gold price is high; the sample assayed 1,500 ppm Au [NI43-1].",
+                1500.0, "grade_gold_max_ppm",
+            ),
+            # A grade unit outranks a price word that happens to sit nearby.
+            ("Gold price aside, assays reached 2,500 g/t [NI43-1].", 2500.0, "grade_gold_max_ppm"),
+            ("The price check found 1,800 ppm gold in the pulp [NI43-1].", 1800.0, "grade_gold_max_ppm"),
+            # Plain breaches, as before.
+            ("The zone averages 2,500 g/t Au [NI43-1].", 2500.0, "grade_gold_max_ppm"),
+            ("Uranium grades reach 61 % U3O8 [NI43-1].", 61.0, "grade_uranium_max_pct"),
+            ("The total depth was 6,200 m [NI43-1].", 6200.0, "depth_max_m"),
+        ],
+    )
+    def test_a_real_grade_violation_is_still_flagged(
+        self, text: str, value: float, constraint_name: str
+    ) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        found = _find_violations(text)
+        assert [(v.value, v.constraint.name) for v in found] == [(value, constraint_name)]
+
+
 # ---------------------------------------------------------------------------
 # Module 6 Chunk 3 — Guard 3: Completeness (per-claim citation coverage)
 # ---------------------------------------------------------------------------

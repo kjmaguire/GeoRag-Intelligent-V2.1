@@ -217,6 +217,53 @@ _RANGE_PARTNER_RE = re.compile(r"\s*[-\u2013]\s*\d[\d,]*(?:\.\d+)?")
 # numerical verifier uses the same exclusion logic (shared pattern).
 _CITATION_MARKER_RE = CITATION_MARKER_RE
 
+# Money is not a grade (2026-10-10 audit, finding 4).
+#
+# A number attaches to the NEAREST constraint keyword within 40 characters, and
+# an economics paragraph is full of commodity names and large numbers: "at a gold
+# price of US$1,900/oz" tested 1,900 against the 1,000 ppm gold ceiling, and
+# "US$65/lb U3O8 and a long-term price of 80" tested 65 and 80 as uranium grades
+# over the 50 % ceiling. Each is a high-severity Layer 6 finding, which floors
+# confidence to 0.2 and prepends the fabrication banner to a correct answer.
+#
+# A figure is skipped as money only on evidence that it IS money, never merely
+# because a price word sits somewhere in the sentence -- an impossible grade must
+# not be able to hide behind a price clause:
+#   * a currency mark immediately before it ("$1,800", "US$ 65", "C$2,400");
+#   * a price unit immediately after it ("1,900/oz", "1,800 per ounce", "65/lb");
+#   * a price or financial measure naming it directly: the nearest words before
+#     it ("a long-term price of 80", "IRR of 35%"), no digits between.
+# A figure written in a unit only a grade carries (g/t, ppm, ppb, oz/t) is a
+# grade whatever sits before it, except behind a currency mark.
+_CURRENCY = r"(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|\$|USD|CAD|AUD|EUR|GBP|€|£)"
+_CURRENCY_BEFORE_RE = re.compile(r"(?<![A-Za-z])" + _CURRENCY + r"\s*$", re.IGNORECASE)
+_PRICE_UNIT_AFTER_RE = re.compile(
+    r"\s*(?:" + _CURRENCY + r"\s*)?(?:/|per\s+)\s*(?:troy\s+)?"
+    r"(?:ounces?|oz|pounds?|lbs?|tonnes?|tons?|t)\b",
+    re.IGNORECASE,
+)
+_FINANCIAL_BEFORE_RE = re.compile(
+    r"\b(?:prices?|priced|pricing|NPV|IRR|capex|opex|AISC|costs?|payback|"
+    r"royalt(?:y|ies)|revenues?|discount\s+rate)\b[^\d.]{0,20}$",
+    re.IGNORECASE,
+)
+_GRADE_UNIT_AFTER_RE = re.compile(
+    r"\s*(?:g/t|gpt|g/tonne|ppm|ppb|oz/t|oz/ton|opt)(?![A-Za-z0-9/])", re.IGNORECASE
+)
+
+
+def _is_financial_figure(text: str, number_start: int, number_end: int) -> bool:
+    """Whether the number at this position is a price or a cost, not a measurement."""
+    before = text[max(0, number_start - 40):number_start]
+    if _CURRENCY_BEFORE_RE.search(before):
+        return True
+    after = text[number_end:number_end + 32]
+    if _PRICE_UNIT_AFTER_RE.match(after):
+        return True
+    if _GRADE_UNIT_AFTER_RE.match(after):
+        return False
+    return bool(_FINANCIAL_BEFORE_RE.search(before))
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -416,6 +463,11 @@ def _find_violations(text: str) -> list[ConstraintViolation]:
         # Skip any number that overlaps a masked range at all — a hole ID
         # yields several numbers and every one of them must go.
         if any(ms < end and start < me for ms, me in masked):
+            continue
+
+        # A price, a cost or a financial ratio is not a measurement of
+        # anything this table bounds.
+        if _is_financial_figure(text, start, end):
             continue
 
         governing = _governing_constraint(text, start, end)
