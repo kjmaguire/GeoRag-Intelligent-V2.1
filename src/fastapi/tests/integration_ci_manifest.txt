@@ -57,6 +57,10 @@ tests/test_orphan_sweep.py
 tests/test_mv_refresh.py
 tests/test_reliability_metrics.py
 tests/test_embed_pending_completion_sweep.py
+# The per-project advisory lease that stops a cron tick and an inline dispatch
+# embedding (and paying for) the same project at once; the lock needs a real
+# Postgres (2026-10-10).
+tests/test_embed_pending_lease.py
 tests/test_phase8_embed_verify.py
 
 # ── Audit / tenancy ───────────────────────────────────────────────────

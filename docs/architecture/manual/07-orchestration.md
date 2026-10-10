@@ -152,7 +152,7 @@ three times and will move again.
 | `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 19 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
 | `retention_sweep` | `45 19 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
 | `model_upgrade_watch_run` | `0 20 * * *` | Phase 0 agent |
-| `embed_pending_passages` | `45 20 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`) |
+| `embed_pending_passages` | `45 20 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`). The cron fan-out's concurrency key is the literal `'cron'`, which does not serialise against an inline run keyed by workspace id, so each project (and each workspace's orphan pass) is also taken under a session advisory lock on a direct connection: the second run for a project skips it (`projects_skipped_busy`) instead of embedding, and paying for, the same passages twice. A lock that cannot be taken fails open |
 | `verbalize_page_images` | `20 * * * *` | Inert unless `IMAGE_VERBALIZATION_ENABLED`; returns before touching Postgres |
 | `qdrant_payload_audit` | `0 * * * *` | Guard 2 payload-shape audit; fail-open when Qdrant is unreachable (§7) |
 | `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
