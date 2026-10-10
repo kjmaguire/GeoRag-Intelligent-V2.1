@@ -252,7 +252,7 @@ its three attempts before dead-lettering.
 
 | Workflow | Cron (UTC) | Purpose |
 |---|---|---|
-| `eval-gate.yml` | `17 5 * * *` | Nightly golden-query and hallucination gate with LLM and embeddings stubbed ([Ch 14](14-status-matrix.md)) |
+| `eval-gate.yml` | `17 5 * * *` | Nightly self-check that the golden-benchmark harness (`run_golden_benchmark.py`) still runs, with LLM and embeddings stubbed. It does not run the `-m golden` / `-m hallucination` suites and gates no answer quality ([Ch 14](14-status-matrix.md)) |
 | `coverage.yml` | `40 6 * * 0` | Weekly coverage; runner-only |
 | `perf-baseline.yml` | *(disabled)* | Its schedule is commented out; it had produced months of green runs against no target |
 

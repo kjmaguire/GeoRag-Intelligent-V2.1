@@ -1083,12 +1083,16 @@ jobs:
   # -> chunk -> embed -> index -> query -> cited answer) has never executed
   # in CI. `python-test`'s Bucket 1 explicitly excludes integration/golden/
   # live tests; `release-rehearsal.yml`'s Bucket 3 covers it in principle
-  # but only runs on tag push/dispatch and its LLM-dependent steps are
+  # but runs only on manual dispatch (its `v*.*.*` tag trigger has never
+  # fired: no such tag exists) and its LLM-dependent steps are
   # continue-on-error; `e2e.yml` no longer runs on PRs at all (2026-08-21 —
   # it used to report a green 'E2E — Playwright' check without executing a
   # single spec). This job closes that PR-time gap with a minimal,
   # narrowly-scoped smoke test — NOT a substitute for the golden/
-  # hallucination suites (see eval-gate.yml).
+  # hallucination suites. Those `-m golden` / `-m hallucination` modules run
+  # only in release-rehearsal.yml, so nothing gates them today. eval-gate.yml
+  # is not that: it runs nightly against a stubbed LLM and checks only that
+  # the golden-benchmark harness still runs, not answer quality.
   #
   # What's REAL vs STUBBED:
   #   REAL: Postgres (silver.reports/document_passages writes via the
