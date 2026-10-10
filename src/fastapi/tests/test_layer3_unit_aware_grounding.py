@@ -166,6 +166,23 @@ class TestWhatTheWindowWasFor:
         assert verify_numbers("DDH-3 returned 0.3 g/t Au over 1.0 m [DATA-1]", [_assays()]) == []
         assert verify_numbers("DDH-3 returned 0.3 g/t Au over 12.6 m [DATA-1]", [_assays()])
 
+    def test_long_lithology_intervals_do_not_widen_the_window_for_other_lengths(self) -> None:
+        """An interval's width grounds a restatement of THAT width; it is not a
+        series to take a range of. Lithology intervals run to tens of metres, so
+        a [0.5, 150] range of widths would have grounded any intercept length."""
+        logs = ("query_downhole_logs", {
+            "count": 3,
+            "intervals": [
+                {"hole_id": "H-1", "from_depth": 0.0, "to_depth": 0.5, "lithology_code": "SS"},
+                {"hole_id": "H-1", "from_depth": 0.5, "to_depth": 24.9, "lithology_code": "SS"},
+                {"hole_id": "H-1", "from_depth": 24.9, "to_depth": 174.9, "lithology_code": "SH"},
+            ],
+        })
+        assert verify_numbers("A 24.4 m thick sandstone unit [DATA-1].", [logs]) == []
+        assert verify_numbers("The shale is 150 m thick [DATA-1].", [logs]) == []
+        assert verify_numbers("A 12.6 m thick sandstone unit [DATA-1].", [logs])
+        assert verify_numbers("An 88 m thick sandstone unit [DATA-1].", [logs])
+
     def test_document_prose_has_no_series_to_derive_from(self) -> None:
         docs = _docs("The programme comprised 14 holes to a maximum depth of 455 m.")
         assert verify_numbers("The average depth was 383 m [NI43-1].", [docs])

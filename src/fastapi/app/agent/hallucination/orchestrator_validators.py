@@ -886,11 +886,17 @@ def _row_grade_context(
 
 
 def _add_interval_width(obj: Any, ev: _Evidence) -> None:
-    """Record ``to - from`` of a sampled / logged interval as a length."""
+    """Record ``to - from`` of a sampled / logged interval as a length.
+
+    A quantity only -- it grounds a restatement of THAT width ("over 2.8 m"),
+    and deliberately feeds no series range. Lithology intervals run to tens of
+    metres, so a range of widths would put almost any length an answer states
+    inside the "derivable" window, which is the hole this module closed.
+    """
     for start_name, end_name in _INTERVAL_FIELDS:
         start, end = _field_of(obj, start_name), _field_of(obj, end_name)
         if _is_number(start) and _is_number(end) and end >= start:
-            ev.add_quantity(float(end) - float(start), "length_m", "interval_width")
+            ev.add_quantity(float(end) - float(start), "length_m")
             return
 
 
