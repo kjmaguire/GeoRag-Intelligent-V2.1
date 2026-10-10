@@ -457,6 +457,9 @@ class DownholeLogsResult:
     intervals: list[LithologyInterval]
     count: int
     data_source: str  # "PostGIS silver.lithology_logs"
+    #: "timeout" / "error" when the query did not complete, so an outage is
+    #: reported rather than read as "no logs for this hole" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -1176,6 +1179,7 @@ async def query_downhole_logs(
         ]
         return collar_rec, intervals
 
+    failure: str | None = None
     try:
         collar, intervals = await asyncio.wait_for(
             _run(),
@@ -1189,6 +1193,7 @@ async def query_downhole_logs(
             hole_id,
         )
         collar, intervals = None, []
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_downhole_logs failed project=%s hole=%s",
@@ -1196,6 +1201,7 @@ async def query_downhole_logs(
             hole_id,
         )
         collar, intervals = None, []
+        failure = "error"
 
     logger.info(
         "query_downhole_logs: project=%s hole=%s intervals=%d collar_found=%s",
@@ -1210,6 +1216,7 @@ async def query_downhole_logs(
         intervals=intervals,
         count=len(intervals),
         data_source="PostGIS silver.lithology_logs",
+        retrieval_failure=failure,
     )
 
 
@@ -3068,6 +3075,10 @@ class ProjectSummaryResult:
         "PostGIS silver.campaigns + silver.collars + "
         "silver.geophysics_surveys + silver.reports"
     )
+    #: "timeout" / "error" when the breakdown queries did not complete. The
+    #: empty breakdown is then an outage, not "the project has no data" (audit
+    #: item 12).
+    retrieval_failure: str | None = None
 
 
 @dataclass
@@ -3153,6 +3164,10 @@ class CoverageGapResult:
         "silver.collars + silver.assays_v2 + silver.lithology_logs + "
         "silver.completeness_findings"
     )
+    #: "timeout" / "error" when the coverage queries did not complete. The
+    #: zeroed ingest gap and empty coverage rows are then an outage, not "no
+    #: gaps" (audit item 12).
+    retrieval_failure: str | None = None
 
 
 # Columns the §04e schema defines that may or may not be populated.
@@ -3206,16 +3221,30 @@ async def _compute_pending_fields(
     project. Cheap: each probe is ``LIMIT 1`` on indexed columns. Failures
     degrade gracefully — on any error we fall back to the full candidate
     list so the OIUR uncertainty block is never under-stated.
+
+    One ``TIMEOUT_POSTGIS_S`` deadline covers the pool wait and all three
+    probes. ``pool.acquire()`` has no timeout of its own: with the pool
+    exhausted it waited until the whole-query deadline, so a tool that had
+    already finished its real work held the answer back for the probes
+    (audit 2026-10 finding 8). A timeout takes the same fail-closed path as
+    any other error.
     """
     if deps.pg_pool is None:
         return list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
     pending: list[str] = []
     try:
-        async with deps.pg_pool.acquire() as conn:
-            for field, sql in _PENDING_FIELD_PROBE_SQL.items():
-                row = await conn.fetchrow(sql, workspace_id, project_id)
-                if row is None:
-                    pending.append(field)
+        async with asyncio.timeout(settings.TIMEOUT_POSTGIS_S):
+            async with deps.pg_pool.acquire() as conn:
+                for field, sql in _PENDING_FIELD_PROBE_SQL.items():
+                    row = await conn.fetchrow(sql, workspace_id, project_id)
+                    if row is None:
+                        pending.append(field)
+    except TimeoutError:
+        logger.warning(
+            "_compute_pending_fields timed out after %.1fs workspace=%s project=%s",
+            settings.TIMEOUT_POSTGIS_S, workspace_id, project_id,
+        )
+        return list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
     except Exception:
         logger.exception(
             "_compute_pending_fields failed workspace=%s project=%s",
@@ -3261,6 +3290,7 @@ async def query_project_summary(
             project_id=project_id,
             workspace_id=workspace_id,
             count=0,
+            retrieval_failure="error",
         )
 
     # ── Campaigns ──
@@ -3408,6 +3438,7 @@ async def query_project_summary(
         workspace_id,
         project_id,
     )
+    failure: str | None = None
     try:
         breakdown = await asyncio.wait_for(_run(), timeout=settings.TIMEOUT_POSTGIS_S)
     except TimeoutError:
@@ -3417,6 +3448,7 @@ async def query_project_summary(
             project_id,
         )
         breakdown = []
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_project_summary failed workspace=%s project=%s",
@@ -3424,8 +3456,15 @@ async def query_project_summary(
             project_id,
         )
         breakdown = []
+        failure = "error"
 
-    pending_fields = await _compute_pending_fields(deps, workspace_id, project_id)
+    # Three more serial probes with no deadline of their own would only add to
+    # an outage; the full candidate list is what they fall back to on error.
+    pending_fields = (
+        list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
+        if failure
+        else await _compute_pending_fields(deps, workspace_id, project_id)
+    )
 
     return ProjectSummaryResult(
         technique_breakdown=breakdown,
@@ -3433,6 +3472,7 @@ async def query_project_summary(
         project_id=project_id,
         workspace_id=workspace_id,
         count=len(breakdown),
+        retrieval_failure=failure,
     )
 
 
@@ -3569,6 +3609,7 @@ async def query_coverage_gap(
             project_id=project_id,
             workspace_id=workspace_id,
             count=0,
+            retrieval_failure="error",
         )
 
     selected_dims: set[str] | None = None
@@ -3872,6 +3913,7 @@ async def query_coverage_gap(
         project_id,
         sorted(selected_dims) if selected_dims else "(all)",
     )
+    failure: str | None = None
     try:
         ingest_gap, attribute_coverage, findings, gap_geojson = await asyncio.wait_for(
             _run(), timeout=settings.TIMEOUT_POSTGIS_S
@@ -3886,6 +3928,7 @@ async def query_coverage_gap(
         attribute_coverage = []
         findings = []
         gap_geojson = None
+        failure = "timeout"
     except Exception:
         logger.exception(
             "query_coverage_gap failed workspace=%s project=%s",
@@ -3896,6 +3939,7 @@ async def query_coverage_gap(
         attribute_coverage = []
         findings = []
         gap_geojson = None
+        failure = "error"
 
     total_count = (
         (1 if ingest_gap.indexed > 0 else 0)
@@ -3911,6 +3955,7 @@ async def query_coverage_gap(
         workspace_id=workspace_id,
         count=total_count,
         gap_geojson=gap_geojson,
+        retrieval_failure=failure,
     )
 
 

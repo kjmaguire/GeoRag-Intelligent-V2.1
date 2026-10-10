@@ -124,40 +124,76 @@ class BodySizeLimitMiddleware:
 # ---------------------------------------------------------------------------
 
 
-class GlobalTimeoutMiddleware(BaseHTTPMiddleware):
+class GlobalTimeoutMiddleware:
     """Backstop hard-timeout for any handler that hangs.
 
-    SSE streaming endpoints opt out via the `Accept: text/event-stream`
-    header — those own their own deadline via the orchestrator's
-    `TIMEOUT_GATHER_S` and we'd otherwise truncate streams mid-flight.
+    A pure ASGI middleware, like ``BodySizeLimitMiddleware`` above, and for the
+    same reason: it has to sit on the call itself. It used to be a
+    ``BaseHTTPMiddleware`` that answered ``asyncio.wait_for(call_next(request))``
+    with a 504 on timeout, but ``call_next`` runs the rest of the stack in a task
+    of its own, and ``wait_for`` cancelling its await does not cancel that task.
+    The client got the 504 and the handler carried on to completion behind it,
+    holding its database connection, its Qdrant call and its LLM spend for a
+    response nobody would read. ``asyncio.timeout`` around the app call cancels
+    the handler where it stands: it sees ``CancelledError``, runs its ``finally``
+    blocks and releases what it holds.
 
-    Returns 504 with a structured detail when the timeout fires, instead
-    of letting the asyncio.TimeoutError bubble through to a 500.
+    The clock covers the time until the response STARTS, which is what it always
+    meant (``call_next`` returned at the first byte). Once ``http.response.start``
+    has gone out the deadline is cleared: a body that is still streaming is not a
+    hung handler, and cutting it would truncate a download or a stream mid-flight.
+    SSE requests (``Accept: text/event-stream``) skip the middleware entirely;
+    they own their own deadline (the orchestrator's ``TIMEOUT_GATHER_S``).
+
+    Answers 504 with a structured detail, and only while no response has
+    started: a second ``http.response.start`` would be an ASGI protocol error.
+    A ``TimeoutError`` the application raised itself is not ours to answer; it
+    propagates as it always did.
     """
 
-    def __init__(self, app, timeout_s: float) -> None:
-        super().__init__(app)
+    def __init__(self, app: ASGIApp, timeout_s: float) -> None:
+        self.app = app
         self.timeout_s = timeout_s
 
-    async def dispatch(self, request: Request, call_next):
-        accept = request.headers.get("accept", "")
-        if "text/event-stream" in accept:
-            return await call_next(request)
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if "text/event-stream" in Headers(scope=scope).get("accept", ""):
+            await self.app(scope, receive, send)
+            return
+
         # Lazy import — keeps middleware import cheap.
         import asyncio  # noqa: PLC0415
+
+        response_started = False
+        timeout = asyncio.timeout(self.timeout_s)
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+                # The handler has produced its response; what follows is
+                # transfer, not a hang. Stop the clock.
+                timeout.reschedule(None)
+            await send(message)
+
         try:
-            return await asyncio.wait_for(call_next(request), timeout=self.timeout_s)
+            async with timeout:
+                await self.app(scope, receive, tracking_send)
         except TimeoutError:
+            if response_started or not timeout.expired():
+                raise
             logger.warning(
                 "GlobalTimeoutMiddleware: request exceeded %.1fs path=%s method=%s",
                 self.timeout_s,
-                request.url.path,
-                request.method,
+                scope.get("path", ""),
+                scope.get("method", ""),
             )
-            return JSONResponse(
+            await JSONResponse(
                 {"detail": "Request exceeded server-side timeout"},
                 status_code=504,
-            )
+            )(scope, receive, send)
 
 
 # ---------------------------------------------------------------------------

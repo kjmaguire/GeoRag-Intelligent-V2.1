@@ -71,6 +71,8 @@ from app.agent.llm_common import (
     _SAFETY_MARGIN_TOKENS,
     cap_output_tokens,
     clean_model_text,
+    is_truncated_finish_reason,
+    note_truncated_generation,
     parse_retry_after,
     record_llm_metrics,
     wait_before_pre_stream_retry,
@@ -349,6 +351,15 @@ async def call_bedrock_llm(
             input_tokens,
         )
         return _BUDGET_EXHAUSTED_FALLBACK
+    if content and is_truncated_finish_reason(stop_reason):
+        # Cut off at maxTokens (or by a guardrail) with text already delivered.
+        # Not raised: see llm_common "Cut-off generations".
+        note_truncated_generation(
+            backend="bedrock",
+            model=settings.effective_llm_model,
+            reason=stop_reason,
+            answer_chars=len(content),
+        )
     return content
 
 

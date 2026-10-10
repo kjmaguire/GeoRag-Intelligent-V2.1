@@ -83,6 +83,11 @@ EMPTY_SOURCE_SENTINELS: frozenset[str] = frozenset({
 _EMPTY_SOURCE_SUFFIXES: tuple[str, ...] = (
     ":count=0",          # assays, spatial collars
     ":rows=0:first_row=none",   # ADR-0007 project summary card
+    # Coverage-gap card with no ingest gap and no attribute rows. Its id does not
+    # carry the findings count, so a result with findings but neither of the
+    # other two would read as empty here; the live path always returns one
+    # coverage row per attribute, so that shape only arises from a failure.
+    ":indexed=0:processed=0:attrs=0",
 )
 
 #: Substrings that mark a zero-row card result.

@@ -24,9 +24,11 @@ from app.agent.public_geoscience_tool import PublicGeoscienceSearchResult
 from app.agent.tools import (
     AssayDataResult,
     CollarDetailsResult,
+    CoverageGapResult,
     DocumentSearchResult,
     DownholeLogsResult,
     ProjectOverviewResult,
+    ProjectSummaryResult,
     SpatialQueryResult,
 )
 from app.config import settings
@@ -217,6 +219,8 @@ def _is_empty_tool_result(result: Any) -> bool:
       * ``SpatialQueryResult.count == 0``
       * ``DocumentSearchResult.chunks == []``
       * ``PublicGeoscienceSearchResult.records == []``
+      * ``ProjectSummaryResult.count == 0``
+      * ``CoverageGapResult.count == 0``
 
     Unknown / synthetic result objects (e.g. the ``drill_targeting`` text
     blob) are treated as non-empty so we never silently drop a tool the
@@ -245,6 +249,14 @@ def _is_empty_tool_result(result: Any) -> bool:
         return (result.count or 0) == 0
     if isinstance(result, CollarDetailsResult):
         # Empty when the hole lookup missed (count=0 → collar_id is None).
+        return (result.count or 0) == 0
+    if isinstance(result, (ProjectSummaryResult, CoverageGapResult)):
+        # `count` is the number of breakdown / coverage rows surfaced. Zero is
+        # either a project with nothing to summarise or a failed query; both
+        # are empty. Before this branch they fell through to `False`, so an
+        # outage was kept as a citable "result" and an answer was built on it.
+        # execute_node reads `retrieval_failure` BEFORE the drop, so a failed
+        # query still reaches degraded_sources.
         return (result.count or 0) == 0
     return False
 

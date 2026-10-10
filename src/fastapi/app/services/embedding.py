@@ -908,10 +908,23 @@ def _describe_error(exc: BaseException) -> str:
 
 
 def warm_up_once(model: Any, readiness: EmbeddingReadiness) -> bool:
-    """One synchronous warm-up encode. Updates ``readiness``; never raises."""
+    """One synchronous warm-up encode. Updates ``readiness``; never raises.
+
+    Warms the QUERY path when the model has one (``embed_query``): that is what
+    questions use, and on Cohere it is the budgeted call (``query_path=True``,
+    capped by COHERE_EMBED_TIMEOUT_S and a small attempt count). ``encode`` is
+    the ingest profile: four attempts, any Retry-After up to 60 s honoured, with
+    a blocking sleep between them, which under throttling can run for minutes
+    and is the wrong thing to validate a query-serving process with. A local
+    SentenceTransformer has no ``embed_query`` and keeps ``encode``.
+    """
     readiness.last_attempt_monotonic = time.monotonic()
     try:
-        model.encode("warm-up", normalize_embeddings=True)
+        embed_query = getattr(model, "embed_query", None)
+        if callable(embed_query):
+            embed_query("warm-up")
+        else:
+            model.encode("warm-up", normalize_embeddings=True)
     except Exception as exc:  # noqa: BLE001 -- recorded, retried, reported by /ready
         readiness.failures += 1
         readiness.state = EMBEDDING_WARMING
@@ -927,6 +940,37 @@ def warm_up_once(model: Any, readiness: EmbeddingReadiness) -> bool:
     readiness.state = EMBEDDING_OK
     readiness.detail = None
     return True
+
+
+async def warm_up_within(
+    model: Any,
+    readiness: EmbeddingReadiness,
+    *,
+    timeout_s: float,
+) -> bool:
+    """``warm_up_once`` off the event loop, and bounded by ``timeout_s``.
+
+    The warm-up is a blocking call (an HTTP round trip with a retry ladder, or a
+    local model's first forward pass). Awaited inline in the lifespan it held the
+    loop for as long as it took; this runs it in a worker thread and stops
+    waiting after ``timeout_s``. On timeout the readiness reads "warming" and the
+    caller schedules ``rewarm_until_ready``, which is the existing recovery path.
+
+    The thread itself cannot be cancelled and finishes in the background; if it
+    succeeds late it marks the embedder ready, which is correct.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(warm_up_once, model, readiness), timeout=timeout_s)
+    except TimeoutError:
+        readiness.failures += 1
+        readiness.state = EMBEDDING_WARMING
+        readiness.detail = f"startup warm-up exceeded {timeout_s:g}s"
+        logger.warning(
+            "embedding warm-up did not finish within %gs -- starting anyway; "
+            "queries still try the model and a background re-warm is scheduled",
+            timeout_s,
+        )
+        return False
 
 
 async def rewarm_until_ready(

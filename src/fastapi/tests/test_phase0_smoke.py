@@ -83,12 +83,14 @@ def test_phase0_module_imports(mod: str) -> None:
     assert m is not None
 
 
-class _FakeCtx:
-    workspace_id = "a0000000-0000-0000-0000-000000000001"
-    document_id = "b0000000-0000-0000-0000-000000000099"
-    trace_id = "smoke-trace"
-    is_dry_run = True
-    bypass_idempotency = True
+# There used to be a ``_FakeCtx`` here that carried a workspace_id, a
+# document_id AND ``bypass_idempotency = True``. It was never wired to a call,
+# but it modelled a context no workflow ever built: the real ``_ctx_from`` sets
+# none of those, which is how both R2 agents (Storage Tiering, Support Packet)
+# were rejected by the wrapper's idempotency-key check for months while this
+# file stayed green. Do not reintroduce a stub context that supplies what the
+# workflows do not. The agents are run end to end, through the real wrapper and
+# the context ``_ctx_from`` really builds, in test_phase0_agents_audit_2026_10.py.
 
 
 def _install_wrapper_stubs(monkeypatch: pytest.MonkeyPatch) -> None:

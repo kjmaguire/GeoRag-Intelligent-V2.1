@@ -212,6 +212,12 @@ class PublicGeoscienceSearchResult:
     #: the model is told the search did not run instead of reading an empty
     #: result as "nothing there" (GIS-20).
     error: str | None = None
+    #: "timeout" / "error" when the BACKEND failed (no pool, query timed out or
+    #: raised), as opposed to ``error`` above, which is a bad request. Either
+    #: way the empty result is not "no government records here"; this one is
+    #: what ``execute_node`` reads before the empty result is dropped (audit
+    #: item 12).
+    retrieval_failure: str | None = None
 
 
 def _escape_like(text: str | None) -> str | None:
@@ -342,6 +348,7 @@ async def search_public_geoscience(
     pool = getattr(getattr(ctx, "deps", None), "pg_pool", None)
     if pool is None:
         logger.warning("search_public_geoscience: deps.pg_pool is None — empty result")
+        empty.retrieval_failure = "error"
         return empty
 
     sql = _build_query(types_to_query)
@@ -359,8 +366,15 @@ async def search_public_geoscience(
     try:
         async with pool.acquire() as conn:
             rows = await conn.fetch(sql, *args, timeout=_QUERY_TIMEOUT_S)
+    except TimeoutError:
+        logger.warning(
+            "search_public_geoscience: query timed out after %.1fs", _QUERY_TIMEOUT_S,
+        )
+        empty.retrieval_failure = "timeout"
+        return empty
     except Exception:  # noqa: BLE001 — degrade, never fail an answer
         logger.exception("search_public_geoscience: query failed")
+        empty.retrieval_failure = "error"
         return empty
 
     records = [_to_record(r) for r in rows]

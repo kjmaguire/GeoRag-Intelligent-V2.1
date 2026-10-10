@@ -76,10 +76,10 @@ from uuid import UUID
 
 import asyncpg
 import redis.asyncio as aioredis
-from hatchet_sdk import Context
+from hatchet_sdk import Context, NonRetryableException
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agents import AgentContext, register_runtime
+from app.agents import AgentContext, AgentResult, register_runtime
 from app.agents.phase0 import (
     index_health_check as _index_health_check_agent,
 )
@@ -158,13 +158,65 @@ class AgentRunInput(BaseModel):
     )
 
 
-def _ctx_from(input: AgentRunInput, hctx: Context) -> AgentContext:
+def _ctx_from(
+    input: AgentRunInput,
+    hctx: Context,
+    *,
+    document_id: str | None = None,
+    bypass_idempotency: bool = False,
+) -> AgentContext:
+    """Build the wrapper context for one workflow run.
+
+    ``document_id`` and ``bypass_idempotency`` exist for the two R2 agents.
+    The wrapper refuses to compute an R2 idempotency key without a
+    ``workspace_id`` AND a ``document_id`` (``agents.wrapper``), so an R2 agent
+    called with neither fails before its first line runs. Policy-level agents
+    (Storage Tiering: nightly, no workspace, no document) bypass idempotency;
+    per-document agents (Support Packet: one packet per incident) pass the
+    document they dedupe on.
+    """
     return AgentContext(
         workspace_id=input.workspace_id,
         actor_id=input.actor_id,
         actor_kind="workflow",
         trace_id=input.trace_id or hctx.workflow_run_id,
+        document_id=document_id,
+        bypass_idempotency=bypass_idempotency,
     )
+
+
+class AgentRunFailedError(RuntimeError):
+    """The wrapped agent did not produce a result (failure, timeout, breaker open)."""
+
+
+#: Wrapper outcomes that carry a usable ``value``. ``deduped`` is an R2 replay of
+#: the stored result of an earlier identical run.
+_USABLE_OUTCOMES = frozenset({"success", "deduped"})
+
+
+def _agent_value(r: AgentResult[Any], workflow: str) -> dict[str, Any]:
+    """Return the agent's result dict, or raise so the Hatchet run goes red.
+
+    ``@georag_agent`` never raises: failure, timeout, an open circuit breaker
+    and a refusal all come back as an ``AgentResult`` whose ``value`` is
+    ``None``. Every task here used to validate ``r.value or {}`` into its
+    output model, so each of those became a green run carrying default
+    values, which for a verdict agent read as a clean bill of health
+    (``violations=0``, ``is_intact=True``).
+
+    A refusal is raised too, but as non-retryable. It is a deliberate "I will
+    not answer" (only the incident-diagnosis agent raises one: unfamiliar
+    alert, too little context, model output that is not the schema). The
+    circuit breaker still does not count it, but the *workflow's* job is to
+    return a diagnosis and it returned none, so an operator reading the run
+    must see that. Retrying the same inputs cannot change a refusal.
+    """
+    if r.outcome in _USABLE_OUTCOMES:
+        return r.value or {}
+    detail = f"{workflow}: agent outcome={r.outcome}" + (f" ({r.error})" if r.error else "")
+    if r.outcome == "refusal":
+        raise NonRetryableException(detail)
+    raise AgentRunFailedError(detail)
 
 
 # =============================================================================
@@ -184,9 +236,11 @@ class TenantIsolationAuditOutput(BaseModel):
 
     tables_probed: int = 0
     probes_run: int = 0
-    violations: int = 0
-    violation_details: list[dict[str, Any]] = Field(default_factory=list)
-    set_local_violations: list[dict[str, Any]] = Field(default_factory=list)
+    # None means "the audit did not report", never "no violations": a 0 or an
+    # empty list here is a clean bill of health for tenant isolation.
+    violations: int | None = None
+    violation_details: list[dict[str, Any]] | None = None
+    set_local_violations: list[dict[str, Any]] | None = None
     kestra_escalated: bool | None = None
 
 
@@ -203,7 +257,7 @@ async def _run_tenant_isolation(
 ) -> TenantIsolationAuditOutput:
     async with _agent_runtime():
         r = await _tenant_isolation_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return TenantIsolationAuditOutput.model_validate(r.value or {})
+        return TenantIsolationAuditOutput.model_validate(_agent_value(r, "tenant_isolation_audit"))
 
 
 # =============================================================================
@@ -220,8 +274,9 @@ class LineageWalkOutput(BaseModel):
     target_type: str | None = None
     target_id: str | None = None
     chain_length: int = 0
-    broken_at: list[dict[str, Any]] = Field(default_factory=list)
-    is_intact: bool = True
+    # None = the walk did not report. ``True`` / ``[]`` assert an intact chain.
+    broken_at: list[dict[str, Any]] | None = None
+    is_intact: bool | None = None
     entries: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -237,7 +292,7 @@ async def _run_lineage_walk(
 ) -> LineageWalkOutput:
     async with _agent_runtime():
         r = await _lineage_walk_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return LineageWalkOutput.model_validate(r.value or {})
+        return LineageWalkOutput.model_validate(_agent_value(r, "lineage_walk"))
 
 
 # =============================================================================
@@ -255,7 +310,7 @@ class StorageTieringRunOutput(BaseModel):
     rules_evaluated: int = 0
     objects_moved: int = 0
     objects_skipped: int = 0
-    errors: int = 0
+    errors: int | None = None
     silver_uri_rewrites: int = 0
     per_rule: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -272,8 +327,13 @@ async def _run_storage_tiering(
     input: AgentRunInput, ctx: Context
 ) -> StorageTieringRunOutput:
     async with _agent_runtime():
-        r = await _storage_tiering_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return StorageTieringRunOutput.model_validate(r.value or {})
+        # Policy-level run (nightly cron: no workspace, no document), so there is
+        # nothing for an R2 idempotency key to be built from. Re-running is safe:
+        # each move is gated on the object still being in its source tier.
+        r = await _storage_tiering_agent(
+            ctx=_ctx_from(input, ctx, bypass_idempotency=True), **input.kwargs
+        )
+        return StorageTieringRunOutput.model_validate(_agent_value(r, "storage_tiering_run"))
 
 
 # =============================================================================
@@ -289,10 +349,11 @@ class IndexHealthCheckOutput(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    slow_queries_flagged: int = 0
-    bloat_findings: int = 0
-    hypopg_suggestions: int = 0
-    zero_hit_indices: int = 0
+    # Finding counts default to None, not 0: 0 reads as "checked, healthy".
+    slow_queries_flagged: int | None = None
+    bloat_findings: int | None = None
+    hypopg_suggestions: int | None = None
+    zero_hit_indices: int | None = None
     qdrant_reachability: Any = None
     neo4j_page_cache_hit_ratio: Any = None
     # Non-zero means a finding could not be written to
@@ -301,8 +362,8 @@ class IndexHealthCheckOutput(BaseModel):
     # path persists its cluster-scoped findings as NULL-workspace rows, so
     # this is now a genuine error signal rather than the steady state it used
     # to be — see index_health.py's `system_wide` comment.
-    findings_unpersisted: int = 0
-    findings: list[dict[str, Any]] = Field(default_factory=list)
+    findings_unpersisted: int | None = None
+    findings: list[dict[str, Any]] | None = None
 
 
 index_health_check = hatchet.workflow(
@@ -318,7 +379,7 @@ async def _run_index_health(
 ) -> IndexHealthCheckOutput:
     async with _agent_runtime():
         r = await _index_health_check_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return IndexHealthCheckOutput.model_validate(r.value or {})
+        return IndexHealthCheckOutput.model_validate(_agent_value(r, "index_health_check"))
 
 
 # =============================================================================
@@ -332,10 +393,20 @@ class StoreReconciliationRunOutput(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    dead_lettered: int = 0
-    stuck: int = 0
-    missing_in_b: int = 0
-    cross_store_drift: dict[str, Any] = Field(default_factory=dict)
+    # None = the reconciliation did not report; 0 / {} assert "no drift found".
+    dead_lettered: int | None = None
+    stuck: int | None = None
+    missing_in_b: int | None = None
+    # Propagations with no workspace_id: not recordable as findings (the column
+    # is NOT NULL), so they are counted here rather than lost or crashed on.
+    unscoped_skipped: int | None = None
+    # Keyed by workspace id, then by store; see store_reconciliation.py.
+    cross_store_drift: dict[str, Any] | None = None
+    # Set when no cross-store comparison could be made at all (nothing to compare).
+    cross_store_skipped: str | None = None
+    # Set when the per-workspace outbox passes could not run (the workspace list
+    # could not be read); only the platform rows were scanned.
+    outbox_skipped: str | None = None
 
 
 store_reconciliation_run = hatchet.workflow(
@@ -351,7 +422,7 @@ async def _run_store_recon(
 ) -> StoreReconciliationRunOutput:
     async with _agent_runtime():
         r = await _store_recon_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return StoreReconciliationRunOutput.model_validate(r.value or {})
+        return StoreReconciliationRunOutput.model_validate(_agent_value(r, "store_reconciliation_run"))
 
 
 # =============================================================================
@@ -370,7 +441,7 @@ class ModelUpgradeWatchRunOutput(BaseModel):
     vllm: dict[str, Any] = Field(default_factory=lambda: {"checked": False})
     model: dict[str, Any] = Field(default_factory=lambda: {"checked": False})
     notifications_emitted: int = 0
-    errors: int = 0
+    errors: int | None = None
 
 
 model_upgrade_watch_run = hatchet.workflow(
@@ -386,7 +457,7 @@ async def _run_model_upgrade_watch(
 ) -> ModelUpgradeWatchRunOutput:
     async with _agent_runtime():
         r = await _model_upgrade_watch_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return ModelUpgradeWatchRunOutput.model_validate(r.value or {})
+        return ModelUpgradeWatchRunOutput.model_validate(_agent_value(r, "model_upgrade_watch_run"))
 
 
 # =============================================================================
@@ -400,12 +471,12 @@ class ModelCostSummaryRunOutput(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    rollup_date: str = ""
+    rollup_date: str | None = None
     rows_aggregated: int = 0
     buckets_upserted: int = 0
     ceilings_evaluated: int = 0
     warnings_emitted: int = 0
-    errors: int = 0
+    errors: int | None = None
 
 
 model_cost_summary_run = hatchet.workflow(
@@ -430,7 +501,7 @@ async def _run_model_cost_summary(
 ) -> ModelCostSummaryRunOutput:
     async with _agent_runtime():
         r = await _model_cost_summary_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return ModelCostSummaryRunOutput.model_validate(r.value or {})
+        return ModelCostSummaryRunOutput.model_validate(_agent_value(r, "model_cost_summary_run"))
 
 
 # =============================================================================
@@ -447,11 +518,11 @@ class LlmIncidentDiagnosisRunOutput(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    alert_label: str = ""
+    alert_label: str | None = None
     window_minutes: int = 0
     context_counts: dict[str, int] = Field(default_factory=dict)
     prompt_version: str | None = None
-    diagnosis: dict[str, Any] = Field(default_factory=dict)
+    diagnosis: dict[str, Any] | None = None
 
 
 llm_incident_diagnosis_run = hatchet.workflow(
@@ -466,7 +537,7 @@ async def _run_llm_incident(
 ) -> LlmIncidentDiagnosisRunOutput:
     async with _agent_runtime():
         r = await _llm_incident_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return LlmIncidentDiagnosisRunOutput.model_validate(r.value or {})
+        return LlmIncidentDiagnosisRunOutput.model_validate(_agent_value(r, "llm_incident_diagnosis_run"))
 
 
 # =============================================================================
@@ -480,8 +551,8 @@ class SupportPacketAssembleOutput(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    packet_id: str = ""
-    incident_id: str = ""
+    packet_id: str | None = None
+    incident_id: str | None = None
     storage_uri: str | None = None
     bundle_bytes: int = 0
     counts: dict[str, Any] = Field(default_factory=dict)
@@ -505,8 +576,15 @@ async def _run_support_packet(
     input: AgentRunInput, ctx: Context
 ) -> SupportPacketAssembleOutput:
     async with _agent_runtime():
-        r = await _support_packet_agent(ctx=_ctx_from(input, ctx), **input.kwargs)
-        return SupportPacketAssembleOutput.model_validate(r.value or {})
+        # The incident is the document the R2 idempotency key dedupes on (see the
+        # support_packet module docstring). No incident_id leaves it None, the
+        # wrapper refuses, and the run fails loudly instead of building a key.
+        incident_id = input.kwargs.get("incident_id")
+        r = await _support_packet_agent(
+            ctx=_ctx_from(input, ctx, document_id=str(incident_id) if incident_id else None),
+            **input.kwargs,
+        )
+        return SupportPacketAssembleOutput.model_validate(_agent_value(r, "support_packet_assemble"))
 
 
 # =============================================================================

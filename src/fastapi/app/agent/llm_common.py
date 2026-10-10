@@ -26,6 +26,7 @@ stay with their adapters, because those are exactly the parts that differ.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import email.utils
 import logging
 import random
@@ -107,6 +108,94 @@ BUDGET_EXHAUSTED_FALLBACK = (
     "on very large projects. Please retry, or raise the configured max "
     "output/context budget if the problem persists."
 )
+
+
+# ---------------------------------------------------------------------------
+# Cut-off generations (audit 2026-10 finding 4)
+# ---------------------------------------------------------------------------
+#
+# Every host says WHY it stopped: Cohere ``finish_reason`` (COMPLETE |
+# MAX_TOKENS | ERROR ...), Bedrock Converse ``stopReason`` (end_turn |
+# max_tokens ...), OpenAI-compatible ``finish_reason`` (stop | length), and
+# Anthropic ``stop_reason`` (end_turn | max_tokens ...). The adapters read it
+# only to word a log line for an EMPTY answer, so a reply that was cut off
+# mid-sentence at the output cap was assembled, validated against the guards
+# and shipped as a finished answer. ``cap_output_tokens`` makes that routine on
+# a big prompt: it can shrink the output allowance to 64 tokens.
+#
+# Raising was the other option. It turns every long-but-useful answer into a
+# failure, so the adapters only RECORD the truncation (a log line, a counter and
+# a run-scoped note); assemble_node carries the note on the state and
+# validate_node flags the answer: confidence floored, a visible caveat, and
+# validation_state "flagged". Text that arrived is never thrown away.
+
+#: Finish / stop reasons that mean the model was cut off rather than done.
+#: Compared after ``_normalise_reason``, so "MAX_TOKENS", "max_tokens" and
+#: "max-tokens" are one entry. Policy stops are cut off too: the text that
+#: arrived is a fragment either way.
+_TRUNCATED_FINISH_REASONS = frozenset({
+    "max_tokens",
+    "length",
+    "model_context_window_exceeded",
+    "error",
+    "timeout",
+    "content_filter",
+    "content_filtered",
+    "guardrail_intervened",
+})
+
+
+def _normalise_reason(reason: object) -> str:
+    return str(reason or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def is_truncated_finish_reason(reason: object) -> bool:
+    """True when ``reason`` says the generation stopped short of finishing."""
+    return _normalise_reason(reason) in _TRUNCATED_FINISH_REASONS
+
+
+_run_truncated_generation: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "georag_run_truncated_generation", default=None
+)
+
+
+def note_truncated_generation(*, backend: str, model: str, reason: object, answer_chars: int) -> None:
+    """Record that this call's non-empty answer was cut off.
+
+    Logs, counts and leaves a run-scoped note for ``take_truncated_generation``.
+    An EMPTY answer is not recorded here: the empty-output path already turns
+    that into the model_no_output refusal, and flagging nothing as truncated
+    would only add a second, contradictory caveat.
+
+    The note lives in a contextvar, so it is only visible to the code that
+    runs in the same asyncio Task as the call: assemble_node reads it straight
+    after ``_call_llm`` for exactly that reason (LangGraph gives each node its
+    own Task, and a Task gets a COPY of the context).
+    """
+    normalised = _normalise_reason(reason) or "unknown"
+    logger.warning(
+        "llm generation truncated: backend=%s model=%s finish_reason=%s answer_chars=%d -- "
+        "the answer was cut off and will be flagged as possibly incomplete",
+        backend,
+        model,
+        normalised,
+        answer_chars,
+    )
+    try:
+        from app.metrics import LLM_TRUNCATED_GENERATIONS  # noqa: PLC0415
+
+        LLM_TRUNCATED_GENERATIONS.labels(backend=backend, reason=normalised).inc()
+    except ImportError:
+        logger.debug("truncation counter unavailable", exc_info=True)
+    _run_truncated_generation.set(normalised)
+
+
+def take_truncated_generation() -> str | None:
+    """Read and clear the truncation note left by the last call in this context."""
+    reason = _run_truncated_generation.get()
+    if reason is not None:
+        _run_truncated_generation.set(None)
+    return reason
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +291,34 @@ PRE_STREAM_RETRY_AFTER_CAP_S = 20.0
 #: Indirection so tests can run the pacing without real sleeps.
 _sleep = asyncio.sleep
 
+# The wall-clock budget below used to restart with every call: it measured
+# time from THIS call's first byte against TIMEOUT_GATHER_S, so a query that
+# had already spent 170 s on earlier calls still granted its next call a fresh
+# 180 s of retrying, long past the router's asyncio.timeout(TIMEOUT_GATHER_S)
+# that was going to cancel it anyway. The router now publishes the query's own
+# deadline here, and a retry must fit inside that too.
+_query_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "georag_query_deadline_monotonic", default=None
+)
+
+
+def set_query_deadline(deadline_monotonic: float | None) -> contextvars.Token[float | None]:
+    """Publish the ``time.monotonic()`` instant this query will be cancelled at.
+
+    Called by the router at the top of the timeout scope. Tasks created inside
+    the scope (LangGraph nodes, gathered tool calls) inherit it. ``None`` means
+    no deadline is known and only the per-call budget applies.
+    """
+    return _query_deadline.set(deadline_monotonic)
+
+
+def query_time_remaining_s() -> float | None:
+    """Seconds until the published query deadline, or None when none is set."""
+    deadline = _query_deadline.get()
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
+
 
 def parse_retry_after(value: str | None) -> float | None:
     """Seconds from a ``Retry-After`` header (delta-seconds or HTTP-date).
@@ -264,7 +381,9 @@ async def wait_before_pre_stream_retry(
       is charged to ``llm_calls._llm_call_counter`` exactly like a distinct
       ``_call_llm`` call, the same accounting the vLLM path does;
     - the wall-clock budget: no retry once ``TIMEOUT_GATHER_S`` minus the
-      time already spent in this call cannot fit the wait;
+      time already spent in this call, or the time left before the QUERY's own
+      deadline (``set_query_deadline``), whichever is less, cannot fit the
+      wait;
     - a ``Retry-After`` longer than ``PRE_STREAM_RETRY_AFTER_CAP_S``.
     """
     from app.agent.llm_calls import _llm_call_counter  # noqa: PLC0415 -- import cycle
@@ -276,6 +395,9 @@ async def wait_before_pre_stream_retry(
     budget = float(getattr(settings, "TIMEOUT_GATHER_S", 180.0) or 180.0)
     elapsed = time.monotonic() - started_monotonic
     remaining = budget - elapsed
+    query_left = query_time_remaining_s()
+    if query_left is not None:
+        remaining = min(remaining, query_left)
     reason: str | None = None
     if attempt > max_retries:
         reason = "attempts"
@@ -321,8 +443,13 @@ __all__ = [
     "PRE_STREAM_RETRY_AFTER_CAP_S",
     "cap_output_tokens",
     "clean_model_text",
+    "is_truncated_finish_reason",
+    "note_truncated_generation",
     "parse_retry_after",
     "pre_stream_backoff_s",
+    "query_time_remaining_s",
     "record_llm_metrics",
+    "set_query_deadline",
+    "take_truncated_generation",
     "wait_before_pre_stream_retry",
 ]

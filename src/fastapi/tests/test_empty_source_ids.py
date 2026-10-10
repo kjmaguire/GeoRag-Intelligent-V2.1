@@ -82,6 +82,9 @@ def _blank(annotation: Any) -> Any:
         # A non-optional union: take the first arm.
         return _blank(args[0]) if args else None
 
+    if dataclasses.is_dataclass(annotation) and isinstance(annotation, type):
+        # A nested result part (CoverageGapResult.ingest_gap): empty the same way.
+        return _empty_instance(annotation)
     if annotation is str:
         return ""
     if annotation is int:

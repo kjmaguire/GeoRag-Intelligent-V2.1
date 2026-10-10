@@ -132,6 +132,14 @@ async def model_cost_summary_run(
         pct = float(mtd) / ceiling * 100.0 if ceiling > 0 else 0.0
         threshold = int(c["soft_warn_threshold_pct"])
         last_warn_pct = c["last_warn_pct"] or 0
+        # last_warn_pct is the highest month-to-date percentage already warned
+        # about, but month-to-date starts again from zero on the 1st. Carried into
+        # the next month it silences every warning below last month's peak, so a
+        # workspace that once reached 95% would never be warned again at 80%.
+        # A warning sent before this month began has no say in this month.
+        last_warn_at = c["last_warn_sent_at"]
+        if last_warn_at is None or last_warn_at.date() < month_start:
+            last_warn_pct = 0
         if pct >= threshold and pct > last_warn_pct:
             try:
                 await emit_audit(

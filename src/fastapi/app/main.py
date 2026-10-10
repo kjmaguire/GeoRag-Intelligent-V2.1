@@ -48,6 +48,8 @@ import asyncpg
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException
 from qdrant_client import AsyncQdrantClient
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 from starlette.responses import Response  # for /metrics return-type resolution
 
 from app.config import settings
@@ -78,6 +80,13 @@ from app.services.qdrant_conn import qdrant_client_kwargs
 configure_json_logging(level=settings.LOG_LEVEL.upper())
 
 logger = logging.getLogger(__name__)
+
+#: How long startup waits for the embedding warm-up before carrying on and
+#: leaving it to ``rewarm_until_ready``. A warm-up is a connectivity and
+#: dimension check, not a precondition for serving: queries still try the
+#: model and /ready reports "warming". Anything slower than this under Cohere
+#: throttling would outlast the ECS health-check grace and restart-loop the task.
+_STARTUP_WARMUP_TIMEOUT_S = 30.0
 
 
 def _statement_cache_size_from_env() -> int:
@@ -195,6 +204,54 @@ def _init_reranker(app: FastAPI) -> None:
         )
         app.state.reranker = None
         app.state.reranker_version = None
+
+
+def build_redis_client() -> aioredis.Redis:
+    """The pooled FastAPI Redis client (db 2).
+
+    ``retry=Retry(NoBackoff(), 0)`` is deliberate. redis-py 7's default is
+    ``Retry(ExponentialWithJitterBackoff(base=1, cap=10), retries=3)``: with
+    Redis down, every command spent its socket timeouts PLUS a 0 to 10 s
+    jittered backoff, three times over, a 3 to 14 s stall that the 0.5 s
+    ``socket_timeout`` below never bounded. Every SSE frame wrote the replay
+    buffer (``EventStamper.push_to_redis``), so one Redis blip froze every
+    stream mid-answer. Every caller here is a cache, a rate limiter or a
+    replay buffer that degrades without Redis; none benefits from waiting.
+    """
+    return aioredis.Redis(
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        password=settings.REDIS_PASSWORD or None,
+        socket_timeout=settings.TIMEOUT_REDIS_S,
+        socket_connect_timeout=settings.TIMEOUT_REDIS_S,
+        decode_responses=True,
+        retry=Retry(NoBackoff(), 0),
+        # RESP3 protocol (redis-py 7+ / Redis 8). Richer return types
+        # (maps, sets, bools natively) and the prerequisite if/when
+        # redis-py adds async client-side caching (currently sync-only;
+        # see https://github.com/redis/redis-py — `cache_config=` lands
+        # on `redis.Redis()` first). Old RESP2 servers fall through to
+        # RESP2 negotiation, so this is safe across upgrades.
+        protocol=3,
+        # Redis review #4 — pool + health hardening.
+        # `max_connections` caps per-worker connections so 4 uvicorn
+        # workers × unbounded pool can't push past Redis's maxclients.
+        # 32 per worker × 4 workers = 128, well under the 10000 ceiling
+        # and comfortable for the agent's cache-heavy paths.
+        max_connections=32,
+        # `health_check_interval=30` sends a periodic PING on idle
+        # connections so we detect dead sockets on the next checkout
+        # instead of paying the timeout on a real query.
+        health_check_interval=30,
+        # `client_name` tags every connection in `CLIENT LIST` so
+        # operators can tell FastAPI connections apart from Laravel /
+        # Horizon / Reverb during triage.
+        client_name="georag-fastapi",
+        # Dedicated db for FastAPI cache — keeps the chat-response
+        # cache from colliding with Laravel's db0/db1 keys and lets
+        # operators run FLUSHDB safely on just this db during triage.
+        db=2,
+    )
 
 
 @asynccontextmanager
@@ -412,8 +469,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # remaining construction site still building the dict inline, agreeing
     # with the helper only by coincidence of matching settings values.
     qdrant_client = AsyncQdrantClient(
-        **qdrant_client_kwargs(),
-        timeout=int(settings.TIMEOUT_QDRANT_S),
+        # The timeout rides inside the kwargs (passing a second `timeout=` here
+        # is a duplicate-keyword TypeError).
+        **qdrant_client_kwargs(timeout=int(settings.TIMEOUT_QDRANT_S)),
         check_compatibility=False,  # avoids a blocking HTTP call at startup
     )
     app.state.qdrant_client = qdrant_client
@@ -436,39 +494,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 4. Redis async client
     # -------------------------------------------------------------------------
     logger.info("Connecting Redis client -> %s:%s", settings.REDIS_HOST, settings.REDIS_PORT)
-    redis_client = aioredis.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        password=settings.REDIS_PASSWORD or None,
-        socket_timeout=settings.TIMEOUT_REDIS_S,
-        socket_connect_timeout=settings.TIMEOUT_REDIS_S,
-        decode_responses=True,
-        # RESP3 protocol (redis-py 7+ / Redis 8). Richer return types
-        # (maps, sets, bools natively) and the prerequisite if/when
-        # redis-py adds async client-side caching (currently sync-only;
-        # see https://github.com/redis/redis-py — `cache_config=` lands
-        # on `redis.Redis()` first). Old RESP2 servers fall through to
-        # RESP2 negotiation, so this is safe across upgrades.
-        protocol=3,
-        # Redis review #4 — pool + health hardening.
-        # `max_connections` caps per-worker connections so 4 uvicorn
-        # workers × unbounded pool can't push past Redis's maxclients.
-        # 32 per worker × 4 workers = 128, well under the 10000 ceiling
-        # and comfortable for the agent's cache-heavy paths.
-        max_connections=32,
-        # `health_check_interval=30` sends a periodic PING on idle
-        # connections so we detect dead sockets on the next checkout
-        # instead of paying the timeout on a real query.
-        health_check_interval=30,
-        # `client_name` tags every connection in `CLIENT LIST` so
-        # operators can tell FastAPI connections apart from Laravel /
-        # Horizon / Reverb during triage.
-        client_name="georag-fastapi",
-        # Dedicated db for FastAPI cache — keeps the chat-response
-        # cache from colliding with Laravel's db0/db1 keys and lets
-        # operators run FLUSHDB safely on just this db during triage.
-        db=2,
-    )
+    redis_client = build_redis_client()
     app.state.redis_client = redis_client
     logger.info(
         "Redis client ready (db=2, max_connections=32, client_name=georag-fastapi)"
@@ -627,7 +653,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         EmbeddingReadiness,
         get_embedding_model,
         rewarm_until_ready,
-        warm_up_once,
+        warm_up_within,
     )
 
     # VEN-1 (2026-09-29): a failed warm-up no longer disables the embedder
@@ -673,7 +699,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Warm up: encode a dummy string so the first real request does not
         # pay the JIT/model-init penalty (a round-trip for the sidecar proxy
         # and Bedrock, which also validates connectivity at startup).
-        _warm = warm_up_once(embedding_model, embedding_readiness)
+        _warm = await warm_up_within(
+            embedding_model, embedding_readiness, timeout_s=_STARTUP_WARMUP_TIMEOUT_S,
+        )
         _elapsed = time.perf_counter() - _t0
         try:
             _loaded_dim = embedding_model.get_sentence_embedding_dimension()
@@ -810,7 +838,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         from app.services.sparse_encoder import encode_sparse  # noqa: PLC0415
 
-        _warmup_sparse = encode_sparse("drillhole uranium grade intercept")
+        # Off the event loop: against the sidecar this is a blocking httpx call
+        # (SPARSE_SERVICE_TIMEOUT_S, 30 s, plus one stale-socket retry), and
+        # locally it is a 440 MB model load. Not wrapped in a wait_for: it is
+        # already bounded by its own timeout, and abandoning a local load
+        # mid-way would let the first query start a second copy of it.
+        _warmup_sparse = await asyncio.to_thread(
+            encode_sparse, "drillhole uranium grade intercept",
+        )
         _elapsed_sparse = time.perf_counter() - _t_sparse
         logger.info(
             "SPLADE++ sparse encoder ready: %d non-zero terms, loaded in %.2fs",
