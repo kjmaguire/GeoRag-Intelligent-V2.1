@@ -233,19 +233,24 @@ class TestWorkbookSheetsForwardTheWarning:
     def test_forwarding_without_an_excel_backend(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Same claim with the workbook read stubbed, so it runs where
-        fastexcel is not installed."""
-        import polars as pl
+        """Same claim with TEXT cells (the first test writes numbers), and
+        without the importorskip / try-skip guards: the .xlsx path reads
+        through openpyxl, a declared dependency, so this always runs."""
+        import openpyxl
 
         from georag_geoparsers import xlsx_parser
 
-        frame = pl.DataFrame({
-            "HoleID": ["D1", "D1"], "From": ["0", "5"], "To": ["5", "9"],
-            "Lithology": ["Andesite", "Tuff"], "Texture": ["Fine", "porphyritic"],
-        })
-        monkeypatch.setattr(xlsx_parser.pl, "read_excel", lambda *a, **k: frame)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Litho"
+        for row in [
+            ["HoleID", "From", "To", "Lithology", "Texture"],
+            ["D1", "0", "5", "Andesite", "Fine"],
+            ["D1", "5", "9", "Tuff", "porphyritic"],
+        ]:
+            ws.append(row)
         path = tmp_path / "log.xlsx"
-        path.write_bytes(b"x")   # only its extension and hash are used
+        wb.save(path)
 
         result = xlsx_parser.parse_xlsx_sheet(str(path), "Litho", "lithology")
 

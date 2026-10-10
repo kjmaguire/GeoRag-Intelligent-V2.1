@@ -628,19 +628,24 @@ class TestLithologyKeepsEveryColumn:
 # ---------------------------------------------------------------------------
 
 class TestWorkbookSheet:
-    """``fastexcel`` (polars' spreadsheet engine) is not installed everywhere,
-    so the sheet read is replaced by a DataFrame; what is under test is the
-    dispatch and the companion flag, which are the new part."""
+    """What is under test is the dispatch and the companion flag. The sheet is
+    a real workbook written with openpyxl, which the .xlsx path reads through
+    directly (it no longer needs polars' ``fastexcel`` engine)."""
 
     def _sheet(self, monkeypatch, tmp_path):
-        import polars as pl
+        import csv
+
+        import openpyxl
 
         from georag_geoparsers import xlsx_parser
 
-        frame = pl.read_csv(io.StringIO(_GEOLOGY_LOG), infer_schema=False)
-        monkeypatch.setattr(xlsx_parser.pl, "read_excel", lambda *a, **k: frame)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Geology"
+        for row in csv.reader(io.StringIO(_GEOLOGY_LOG)):
+            ws.append([cell or None for cell in row])
         path = tmp_path / "geology.xlsx"
-        path.write_bytes(b"not read: read_excel is replaced")
+        wb.save(path)
         return xlsx_parser, str(path)
 
     def test_a_companion_sheet_feeds_alteration_and_mineralization(
