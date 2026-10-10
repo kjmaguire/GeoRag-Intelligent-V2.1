@@ -793,6 +793,23 @@ jobs:
       # percentage rather than failing.
       - name: Clover merge is a union, not a last-write-wins
         run: bash scripts/tests/merge_clover_test.sh
+      # Two scripts that existed to be run by CI and were run by nothing. The
+      # embedding one guards the 384-vs-1024 landmine: a compose default that
+      # names a 384-dim model writes 384-dim vectors into the 1024-dim
+      # georag_chunks collection the moment a deploy loses its .env, and
+      # Qdrant answers with an opaque HTTP 400. The compose file is not
+      # reachable from pytest (the FastAPI test container mounts only
+      # src/fastapi), which is why this is a shell gate and why it has to be
+      # wired somewhere that has the whole tree.
+      - name: Embedding model defaults match the 1024-dim collection
+        run: bash scripts/ci/embedding_dimension_check.sh
+      # The go-live gate (aws-preflight.sh) is itself a checker, so what
+      # proves it can still say no is these discrimination tests -- fixture
+      # trees built in each shape it exists to reject. They pass against the
+      # tree they were written on, which demonstrates nothing; they only count
+      # while something runs them. Nothing did.
+      - name: AWS preflight gate rejects the shapes it exists to reject
+        run: bash scripts/tests/aws_preflight_test.sh
 
   # ─── Schema/Qdrant drift smoke gate ───────────────────────────────────
   # 2026-08-04 incident: two schema-drift bugs shipped straight through
