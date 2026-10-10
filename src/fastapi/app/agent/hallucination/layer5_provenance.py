@@ -567,11 +567,12 @@ async def enrich_provenance(
     if pending:
         distinct_ids = list(dict.fromkeys(rid for _c, _s, rid in pending))
         try:
-            async with pg_pool.acquire() as conn:
-                fetched = await asyncio.wait_for(
-                    conn.fetch(_REPORT_SOURCE_SQL, distinct_ids),
-                    timeout=settings.TIMEOUT_POSTGIS_S,
-                )
+            # The bound covers ``pool.acquire()`` as well as the fetch (AL-10):
+            # an exhausted pool made the acquire wait with no timeout, and the
+            # answer waited with it. A TimeoutError takes the soft path below
+            # -- the citations ship without their provenance line.
+            async with asyncio.timeout(settings.TIMEOUT_POSTGIS_S), pg_pool.acquire() as conn:
+                fetched = await conn.fetch(_REPORT_SOURCE_SQL, distinct_ids)
             rows_by_report = {str(r["report_id"]).lower(): r for r in fetched}
         except Exception:
             # WARNING, not DEBUG: a query that fails on every call is how

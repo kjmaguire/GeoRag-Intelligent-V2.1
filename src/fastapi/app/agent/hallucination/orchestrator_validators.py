@@ -1832,25 +1832,28 @@ async def verify_entities(
     if hole_ids:
         try:
             canon_ids = [canonical_hole_id(h) for h in hole_ids]
-            async with pg_pool.acquire() as conn:
-                rows = await asyncio.wait_for(
-                    conn.fetch(
-                        # Case- and separator-insensitive (RAG-16): a hole
-                        # stored "Gh08-212" or "BH12" is the hole the answer
-                        # calls "GH08-212" / "BH-12". hole_id_canonical is
-                        # the ingest-side normal form (same rule as
-                        # canonical_hole_id); the regexp_replace arm covers
-                        # rows ingested before that column was populated.
-                        "SELECT hole_id, hole_id_canonical FROM silver.collars "
-                        "WHERE project_id = $2::uuid AND ("
-                        "UPPER(hole_id) = ANY($1) "
-                        "OR hole_id_canonical = ANY($3) "
-                        "OR regexp_replace(UPPER(hole_id), '[[:space:]_./-]+', '', 'g') = ANY($3))",
-                        hole_ids,
-                        project_id,
-                        canon_ids,
-                    ),
-                    timeout=settings.TIMEOUT_POSTGIS_S,
+            # ONE TIMEOUT_POSTGIS_S for the whole lookup, ``pool.acquire()``
+            # included (AL-10). Only the fetch used to be bounded; with every
+            # connection checked out the acquire is the call that waits, so an
+            # exhausted pool hung validation -- and the user's stream with
+            # it -- with no timeout at all. A TimeoutError lands in the
+            # fail-closed handler below, like any other lookup failure.
+            async with asyncio.timeout(settings.TIMEOUT_POSTGIS_S), pg_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    # Case- and separator-insensitive (RAG-16): a hole
+                    # stored "Gh08-212" or "BH12" is the hole the answer
+                    # calls "GH08-212" / "BH-12". hole_id_canonical is
+                    # the ingest-side normal form (same rule as
+                    # canonical_hole_id); the regexp_replace arm covers
+                    # rows ingested before that column was populated.
+                    "SELECT hole_id, hole_id_canonical FROM silver.collars "
+                    "WHERE project_id = $2::uuid AND ("
+                    "UPPER(hole_id) = ANY($1) "
+                    "OR hole_id_canonical = ANY($3) "
+                    "OR regexp_replace(UPPER(hole_id), '[[:space:]_./-]+', '', 'g') = ANY($3))",
+                    hole_ids,
+                    project_id,
+                    canon_ids,
                 )
             # The SQL above fetches CANDIDATES by the separator-free canonical
             # form (that is what silver.collars.hole_id_canonical holds), which
