@@ -57,7 +57,7 @@ class CsvGeochemistryExporter
             if ($includeRee) {
                 $header[] = 'ree_json';
             }
-            fputcsv($handle, $header);
+            fputcsv($handle, $header, escape: '');
 
             $selectCols = [
                 'g.geochem_id',
@@ -146,7 +146,7 @@ class CsvGeochemistryExporter
                             // pass through verbatim so consumers can re-parse.
                             $line[] = $row->ree_json;
                         }
-                        fputcsv($handle, $line);
+                        fputcsv($handle, $line, escape: '');
                     }
                 });
         } finally {

@@ -44,7 +44,7 @@ class CsvSamplesExporter
                 'sample_type',
                 'lab_id',
                 'qaqc_type',
-            ]);
+            ], escape: '');
 
             $query = DB::table('silver.samples as s')
                 ->join('silver.collars as c', 's.collar_id', '=', 'c.collar_id')
@@ -90,7 +90,7 @@ class CsvSamplesExporter
                             $row->sample_type,
                             $row->lab_id,
                             $row->qaqc_type,
-                        ]);
+                        ], escape: '');
                     }
                 });
         } finally {

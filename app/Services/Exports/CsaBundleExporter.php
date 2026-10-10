@@ -95,7 +95,7 @@ class CsaBundleExporter
 
         try {
             $csvFiles['collars.csv'] = $this->writeCsvFile($tmpDir, 'collars', function ($handle) use ($projectId, $filters, &$holeIdByCollar, &$unplaced): void {
-                fputcsv($handle, ['hole_id', 'easting', 'northing', 'elevation', 'total_depth', 'azimuth', 'dip', 'epsg']);
+                fputcsv($handle, ['hole_id', 'easting', 'northing', 'elevation', 'total_depth', 'azimuth', 'dip', 'epsg'], escape: '');
 
                 $collars = CollarExportQuery::forProject($projectId, $filters)
                     ->orderBy('hole_id')
@@ -117,7 +117,7 @@ class CsaBundleExporter
                         $c->azimuth,
                         $c->dip,
                         $c->export_epsg,
-                    ]);
+                    ], escape: '');
                 }
             });
 
@@ -127,7 +127,7 @@ class CsaBundleExporter
             $collarIds = CollarExportQuery::ids($projectId, $filters);
 
             $csvFiles['surveys.csv'] = $this->writeCsvFile($tmpDir, 'surveys', function ($handle) use ($collarIds, &$holeIdByCollar): void {
-                fputcsv($handle, ['hole_id', 'depth', 'azimuth', 'dip']);
+                fputcsv($handle, ['hole_id', 'depth', 'azimuth', 'dip'], escape: '');
 
                 Survey::query()
                     ->whereIn('collar_id', $collarIds)
@@ -142,13 +142,13 @@ class CsaBundleExporter
                                 $s->depth,
                                 $s->azimuth,
                                 $s->dip,
-                            ]);
+                            ], escape: '');
                         }
                     });
             });
 
             $csvFiles['assays.csv'] = $this->writeCsvFile($tmpDir, 'assays', function ($handle) use ($collarIds, &$holeIdByCollar): void {
-                fputcsv($handle, ['hole_id', 'from_depth', 'to_depth', 'sample_type', 'u3o8_ppm', 'au_ppb', 'cu_pct']);
+                fputcsv($handle, ['hole_id', 'from_depth', 'to_depth', 'sample_type', 'u3o8_ppm', 'au_ppb', 'cu_pct'], escape: '');
 
                 Sample::query()
                     ->whereIn('collar_id', $collarIds)
@@ -167,7 +167,7 @@ class CsaBundleExporter
                                 CommodityAssayValue::in($assays, 'U3O8', 'ppm'),
                                 CommodityAssayValue::in($assays, 'Au', 'ppb'),
                                 CommodityAssayValue::in($assays, 'Cu', 'pct'),
-                            ]);
+                            ], escape: '');
                         }
                     });
             });

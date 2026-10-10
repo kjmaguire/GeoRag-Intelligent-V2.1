@@ -62,7 +62,7 @@ class CsvCollarExporter
                 'drill_date',
                 'status',
                 'epsg',
-            ]);
+            ], escape: '');
 
             $collars = CollarExportQuery::forProject($projectId, $filters)
                 ->orderBy('hole_id')
@@ -87,7 +87,7 @@ class CsvCollarExporter
                     $collar->drill_date?->format('Y-m-d'),
                     $collar->getRawOriginal('status'),
                     $collar->export_epsg,
-                ]);
+                ], escape: '');
             }
         } finally {
             fclose($handle);

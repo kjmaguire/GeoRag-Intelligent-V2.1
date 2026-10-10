@@ -47,7 +47,7 @@ class CsvLithologyExporter
                 'grain_size',
                 'logged_by',
                 'logged_date',
-            ]);
+            ], escape: '');
 
             $query = DB::table('silver.lithology as l')
                 ->join('silver.collars as c', 'l.collar_id', '=', 'c.collar_id')
@@ -101,7 +101,7 @@ class CsvLithologyExporter
                             $row->grain_size,
                             $row->logged_by,
                             $row->logged_date,
-                        ]);
+                        ], escape: '');
                     }
                 });
         } finally {

@@ -80,7 +80,7 @@ class CsvAssaysExporter
                 'detection_limit',
                 'below_detection',
                 'qc_flag',
-            ]);
+            ], escape: '');
 
             $query = DB::table('silver.assays_v2 as a')
                 ->join('silver.collars as c', 'a.collar_id', '=', 'c.collar_id')
@@ -141,7 +141,7 @@ class CsvAssaysExporter
                             $row->detection_limit,
                             $row->below_detection ? 'true' : 'false',
                             $row->qc_flag,
-                        ]);
+                        ], escape: '');
                     }
                 });
         } finally {

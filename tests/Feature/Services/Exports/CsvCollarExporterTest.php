@@ -62,6 +62,19 @@ final class CsvCollarExporterTest extends TestCase
         $this->assertEquals(150.0, $row['total_depth']);
     }
 
+    public function test_a_value_with_a_backslash_before_a_quote_round_trips_as_rfc_4180(): void
+    {
+        // fputcsv's default escape ("\") wrote `"Q\"1"`, which a standard
+        // CSV reader (Excel, pandas, an import into a modelling package) takes
+        // apart differently; PHP 8.4 also deprecates relying on that default.
+        $project = $this->exportProject(26913);
+        $this->exportCollar($project, 'Q\\"1', ['x' => 500000.0, 'y' => 6000000.0, 'srid' => 26913]);
+
+        $row = $this->onlyRow((new CsvCollarExporter)->export($project->project_id)['path']);
+
+        $this->assertSame('Q\\"1', $row['hole_id']);
+    }
+
     public function test_the_stored_words_of_a_file_are_exported_as_they_are(): void
     {
         // The ingestion keeps what the file said ("DDH", "Closed"). The model
