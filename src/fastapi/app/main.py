@@ -71,7 +71,6 @@ from app.routers import visualizations as visualizations_router  # Phase H4 §5
 from app.routers import workflow_trigger as workflow_trigger_router  # HAT-13
 from app.services._bedrock import RetiredAzureConfiguration
 from app.services.qdrant_conn import qdrant_client_kwargs
-from app.services.reranker import UnsupportedRerankerBackend
 
 # V1.5-05 — switch to JSON logs at module import so every logger.info() in
 # the app emits a structured payload Promtail can ingest with a single
@@ -141,6 +140,11 @@ def _init_reranker(app: FastAPI) -> None:
     hosted backend turns into a ``reranker_unavailable`` retrieval failure
     per query (see the lifespan comment).
     """
+    # Resolved here, at call time, not bound at import: the `except` below
+    # compares class identity, and a module that is re-executed (the test
+    # suite reloads app.services.reranker) re-creates the class.
+    from app.services.reranker import UnsupportedRerankerBackend  # noqa: PLC0415
+
     _t1 = time.perf_counter()
     try:
         from app.services.reranker import (  # noqa: PLC0415

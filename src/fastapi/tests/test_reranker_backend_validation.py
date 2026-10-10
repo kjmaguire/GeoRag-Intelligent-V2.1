@@ -23,14 +23,13 @@ import app.services.reranker as reranker
 from app.config import settings
 from app.main import POSTURE_CRITICAL_MARKER, _assert_guard_posture, _init_reranker
 from app.services._bedrock import RetiredAzureConfiguration
-from app.services.reranker import (
-    HOSTED_RERANKER_BACKENDS,
-    LOCAL_RERANKER_BACKENDS,
-    SUPPORTED_RERANKER_BACKENDS,
-    UnsupportedRerankerBackend,
-    reranker_backend_is_hosted,
-    validate_reranker_backend,
-)
+
+# Everything from app.services.reranker is read THROUGH THE MODULE, at call time,
+# and never imported by name. tests/test_backend_selection.py reloads that module
+# (importlib.reload re-executes it in place), which re-creates
+# UnsupportedRerankerBackend: a class bound at import would be the old one, and
+# `pytest.raises` would not match what the function now raises. In a full run
+# that was 11 failures that passed in isolation.
 
 # ---------------------------------------------------------------------------
 # Finding 10 -- the supported set
@@ -39,36 +38,36 @@ from app.services.reranker import (
 
 def test_the_supported_set_is_what_the_code_implements() -> None:
     """The three values .env.example, docker-compose and Terraform use."""
-    assert {"bedrock", "cross_encoder", "qwen3_causal"} == SUPPORTED_RERANKER_BACKENDS
-    assert {"bedrock"} == HOSTED_RERANKER_BACKENDS
-    assert {"cross_encoder", "qwen3_causal"} == LOCAL_RERANKER_BACKENDS
-    assert HOSTED_RERANKER_BACKENDS.isdisjoint(LOCAL_RERANKER_BACKENDS)
+    assert {"bedrock", "cross_encoder", "qwen3_causal"} == reranker.SUPPORTED_RERANKER_BACKENDS
+    assert {"bedrock"} == reranker.HOSTED_RERANKER_BACKENDS
+    assert {"cross_encoder", "qwen3_causal"} == reranker.LOCAL_RERANKER_BACKENDS
+    assert reranker.HOSTED_RERANKER_BACKENDS.isdisjoint(reranker.LOCAL_RERANKER_BACKENDS)
 
 
-@pytest.mark.parametrize("value", sorted(SUPPORTED_RERANKER_BACKENDS))
+@pytest.mark.parametrize("value", ["bedrock", "cross_encoder", "qwen3_causal"])
 def test_a_supported_value_passes(value: str) -> None:
-    validate_reranker_backend(value)
+    reranker.validate_reranker_backend(value)
 
 
 @pytest.mark.parametrize(
     "value", ["cohere", "bedrok", "cross-encoder", "crossencoder", "qwen3", "local", "none", "", "stub"]
 )
 def test_anything_else_raises_and_names_the_supported_values(value: str) -> None:
-    with pytest.raises(UnsupportedRerankerBackend) as exc_info:
-        validate_reranker_backend(value)
+    with pytest.raises(reranker.UnsupportedRerankerBackend) as exc_info:
+        reranker.validate_reranker_backend(value)
     message = str(exc_info.value)
     assert repr(value) in message
-    for supported in SUPPORTED_RERANKER_BACKENDS:
+    for supported in reranker.SUPPORTED_RERANKER_BACKENDS:
         assert supported in message
 
 
 def test_only_an_explicitly_local_backend_is_not_hosted() -> None:
-    assert reranker_backend_is_hosted("bedrock")
-    assert not reranker_backend_is_hosted("cross_encoder")
-    assert not reranker_backend_is_hosted("qwen3_causal")
+    assert reranker.reranker_backend_is_hosted("bedrock")
+    assert not reranker.reranker_backend_is_hosted("cross_encoder")
+    assert not reranker.reranker_backend_is_hosted("qwen3_causal")
     # the point of the audit finding:
-    assert reranker_backend_is_hosted("cohere")
-    assert reranker_backend_is_hosted("")
+    assert reranker.reranker_backend_is_hosted("cohere")
+    assert reranker.reranker_backend_is_hosted("")
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +84,7 @@ def test_get_reranker_or_none_raises_rather_than_returning_none(monkeypatch) -> 
         raise AssertionError("a value that is not a backend must not load a local model")
 
     monkeypatch.setattr(reranker, "_get_reranker", _must_not_load)
-    with pytest.raises(UnsupportedRerankerBackend):
+    with pytest.raises(reranker.UnsupportedRerankerBackend):
         reranker.get_reranker_or_none()
 
 
@@ -99,17 +98,17 @@ def test_the_sidecar_loader_refuses_a_typo_too(monkeypatch) -> None:
     """reranker_service calls _get_reranker() directly; a typo there used to
     load the default CrossEncoder and say nothing."""
     monkeypatch.setattr(reranker, "RERANKER_BACKEND", "qwen3")
-    with pytest.raises(UnsupportedRerankerBackend):
+    with pytest.raises(reranker.UnsupportedRerankerBackend):
         reranker._get_reranker()
 
 
 def test_the_lifespan_block_stops_startup_for_an_unsupported_backend(monkeypatch) -> None:
     def boom() -> None:
-        raise UnsupportedRerankerBackend("RERANKER_BACKEND='cohere' is not a reranker backend")
+        raise reranker.UnsupportedRerankerBackend("RERANKER_BACKEND='cohere' is not a reranker backend")
 
     monkeypatch.setattr(reranker, "get_reranker_or_none", boom)
     app = SimpleNamespace(state=SimpleNamespace())
-    with pytest.raises(UnsupportedRerankerBackend):
+    with pytest.raises(reranker.UnsupportedRerankerBackend):
         _init_reranker(app)  # type: ignore[arg-type]
 
 
