@@ -138,6 +138,57 @@ final class DrillholeDetailControllerTest extends TestCase
         );
     }
 
+    public function test_top_assays_by_value_rank_real_values_ahead_of_nulls(): void
+    {
+        // THE BUG: ORDER BY value_ppm DESC sorts NULLs FIRST in Postgres, so a
+        // hole with more than 20 unconvertible values showed 20 empty rows and
+        // none of its real highs. 22 NULL rows + 3 real ones: the old order
+        // returned only NULLs.
+        ['user' => $user, 'project' => $project, 'workspace_id' => $workspaceId] = $this->seedProjectMember();
+        $collarId = $this->seedCollar($project->project_id, $workspaceId);
+
+        $rows = [];
+        foreach ([null, 12.5, 800.0, 3.0] as $i => $ppm) {
+            $rows[] = $this->assayRow($workspaceId, $collarId, "S-{$i}", $ppm);
+        }
+        for ($i = 0; $i < 21; $i++) {
+            $rows[] = $this->assayRow($workspaceId, $collarId, "N-{$i}", null);
+        }
+        DB::table('silver.assays_v2')->insert($rows);
+
+        $this->actingAs($user)
+            ->get('/projects/'.$project->slug.'/holes/'.$collarId.'/detail')
+            ->assertOk()
+            ->assertInertia(function (AssertableInertia $page) {
+                $assays = $page->toArray()['props']['assays'];
+
+                $this->assertCount(20, $assays);
+                $this->assertEquals([800.0, 12.5, 3.0], array_map(
+                    fn (array $a): float => (float) $a['value_ppm'],
+                    array_slice($assays, 0, 3),
+                ));
+                $this->assertNull($assays[3]['value_ppm'], 'NULLs come after every real value');
+            });
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function assayRow(string $workspaceId, string $collarId, string $sampleId, ?float $ppm): array
+    {
+        return [
+            'workspace_id' => $workspaceId,
+            'collar_id' => $collarId,
+            'sample_id' => $sampleId,
+            'from_depth' => 0,
+            'to_depth' => 1,
+            'element' => 'Au',
+            'unit' => 'ppm',
+            'value' => $ppm,
+            'value_ppm' => $ppm,
+        ];
+    }
+
     public function test_drillhole_detail_404_on_unknown_collar(): void
     {
         ['user' => $user, 'project' => $project] = $this->seedProjectMember();

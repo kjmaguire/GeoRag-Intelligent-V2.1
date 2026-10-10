@@ -80,7 +80,10 @@ class DrillholeDetailController extends Controller
             $assayHighlights = $this->safeQuery(
                 fn () => DB::table('silver.assays_v2')
                     ->where('collar_id', $collarId)
-                    ->orderByDesc('value_ppm')
+                    // value_ppm is NULL for a value that could not be put in
+                    // ppm, and Postgres sorts NULLs FIRST on DESC: the "top 20
+                    // by value" opened with the rows that have none.
+                    ->orderByRaw('value_ppm DESC NULLS LAST')
                     ->limit(20)
                     ->get(),
             );
