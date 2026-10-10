@@ -135,6 +135,11 @@
                  URL overflowed it (22001). SQLite does not enforce varchar
                  lengths, so the failure is only observable here. -->
             <file>tests/Feature/Jobs/GenerateExportJobStoresNoUrlTest.php</file>
+            <!-- 2026-10-10: horizon_queue_depth against a REAL Redis. Not a
+                 Postgres test; it is listed here because this CI job has a
+                 Redis service (the SQLite job has none, and the test skips
+                 there), and the key prefix it pins is only observable on one. -->
+            <file>tests/Feature/MetricsEndpointRedisTest.php</file>
             <!-- 2026-10-10: the collar exporters, run on persisted rows. They
                  read silver.collars.geom_4326 through PostGIS (ST_Transform
                  into the project's CRS or the collar's UTM zone), which SQLite
