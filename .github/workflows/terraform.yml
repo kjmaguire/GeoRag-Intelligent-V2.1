@@ -226,6 +226,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: production
+    # Joins cd.yml's deploy group, so an apply and a deploy never interleave.
+    # CD copies each family's latest task-definition revision and swaps the
+    # image: an apply that registers a revision between CD's read and CD's
+    # register has its change silently dropped from what runs.
+    #
+    # The JOB, not the workflow, on purpose. A plan registers nothing, and a
+    # workflow-level group would make every plan-only run queue behind a
+    # deploy and, worse, displace one that was already queued: GitHub keeps
+    # one pending run per group and cancels the older when a newer arrives.
+    # That rule still holds here, both ways round: a deploy queued behind this
+    # apply is replaced by a newer one, and an apply queued behind a deploy is
+    # cancelled by a newer deploy (re-dispatch it). Expect deploys to queue
+    # behind an apply that is waiting for approval, too; approve or reject
+    # promptly. deploy/aws/ci/tests/run.sh fails if the group name drifts
+    # from cd.yml's.
+    concurrency:
+      group: deploy-georag
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write

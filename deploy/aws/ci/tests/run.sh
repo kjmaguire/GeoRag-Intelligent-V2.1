@@ -327,6 +327,23 @@ run_gate FAKE_AWS_MISSING="sparse"
 printf '%s' "$OUT" | grep -q 'found 9 of the 10 services' || fail_case "must say how many were found: ${OUT}"
 done_case "$f"
 
+# --- constants that must agree across files ---------------------------------
+# terraform.yml's apply JOB joins cd.yml's deploy group (a plan registers
+# nothing and must not queue behind, or displace, a deploy).
+begin workflow_apply_job_shares_the_deploy_group; f=$FAIL
+# The blocks are captured first: `job_block ... | grep -q` under pipefail dies of
+# SIGPIPE when grep exits on its first match before awk has finished writing.
+APPLY_BLOCK=$(job_block apply)
+PLAN_BLOCK=$(job_block plan)
+cd_group=$(awk '/^concurrency:/{c=1;next} c && /^[a-z]/{exit} c && /^  group:/{print $2; exit}' "$CD")
+apply_group=$(awk '/^    concurrency:/{c=1;next} c && /^    [a-z]/{exit} c && /^      group:/{print $2; exit}' <<<"$APPLY_BLOCK")
+[ -n "$cd_group" ] || fail_case "cannot read cd.yml's concurrency group"
+[ "$apply_group" = "$cd_group" ] || fail_case "apply's group is '${apply_group}', cd.yml's is '${cd_group}': a terraform apply can race a deploy"
+grep -Eq '^      cancel-in-progress: false$' <<<"$APPLY_BLOCK" || fail_case "the apply job must never cancel a deploy that is running"
+grep -q 'concurrency:' <<<"$PLAN_BLOCK" && fail_case "a read-only plan must not join the deploy group"
+grep -Eq '^  cancel-in-progress: false$' "$CD" || fail_case "cd.yml must never cancel a running deploy"
+done_case "$f"
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

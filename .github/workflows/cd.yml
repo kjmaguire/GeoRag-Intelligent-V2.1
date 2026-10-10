@@ -80,6 +80,12 @@ concurrency:
   # SHA and then the newest, in trigger order. Kept at the workflow level, not
   # on the deploy job: a job-level group would let a slower build of an OLDER
   # SHA queue its deploy behind a newer one and then roll production back.
+  #
+  # terraform.yml's apply JOB joins this same group, so an apply and a deploy
+  # cannot interleave: CD copies each family's latest task-definition revision
+  # and swaps the image, so an apply that registers a revision between CD's
+  # read and CD's register has its change silently dropped from what runs.
+  # deploy/aws/ci/tests/run.sh fails if the two group names drift apart.
   group: deploy-georag
   cancel-in-progress: false
 
