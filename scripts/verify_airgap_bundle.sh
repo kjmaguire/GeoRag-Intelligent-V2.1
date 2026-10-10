@@ -64,17 +64,49 @@ check "README.md present"         "[ -f '$STAGE/README.md' ]"
 check "values-airgap.yaml present" "[ -f '$STAGE/values-airgap.yaml' ]"
 check "chart .tgz present"        "ls '$STAGE/chart/'*.tgz >/dev/null 2>&1"
 check "images directory non-empty" "[ -n \"\$(ls -A '$STAGE/images' 2>/dev/null)\" ]"
+check "images/index.txt present"  "[ -f '$STAGE/images/index.txt' ]"
 
+# How many images a bundle should hold is not a number to hardcode here: it is
+# whatever the chart renders, which this script (it never sees the chart's
+# templates) cannot know. This once demanded >= 10 while the chart renders 9
+# unique images, so no correct bundle could pass. The bundle is checked against
+# what it says about itself instead -- MANIFEST.yaml's image_count (below) and
+# images/index.txt, which install.sh reads to name every image it loads.
 echo
-echo "→ image count"
+echo "→ images"
 IMG_COUNT=$(ls "$STAGE/images/"*.tar 2>/dev/null | wc -l)
 TOTAL=$((TOTAL + 1))
-if [ "$IMG_COUNT" -ge 10 ]; then
+if [ "$IMG_COUNT" -ge 1 ]; then
     echo "  [PASS] $IMG_COUNT images bundled"
     PASS=$((PASS + 1))
 else
-    echo "  [FAIL] only $IMG_COUNT images (expected ≥10 for full stack)"
+    echo "  [FAIL] no image tarballs bundled"
     FAILED+=("image count")
+fi
+
+TOTAL=$((TOTAL + 1))
+INDEX_PROBLEMS=""
+if [ -f "$STAGE/images/index.txt" ]; then
+    while IFS=$'\t' read -r tb ref || [ -n "$tb" ]; do
+        case "$tb" in ''|'#'*) continue ;; esac
+        [ -f "$STAGE/images/$tb" ] || INDEX_PROBLEMS="$INDEX_PROBLEMS [index lists missing $tb]"
+        [ -n "$ref" ] || INDEX_PROBLEMS="$INDEX_PROBLEMS [no image reference for $tb]"
+    done < "$STAGE/images/index.txt"
+    for f in "$STAGE/images/"*.tar; do
+        [ -e "$f" ] || continue
+        awk -F'\t' -v t="$(basename "$f")" '$1 == t { found = 1 } END { exit !found }' \
+            "$STAGE/images/index.txt" \
+            || INDEX_PROBLEMS="$INDEX_PROBLEMS [$(basename "$f") not in index]"
+    done
+else
+    INDEX_PROBLEMS=" [images/index.txt missing]"
+fi
+if [ -z "$INDEX_PROBLEMS" ]; then
+    echo "  [PASS] images/index.txt names every tarball, and only tarballs that exist"
+    PASS=$((PASS + 1))
+else
+    echo "  [FAIL] images/index.txt:$INDEX_PROBLEMS"
+    FAILED+=("image index")
 fi
 
 echo

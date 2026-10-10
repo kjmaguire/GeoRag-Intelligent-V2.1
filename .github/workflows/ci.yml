@@ -810,6 +810,13 @@ jobs:
       # while something runs them. Nothing did.
       - name: AWS preflight gate rejects the shapes it exists to reject
         run: bash scripts/tests/aws_preflight_test.sh
+      # The air-gap path (bundler -> verifier -> install.sh) has no cluster to
+      # run on here, but its failures were all about NAMES: install.sh rebuilt
+      # image references from tarball names with a lossy rule, so the first
+      # `ctr image tag` failed and every install aborted. docker, helm, k3s and
+      # kubectl are stubs; the names, the secrets and the helm arguments are not.
+      - name: Air-gap bundle and installer, end to end against stubs
+        run: bash scripts/tests/airgap_test.sh
 
   # ─── Schema/Qdrant drift smoke gate ───────────────────────────────────
   # 2026-08-04 incident: two schema-drift bugs shipped straight through
