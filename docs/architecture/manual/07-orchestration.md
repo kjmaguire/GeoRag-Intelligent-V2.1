@@ -200,9 +200,11 @@ bearer from `app/Services/FastApiJwtMinter.php` (signed with the same
 ### 2.4 Retries, timeouts, concurrency
 
 - Per-task `retries=`: 0 on 18 tasks, 1 on 21, 2 on 9. `execution_timeout`
-  ranges from 2 minutes to 24 hours. `on_failure` hooks exist on
-  `ingest_pdf`, `ingest_zip_archive`, `tiff_normalize` and
-  `stale_run_detector` only.
+  ranges from 2 minutes to 24 hours. `on_failure` hooks exist on eight
+  workflows only: the six `ingest_*` workflows (`ingest_pdf`,
+  `ingest_tabular`, `ingest_spatial`, `ingest_well_logs`,
+  `ingest_geophysics`, `ingest_zip_archive`), `tiff_normalize` and
+  `support_replay`. `stale_run_detector` has none.
 - **Hatchet retries immediately unless a task sets `backoff_factor`.**
   `ingest_pdf`'s `preflight`, `parse`, `persist` and `embed_verify` and
   `tiff_normalize.normalize` (the tasks that call S3, Postgres, Cohere or the
@@ -471,7 +473,7 @@ own dashboard. [Ch 12](12-observability.md) covers the rest.
 | Path | Retry | Dead letter |
 |---|---|---|
 | Horizon job | `tries` on the class (1 for the two long jobs, 3 for the debounce) | `failed_jobs` table; Horizon UI |
-| Hatchet task | `retries=` per task (mostly 0 or 1) | Run marked failed in the engine; `on_failure` hook only on the four ingestion workflows |
+| Hatchet task | `retries=` per task (mostly 0 or 1) | Run marked failed in the engine; `on_failure` hook only on the six `ingest_*` workflows, `tiff_normalize` and `support_replay` |
 | `ingest_*` runs left `started` | `stale_run_detector` re-dispatches deaths in any non-embed stage (`queued` included since 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, then `timed_out` with the declining rule logged. The dispatch comes before any Laravel push and the loop is time-boxed (7 min of a 10 min `execution_timeout`; rows not reached wait for the next tick) | `silver.ingest_progress` |
 | Outbox row | 3 transient failures | `dead_lettered` + `silver.store_reconciliation_findings` |
 | Cron missed while Postgres is stopped | none — not backfilled | nothing records it |
