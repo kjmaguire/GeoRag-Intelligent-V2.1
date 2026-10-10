@@ -35,13 +35,56 @@ export function normaliseValidationState(raw: unknown): ValidationState {
 }
 
 /**
- * CHAT-16 — a completed, non-refused answer with zero citations is an
- * upstream defect (every RAG claim must carry a source_chunk_id). It must
- * not render like a normal, checked answer.
+ * `source_chunk_id`s that carry NO evidence: placeholders the assembler adds
+ * because GeoRAGResponse requires at least one citation (`min_length=1`), and
+ * the ids it mints for a tool that returned zero rows.
+ *
+ * Mirrors `EMPTY_SOURCE_SENTINELS`, `_EMPTY_SOURCE_SUFFIXES` and
+ * `_EMPTY_SOURCE_MARKERS` in src/fastapi/app/agent/response_assembler.py and
+ * the predicate `is_empty_source_id` over them. They are copied, not shared,
+ * so src/fastapi/tests/test_sse_vocabulary_contract.py fails when one side
+ * grows an id the other does not know.
+ */
+export const EMPTY_SOURCE_SENTINELS = [
+    'no-tool-call',
+    'georag_reports:empty',
+    'pg_public_geoscience:empty',
+    'silver.collars:miss',
+    'citation-rejected',
+    'provenance-rejected',
+] as const;
+export const EMPTY_SOURCE_SUFFIXES = [':count=0', ':rows=0:first_row=none'] as const;
+export const EMPTY_SOURCE_MARKERS = [':holes=0:', ':curves=0:reports=0'] as const;
+
+/** True when this id points at nothing: a sentinel, a zero-row result, or no id at all. */
+export function isEmptySourceId(sourceChunkId: unknown): boolean {
+    if (typeof sourceChunkId !== 'string' || sourceChunkId === '') return true;
+    if ((EMPTY_SOURCE_SENTINELS as readonly string[]).includes(sourceChunkId)) return true;
+    if (EMPTY_SOURCE_SUFFIXES.some((suffix) => sourceChunkId.endsWith(suffix))) return true;
+    if (EMPTY_SOURCE_MARKERS.some((marker) => sourceChunkId.includes(marker))) return true;
+    // A hole with a collar but no logged intervals is NON-empty (the collar
+    // metadata answers "tell me about hole X"); only the collar-less form is.
+    return sourceChunkId.endsWith(':intervals=0') && !sourceChunkId.includes(':collar=');
+}
+
+/**
+ * CHAT-16 — a completed, non-refused answer with no citation that points at
+ * evidence is an upstream defect (every RAG claim must carry a
+ * source_chunk_id). It must not render like a normal, checked answer.
+ *
+ * "No citation that points at evidence", not "no citation object": the
+ * producer cannot send `citations: []` (GeoRAGResponse.citations has
+ * min_length=1), so an answer built from nothing arrives with ONE placeholder
+ * citation (`source_chunk_id: "no-tool-call"`), and an array-length test never
+ * fired. Counting only citations whose id is not a sentinel makes the warning
+ * reachable.
  */
 export function isUncitedAnswer(citations: unknown, refusalPayload: unknown): boolean {
     if (refusalPayload) return false;
-    return !Array.isArray(citations) || citations.length === 0;
+    if (!Array.isArray(citations)) return true;
+    return !citations.some(
+        (citation) => !isEmptySourceId((citation as { source_chunk_id?: unknown } | null)?.source_chunk_id),
+    );
 }
 
 /** CHAT-6 — FastAPI's keep-alive rides `status` with heartbeat=true. */

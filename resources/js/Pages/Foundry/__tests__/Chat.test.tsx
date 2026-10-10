@@ -126,6 +126,22 @@ function runFrames() {
     });
 }
 
+/**
+ * The placeholder citation response_assembler appends when nothing was
+ * retrieved: GeoRAGResponse.citations has min_length=1, so a refusal or an
+ * answer built from no source still carries exactly this, never `[]`.
+ */
+const SENTINEL_CITATION = {
+    citation_id: '[DATA-1]',
+    citation_type: 'DATA',
+    source_chunk_id: 'no-tool-call',
+    document_title: 'No source retrieved',
+    section: null,
+    page: null,
+    relevance_score: 0,
+    corpus: 'internal_archive',
+};
+
 describe('Foundry chat', () => {
     it('prefills the question the Workspace copilot handed over (FE-4)', () => {
         window.history.replaceState(null, '', '/projects/shirley-basin/chat?prompt=Summarise%20the%20ore%20zones');
@@ -174,12 +190,15 @@ describe('Foundry chat', () => {
         renderChat();
         await ask('How deep is PLS-22-08?');
 
+        // The frame FastAPI really sends for an answer built from nothing:
+        // GeoRAGResponse.citations has min_length=1, so there is one
+        // placeholder, never `[]` (response_assembler, "no-tool-call").
         await act(async () => {
             handler!({
                 event: 'completed',
                 text: 'It is 412 m deep.',
-                citations: [],
-                confidence: 0.9,
+                citations: [SENTINEL_CITATION],
+                confidence: 0.05,
                 validation_state: 'clean',
             });
         });
@@ -268,7 +287,7 @@ describe('Foundry chat', () => {
                 handler!({
                     event: 'completed',
                     text: '',
-                    citations: [],
+                    citations: [SENTINEL_CITATION],
                     confidence: 0.1,
                     validation_state: 'clean',
                     refusal_payload: {
@@ -298,7 +317,7 @@ describe('Foundry chat', () => {
                 handler!({
                     event: 'completed',
                     text: '',
-                    citations: [],
+                    citations: [SENTINEL_CITATION],
                     refusal_payload: {
                         type: 'refusal',
                         reason_code: 'AMBIGUOUS_HOLE_ID',
