@@ -133,3 +133,8 @@ tests/test_coverage_density_pg.py
 # The hole count is a window function evaluated ahead of LIMIT, and the metres
 # come out of one local UTM frame: only a database proves either.
 tests/test_viz_long_section_pg.py
+
+# ── MVT tile functions: bounding-box prefilter on the 4326 column (GIS audit 2026-10) ──
+# A wrong prefilter silently drops features at tile edges; only a database can say
+# what a tile still contains.
+tests/test_mvt_tile_prefilter_pg.py
