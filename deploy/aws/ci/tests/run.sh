@@ -327,6 +327,43 @@ run_gate FAKE_AWS_MISSING="sparse"
 printf '%s' "$OUT" | grep -q 'found 9 of the 10 services' || fail_case "must say how many were found: ${OUT}"
 done_case "$f"
 
+# --- the vendor roll after an apply ---------------------------------------
+# roll-vendor-services.sh exits 1 whenever a service is REFUSED -- qdrant, when
+# the apply changed its image -- in the dry run as well as with --apply. The
+# step runs under `bash -e`, so the dry-run line used to end it before --apply
+# and left hatchet and redis un-rolled too.
+ROLL_STEP="${WORK}/roll-step.sh"
+step_script "$WORKFLOW" "Roll the vendor services onto their new task definitions" > "$ROLL_STEP"
+FIXTURE="${WORK}/roll-fixture"
+mkdir -p "${FIXTURE}/deploy/aws/upgrade"
+cat > "${FIXTURE}/deploy/aws/upgrade/roll-vendor-services.sh" <<'FAKE_ROLL'
+#!/usr/bin/env bash
+printf '[%s]\n' "$*" >> "$FAKE_ROLL_LOG"
+exit "${FAKE_ROLL_RC:-0}"
+FAKE_ROLL
+run_roll_step() {  # run_roll_step [VAR=VALUE ...]  (cwd = the fixture, shell = what Actions uses)
+  : > "${WORK}/roll.log"
+  OUT=$(cd "$FIXTURE" && env FAKE_ROLL_LOG="${WORK}/roll.log" "$@" bash -eo pipefail "$ROLL_STEP" 2>&1)
+  RC=$?
+}
+
+begin workflow_vendor_roll_step_was_extracted; f=$FAIL
+[ -s "$ROLL_STEP" ] || fail_case "could not extract the vendor-roll step from terraform.yml"
+done_case "$f"
+
+begin workflow_vendor_roll_dry_runs_then_applies; f=$FAIL
+run_roll_step
+[ "$RC" -eq 0 ] || fail_case "exit ${RC}: ${OUT}"
+[ "$(tr -d '\n' < "${WORK}/roll.log")" = "[][--apply]" ] || fail_case "expected a dry run then --apply, got: $(tr '\n' ' ' < "${WORK}/roll.log")"
+done_case "$f"
+
+begin workflow_a_refused_qdrant_still_lets_the_others_roll; f=$FAIL
+run_roll_step FAKE_ROLL_RC=1
+grep -qF '[--apply]' "${WORK}/roll.log" || fail_case "--apply never ran: a refused service in the dry run ended the step, and hatchet and redis were left un-rolled"
+# ...and the refusal must still turn the step red, so it is not forgotten.
+[ "$RC" -ne 0 ] || fail_case "the step went green over a refused service"
+done_case "$f"
+
 # --- constants that must agree across files ---------------------------------
 # terraform.yml's apply JOB joins cd.yml's deploy group (a plan registers
 # nothing and must not queue behind, or displace, a deploy).

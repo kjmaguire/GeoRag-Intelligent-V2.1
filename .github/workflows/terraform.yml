@@ -309,5 +309,12 @@ jobs:
       - name: Roll the vendor services onto their new task definitions
         if: inputs.roll_vendor_services
         run: |
-          bash deploy/aws/upgrade/roll-vendor-services.sh
+          # The first call is the dry run, for the log. It exits 1 whenever a
+          # service is REFUSED (qdrant, when the apply changed its image: that
+          # goes through upgrade-qdrant.sh), and this step runs under `bash -e`,
+          # so that exit ended the step before --apply and left hatchet and
+          # redis un-rolled as well. A refusal is not an error here: --apply
+          # skips the refused service, rolls the rest, and still exits 1 at the
+          # end, so the step goes red and the refusal is not lost.
+          bash deploy/aws/upgrade/roll-vendor-services.sh || true
           bash deploy/aws/upgrade/roll-vendor-services.sh --apply
