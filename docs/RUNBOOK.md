@@ -286,8 +286,8 @@ and is now more:
 
 | While the key is wrong or the task is mid-rollout | Effect |
 |---|---|
-| chat | the query fails; the Anthropic fallback (if configured) answers |
-| **query embedding** | `search_documents` returns an empty result (`retrieval_failure='error'`), so any answer that needs documents **refuses**; structured-data questions can still answer. The Anthropic fallback does not help: it does not embed |
+| chat | the query fails: `LLM_BACKEND` selects exactly one backend and nothing fails over to another (see "LLM backend selection") |
+| **query embedding** | `search_documents` returns an empty result (`retrieval_failure='error'`), so any answer that needs documents **refuses**; structured-data questions can still answer |
 | OCR | scanned pages fall back to `tesseract` (no tables), silently |
 | ingest embedding | `embed_pending_passages` records errors; passages keep `embedding_id IS NULL` and the next sweep retries them |
 
@@ -333,7 +333,7 @@ Each candidate carries a suggested action:
 
 ### Schedule it
 
-Add to the ops cron, Dagster schedule, or GitHub Actions workflow:
+Add to the ops cron or a GitHub Actions workflow:
 
 ```cron
 # Weekly Monday 06:00 UTC — golden-set review.
@@ -343,106 +343,17 @@ Add to the ops cron, Dagster schedule, or GitHub Actions workflow:
 
 ---
 
-## Query escalation tiers + signal-harvesting dashboard
+## vLLM prefix caching (operator-run vLLM endpoint only)
 
-GeoRAG answers queries through three tiers that escalate only when the
-earlier tier returns empty. Every tier emits a Prometheus metric so the
-`GeoRAG — Signal Harvesting` Grafana dashboard can tell you when the
-next tier needs to be enabled or built.
-
-### The three tiers
-
-| Tier | Signal to fire | Cost | Flag |
-|---|---|---|---|
-| **1. Deterministic keyword dispatch** | All queries start here | base latency | always on |
-| **2. Bounded rephrasing retry** | Tier-1 `classifier_fallback + all_tools_empty` | +1 LLM round-trip (Haiku), +≤2 retrieval passes | `AGENTIC_ESCALATION_ENABLED=true` (default) |
-| **3. Full Pydantic AI agent** | Tier-2 rephrasing also empty | +1 agent run w/ up to `AGENTIC_MAX_TOOL_CALLS` tool calls | `AGENTIC_FULL_ESCALATION_ENABLED=false` (default off) |
-
-### When to enable tier 3
-
-Watch the **Escalation success rate (1h)** panel on the signal-harvesting
-dashboard:
-
-- **>0.5** — tier-2 rephrasing is earning its keep. Leave tier 3 off.
-- **0.2–0.5** — tier-2 is marginal. Turn tier 3 on in one deploy and
-  compare success rates.
-- **<0.2** — tier 3 is the right investment. Set
-  `AGENTIC_FULL_ESCALATION_ENABLED=true` in `.env` and recreate the
-  FastAPI container.
-
-### Dashboard at a glance
-
-Grafana URL (dev): `http://localhost:3000/d/georag-signals`
-(requires `--profile dev-monitor` on `docker compose up`).
-
-| Panel | What it tells you |
-|---|---|
-| Escalation rate (30m) | Fraction of queries hitting tier-2. Green = healthy. Yellow/red = classifier widening. |
-| Escalation success rate (1h) | Gates the tier-3 decision above. |
-| Avg rephrasings per escalation | If <1.5, the rephrase prompt is underperforming. |
-| Cache hit rate over time (per backend) | Anthropic ephemeral + vLLM prefix cache both report here. |
-| Routing decisions per second by tier | Healthy: mostly FAST/STANDARD. DEEP dominance = classifier over-escalating. |
-| Failovers per second | >0.01 rps sustained = Anthropic capacity/rate-limit pressure. |
-| Chunks returned per query | Mode 0 = starved retrieval; mode ~5 = full context. |
-| Query duration p50/p95 | p95 spikes = retries or escalation. |
-
-### Operator toggle to turn tier 3 on
-
-```bash
-# 1. Update .env
-echo 'AGENTIC_FULL_ESCALATION_ENABLED=true' >> .env
-
-# 2. Recreate fastapi so env is re-read
-docker compose up -d --no-deps --force-recreate fastapi
-
-# 3. Watch the dashboard for 30 minutes. Key:
-#    - escalation success rate should jump (from tier-2 alone)
-#    - avg duration p95 may rise 3-10s on escalated queries
-#    - if p95 on the general case rises, rollback
-```
-
-### Rollback
-
-```bash
-# Flip the flag off; recreate.
-sed -i 's/^AGENTIC_FULL_ESCALATION_ENABLED=.*/AGENTIC_FULL_ESCALATION_ENABLED=false/' .env
-docker compose up -d --no-deps --force-recreate fastapi
-```
-
-No data migration needed — the flag controls a runtime escalation branch;
-nothing is persisted.
-
----
-
-## vLLM prefix caching (production OpenAI-compatible path)
-
-The FastAPI orchestrator structures OpenAI-compatible calls as two
-messages — a stable `system` (prompt variant + per-project preamble) and
-a per-turn `user` (CONTEXT + question). That's the structural prerequisite
-for vLLM's automatic prefix cache to reuse KV across requests.
-
-**The engine flag must also be set at vLLM startup:**
-
-```bash
-# docker/compose.vllm.yml (overlay) or equivalent
-services:
-  vllm:
-    command:
-      - --model=Qwen/Qwen3-14B-AWQ
-      - --quantization=awq_marlin
-      - --enable-prefix-caching         # ← required for the cache to exist
-      - --max-num-batched-tokens=4096
-      - ...
-```
-
-Without `--enable-prefix-caching`, the prefix is still stable but vLLM
-doesn't cache it — you lose the latency/cost win but the orchestrator
-code remains correct.
-
-**How to verify the cache is hitting:** the orchestrator logs
-`cached_tokens` and `cache_hit_rate` per call when the backend reports
-them. Expect ~0.0 on the first query in a session (cold cache) and
-~0.85–0.95 thereafter within the same project.
+This applies only when `LLM_BACKEND=vllm` points at an OpenAI-compatible
+endpoint you run yourself (`VLLM_URL`) — there is no bundled vLLM service and
+no `docker/compose.vllm.yml` overlay. The orchestrator sends that call as a
+stable `system` message (prompt variant + per-project preamble) and a per-turn
+`user` message (CONTEXT + question), which is the structural prerequisite for
+vLLM's automatic prefix cache. Start your vLLM with `--enable-prefix-caching`;
+without it the prefix is stable but never cached.
+`_call_openai_compatible_llm` logs `cached_tokens` and `cache_hit_rate` per
+call when the backend reports them. See "LLM backend selection" below.
 
 ---
 
@@ -570,9 +481,14 @@ expires before it's useful.
 `MULTI_TENANT_ENFORCEMENT_ENABLED` controls whether
 `POST /internal/queries` rejects `project_id` mismatch (JWT claim vs
 request body) with HTTP 403, or just logs a warning and proceeds. Default
-is False — read `src/fastapi/SECURITY.md` BEFORE flipping it on; any
-Laravel deploy still using X-Service-Key alone (no JWT) will start
-hitting 403s immediately.
+is **True** (`Settings` in `src/fastapi/app/config.py`), and neither the AWS
+task definitions, the Helm chart nor `docker-compose.yml` overrides it, so
+production enforces; `.env.production.example` pins it to true explicitly.
+Only the dev `.env.example` opts out (`MULTI_TENANT_ENFORCEMENT_ENABLED=false`
+with `SINGLE_TENANT_MODE=true`). The opt-out is validated: FastAPI refuses to
+start with enforcement off unless `SINGLE_TENANT_MODE=true` is also set. Read
+`src/fastapi/SECURITY.md` BEFORE relaxing it — the relaxed posture is safe
+only for a single-customer deployment.
 
 The matching FastAPI-side defence-in-depth is the GUC-aware RLS policy
 on `silver.collars` and `silver.samples` — when the multi-tenant flag is
@@ -588,7 +504,9 @@ compatible).
 ## `LARAVEL_INTERNAL_URL` — the FastAPI → Laravel callback host
 
 **Incident 2026-08-18.** This variable was never set on `fastapi-cc` or
-`hatchet-worker-cc`. `laravel_bridge._laravel_base()` therefore fell back to
+`hatchet-worker-cc` (the Azure Container Apps that ran FastAPI and the Hatchet
+worker before production moved to AWS ECS, ADR-0022).
+`laravel_bridge._laravel_base()` therefore fell back to
 its Herd-local default, `http://laravel.test`, which resolves to nothing
 inside a container. Every callback into Laravel had been failing in
 production, silently:
@@ -600,6 +518,10 @@ production, silently:
 | `post_admin_surface_updated` | `cost_burn_watcher` + all admin surfaces |
 | `post_report_build_progress` | §15 report-build progress bar |
 | `post_workspace_activity`, `post_user_inbox_updated` | Activity feed, inbox badge |
+
+(`post_report_build_progress`, `post_workspace_activity` and
+`post_user_inbox_updated` have since lost their Laravel routes — see
+"FastAPI → Laravel callback channel" below.)
 
 Every helper swallows its own exception by design (a broadcast must never
 fail the workflow that made real progress), so the only symptom was a
@@ -615,38 +537,32 @@ when it takes the fallback — see `test_laravel_bridge_base_url.py`.
 
 ### The correct value
 
+On ECS, `deploy/aws/terraform/config.tf` sets it on both `fastapi` and
+`hatchet-worker` to the Cloud Map name of the `laravel-octane` service:
+
 ```
-LARAVEL_INTERNAL_URL=http://laravel-octane-cc
+LARAVEL_INTERNAL_URL=http://laravel-octane.<namespace>:80
 ```
 
-Container Apps resolves bare app names inside the environment. Verified from
-inside `hatchet-worker-cc` on 2026-08-18 — `laravel-octane-cc` →
-`100.100.235.221`, `/up` → 200. Two alternatives also resolve but are worse:
+`<namespace>` is the stack's private DNS namespace
+(`aws_service_discovery_private_dns_namespace.this.name`). The fully qualified
+`<service>.<namespace>` form is required: an awsvpc task gets no search domain
+for that namespace, so a bare `laravel-octane` does not resolve (the header of
+`scripts/check-internal-urls.py` explains it). Compose defaults it to
+`http://laravel-octane`, the service name on its Docker network.
 
-- `laravel-octane-cc.internal.<env-domain>` — works, but pins the environment
-  domain into config for no benefit.
-- `laravel-octane-cc.<env-domain>` (the public FQDN) — works, but hairpins
-  every internal callback out through the public internet.
-
-`cd.yml`'s "Deploy fastapi image" step now re-asserts the variable on every
-deploy via `--set-env-vars`, so it cannot silently drift back out. To apply it
-to the currently-running revisions without waiting for a deploy:
+It lives in Terraform, so it cannot silently drift out of a task definition,
+and CI fails when a service-to-service URL falls back to a compose hostname
+(`scripts/check-internal-urls.py`, run by `ci.yml`). To change it, edit
+`config.tf` and apply Terraform; the `-cc` Container Apps, `az containerapp
+update` and a deploy step that re-asserts the variable no longer exist. If the
+"falling back to http://laravel.test" error ever reappears, read the worker's
+and FastAPI's log streams (`ops/runbooks/aws-oncall.md` §6):
 
 ```bash
-for target in fastapi-cc hatchet-worker-cc; do
-  az containerapp update -g georag -n "$target" \
-    --set-env-vars "LARAVEL_INTERNAL_URL=http://laravel-octane-cc"
-done
+aws logs tail /ecs/georag --since 1h --log-stream-name-prefix hatchet-worker \
+  --filter-pattern laravel_bridge
 ```
-
-Then confirm the 5-minute `cost_burn_watcher` warning stops:
-
-```bash
-az containerapp logs show -g georag -n hatchet-worker-cc --tail 200 | grep laravel_bridge
-```
-
-`hatchet-worker-cc` runs 2 replicas and `logs show` returns one — check both
-before concluding it is clean.
 
 ## Key separation note — `FASTAPI_SERVICE_KEY` does double duty
 
@@ -704,36 +620,35 @@ curl -i http://localhost:8888/internal/queries \
 
 ---
 
-## Observability rollout — Logfire / OTel toggles
+## Observability rollout — Logfire toggles
 
-**Context.** P1 #9 added gated Logfire instrumentation on the Pydantic AI
-agent. Default is OFF — no surprise outbound traffic. There are three
-exporters; pick the one that matches your trace-aggregation stack.
+**Context.** P1 #9 added gated Logfire instrumentation to FastAPI. Default is
+OFF (`LOGFIRE_ENABLED=false`) — no surprise outbound traffic.
 
-### Decision tree
+**The `logfire` package is not installed.** It is a dependency of neither
+`src/fastapi/pyproject.toml` nor `uv.lock` (only `logfire-api`, which Pydantic
+AI pulls in transitively), so `LOGFIRE_ENABLED=true` currently fails at
+`import logfire`: FastAPI logs `Logfire init failed — proceeding without OTel
+instrumentation` (`app/main.py`, lifespan section 0) and starts without it.
+Add `logfire` to the FastAPI dependencies and refresh `uv.lock` before turning
+it on; until then the toggles below do nothing.
 
-```
-                ┌── LOGFIRE_TOKEN set?
-       Yes ─────│
-                └── Spans go to logfire.pydantic.dev (hosted backend).
-                    Requires outbound HTTPS to *.pydantic.dev.
+### Settings
 
-                ┌── LOGFIRE_OTEL_ENDPOINT set (e.g. http://tempo:4317)?
-       Yes ─────│
-                └── Spans go to your local OTLP collector (Tempo, Jaeger,
-                    Honeycomb, Grafana Cloud). Container must reach it.
+`LOGFIRE_ENABLED`, `LOGFIRE_TOKEN`, `LOGFIRE_SERVICE_NAME` (default
+`georag-fastapi`) and `LOGFIRE_ENVIRONMENT` (default `dev`) are the only
+Logfire settings. With `LOGFIRE_TOKEN` set, spans go to Logfire's hosted
+backend (requires outbound HTTPS to `*.pydantic.dev`). With no token and
+`LOGFIRE_ENABLED=true` it runs in local-only mode (`send_to_logfire=False`):
+spans are created in-process and shipped nowhere. There is no OTLP-endpoint
+setting — `LOGFIRE_OTEL_ENDPOINT` does not exist.
 
-       Neither? Logfire runs in LOCAL-ONLY mode (send_to_logfire=False).
-                Spans created in-process; useful for `logfire.span(...)`
-                debugging without shipping data anywhere.
-```
-
-### Enable for one-off triage
+### Enable for one-off triage (after the package is installed)
 
 ```bash
 # In .env:
 LOGFIRE_ENABLED=true
-LOGFIRE_TOKEN=pylf_xxx       # or LOGFIRE_OTEL_ENDPOINT=...
+LOGFIRE_TOKEN=pylf_xxx       # omit for local-only mode
 LOGFIRE_SERVICE_NAME=georag-fastapi
 LOGFIRE_ENVIRONMENT=prod     # or dev / staging
 
@@ -741,20 +656,15 @@ LOGFIRE_ENVIRONMENT=prod     # or dev / staging
 docker compose restart fastapi
 docker compose logs -f fastapi | grep -i logfire
 # Expect:  "Logfire configured (hosted backend, service=...)"
+#   or, with no token: "Logfire configured in LOCAL-ONLY mode (LOGFIRE_TOKEN unset)"
 ```
 
 ### What you get
 
-Every `agent.run()` produces a span tree showing:
-- System prompt + classifier output
-- Each tool call (parameters, return, latency)
-- Retries (with `audit_label=retry`)
-- LLM call (input/output tokens, cache hit/miss)
-- Final assembled GeoRAGResponse
-
-Combined with the per-tool latency metrics (P1 #16 —
-`georag_tool_duration_seconds`) this gives end-to-end attribution
-without grep-spelunking through Loki.
+`app/main.py` instruments FastAPI requests, asyncpg, httpx and Pydantic AI.
+Pydantic AI is vestigial (CLAUDE.md), so expect request, SQL and outbound-call
+spans rather than a per-agent-run span tree. Per-tool latency is recorded by
+the `georag_tool_duration_seconds` metric (`app/metrics.py`).
 
 ### Disable
 
@@ -768,156 +678,35 @@ and the app continues.
 
 ---
 
-## Cypher allowlist update procedure
+## LLM backend selection — Cohere / Bedrock / vLLM / Anthropic
 
-**Context.** `traverse_knowledge_graph` and `query_graph_by_label`
-interpolate the LLM-supplied `relationship_type` and `label` parameters
-directly into Cypher (Neo4j's API doesn't support parameterising those).
-P2 #28 installed two allowlists in
-`src/fastapi/app/agent/tools.py`:
-
-- `_ALLOWED_GRAPH_LABELS` — node labels the LLM may filter on
-- `_ALLOWED_GRAPH_RELATIONSHIPS` — relationship types the LLM may filter on
-
-### When you add a new graph entity / relationship
-
-If you extend the Dagster Neo4j ingestion to MERGE a new label or
-relationship type, you MUST add it to BOTH allowlists in tools.py and
-ship a test in `test_cypher_allowlist.py`. Otherwise the LLM will
-silently lose the ability to filter by it.
-
-### Symptom of a missed update
-
-A Loki search for `_validate_cypher_label: rejected label=` or
-`_validate_cypher_relationship: rejected rel_type=` shows hits with a
-label/type name that IS in your indexer code. That's the discrepancy.
-Add the identifier to the allowlist; restart fastapi.
-
-### Why not just trust the LLM
-
-Cypher injection is the same shape as SQL injection. A malicious or
-hallucinated `relationship_type="HOSTS] WITH 1 AS x MATCH (n) DETACH DELETE n //"`
-would execute as a destructive query. The allowlist is the cheapest
-defence — same pattern as P0 #2's per-table column allowlist for
-`verify_numerical_claim`.
-
----
-
-## Neo4j Community Edition backup + restore
-
-**Context.** Neo4j Community Edition does NOT have online backup
-(`neo4j-admin backup` is Enterprise-only). The two viable strategies for
-GeoRAG are an offline `database dump` (preferred — produces a portable
-artifact) and a volume-level snapshot (faster but storage-driver
-specific).
-
-### Offline dump (recommended — runs nightly during low-traffic window)
-
-The graph fits in < 100 MB on disk today, so the stop-restart window is
-typically 30–90 s. This procedure ships a portable `.dump` file that can
-be restored on any host with the same Neo4j major version.
-
-```bash
-# 1. Stop Neo4j cleanly so the dump captures a consistent state.
-docker compose stop neo4j
-
-# 2. Run neo4j-admin in a one-shot container against the same data
-#    volume. The --to-path mount writes the dump to a host-side
-#    `backups/` folder we can ship to S3/MinIO/cold storage later.
-mkdir -p backups
-docker compose run --rm \
-  -v georag_neo4j_data:/data \
-  -v $(pwd)/backups:/backups \
-  --entrypoint neo4j-admin \
-  neo4j:2026-community \
-  database dump --to-path=/backups neo4j
-
-# 3. Restart Neo4j.
-docker compose start neo4j
-docker compose ps neo4j   # wait for healthy
-
-# 4. Ship the dump off-host. Naming convention:
-#    georag-neo4j-YYYYMMDD-HHMM.dump
-mv backups/neo4j.dump backups/georag-neo4j-$(date -u +%Y%m%d-%H%M).dump
-mc cp backups/georag-neo4j-*.dump georag/backups/neo4j/
-```
-
-### Restore from dump
-
-```bash
-docker compose stop neo4j
-
-# Wipe the existing data volume — the load is destructive.
-docker volume rm georag_neo4j_data
-docker volume create georag_neo4j_data
-
-docker compose run --rm \
-  -v georag_neo4j_data:/data \
-  -v $(pwd)/backups:/backups \
-  --entrypoint neo4j-admin \
-  neo4j:2026-community \
-  database load --from-path=/backups --overwrite-destination=true neo4j
-
-docker compose start neo4j
-```
-
-### Verification after restore
-
-```bash
-PASS=$(grep ^NEO4J_PASSWORD .env | cut -d= -f2)
-docker compose exec -T neo4j cypher-shell -u neo4j -p "$PASS" \
-  "MATCH (n) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC;"
-# Compare counts against the pre-backup snapshot.
-```
-
-### What NOT to do
-
-- **Don't `docker cp` from a running container.** The data files are
-  open and you'll get a torn read.
-- **Don't `tar` the volume from a running container.** Same problem.
-- **Don't restore a dump from a different Neo4j major version.** 2026.x
-  dumps load only into 2026.x. For cross-major restore, dump as Cypher
-  (`apoc.export.cypher.all`) instead — see APOC docs.
-
-### Backup cadence
-
-| Environment | Frequency | Retention |
-|---|---|---|
-| Dev | On-demand only | Last 3 dumps |
-| Staging | Nightly 02:00 UTC | 14 days |
-| Prod | Nightly 02:00 UTC + before any schema migration | 30 days nightly + 12 monthly |
-
-Automation lives in-container: `docker/neo4j/backup.sh` is mounted into
-`georag-backup-agent` and triggered by Ofelia on the schedule defined in
-the compose `ofelia.job-exec.neo4j-backup.*` labels. See
-`ops/runbooks/_archived/neo4j-backup.md` for operator procedures (DRY_RUN, manual
-trigger, restore).
-
----
-
-## LLM backend selection — Ollama / vLLM / Anthropic
-
-**Context.** The FastAPI orchestrator supports three LLM backends. They
-are mutually exclusive for the PRIMARY path; one of them (vLLM) can also
-serve as a failover target when the primary is Anthropic.
+**Context.** The FastAPI orchestrator calls exactly one chat backend, chosen by
+`LLM_BACKEND`. The values and defaults live in `Settings`
+(`src/fastapi/app/config.py`); `georag-architecture.html` §08 "Backend
+selection" is the reference. There is no automatic failover from one backend to
+another and no `LLM_BACKEND_FALLBACK` setting: an `.env.example` comment still
+describes fallback modes, but nothing reads such a variable, and the
+`georag_llm_failovers_total` counter in `app/metrics.py` is never incremented.
 
 ### Current state (verify with `docker compose exec fastapi env | grep LLM`)
 
-| Variable | Dev default | Notes |
+| `LLM_BACKEND` | Reaches | Needs |
 |---|---|---|
-| `LLM_BACKEND` | `vllm` | GPU inference via the `vllm` container (Ollama cutover complete) |
-| `LLM_PRIMARY_URL` | `http://vllm:8000/v1` | OpenAI-compat endpoint |
-| `LLM_PRIMARY_MODEL` | `Qwen/Qwen3-14B-AWQ` | Qwen 3 14B dense AWQ (reverted from Qwen3-30B-A3B MoE in 2026-05 to free A4500 VRAM for the merged `hatchet-worker` (`WORKER_POOL=all`) embed/rerank/sparse models). Stays resident via vLLM. |
-| `VLLM_MODEL` | `Qwen/Qwen3-14B-AWQ` | The value actually sent to the OpenAI-compat API by FastAPI when `LLM_BACKEND=vllm` — must match `served-model-name` on the container. |
-| `OLLAMA_NUM_CTX` | _(unused)_ | Ollama is deprecated; legacy Modelfiles archived under `docker/_deprecated/ollama/`. |
-| `ANTHROPIC_API_KEY` | empty | Set + flip `LLM_BACKEND=anthropic` to activate |
-| `LLM_BACKEND_FALLBACK` | `downshift` | Only fires when LLM_BACKEND=anthropic |
+| `cohere` (default) | Cohere Command A+ (`COHERE_CHAT_MODEL`, `command-a-plus-05-2026`) on Cohere's own API — `app/agent/llm_cohere.py` | `COHERE_API_KEY`; `COHERE_BASE_URL` defaults to `https://api.cohere.com` |
+| `bedrock` | The same model through a Bedrock Marketplace (SageMaker) endpoint you deploy yourself — `app/agent/llm_bedrock.py`. None exists in production (ADR-0023) | `BEDROCK_CHAT_MODEL_ID` (a model id or the endpoint ARN) |
+| `vllm` | An OpenAI-compatible endpoint you operate yourself; the bundled `vllm` compose service was deleted 2026-07-30 | `VLLM_URL` — FastAPI refuses to start without it; `VLLM_MODEL` defaults to `Qwen/Qwen3-14B-AWQ` |
+| `anthropic` | Anthropic's native SDK (prompt caching, adaptive thinking) | `ANTHROPIC_API_KEY`; `ANTHROPIC_MODEL` defaults to `claude-opus-4-8` |
+
+`LLM_BACKEND=azure` is a hard startup error naming the replacement (Azure AI
+Foundry was retired 2026-09-08, ADR-0022). With `GEORAG_ENV=production`, a
+missing key or URL for the selected backend is logged CRITICAL at startup.
 
 ### Flip to Anthropic (cloud) primary
 
-This activates the prompt-cache + tier-routing + real-streaming +
-multi-turn-correction code paths that ship this codebase but are
-dormant under Ollama.
+This activates the Anthropic-only code paths — prompt caching, adaptive thinking
+and the multi-turn correction splice — which the other backends do not use.
+These are the compose steps; on ECS `ANTHROPIC_API_KEY` is not provisioned
+(`ops/runbooks/secret-rotation.md` §14).
 
 ```bash
 # 1. Get an API key
@@ -939,57 +728,17 @@ docker compose logs fastapi | grep -i "Anthropic client ready"
 docker compose logs -f fastapi | grep -E "_call_anthropic|_call_openai"
 ```
 
-### Flip to vLLM primary
+Anthropic is outside the contracted provider set, so `_call_anthropic_llm` is
+checked by the egress gate (`app/agent/egress_gate.py`): it is default-deny, and
+for a workspace whose `allow_external_llm` setting is not true the call is
+refused (`EGRESS_BLOCKED`) instead of answered. Cohere and Bedrock are not gated.
 
-vLLM is the canonical inference path for both dev and prod (Ollama
-cutover complete — see `docs/model_migration.md`). The dev workstation
-(RTX A4500, 20 GB) serves `Qwen/Qwen3-14B-AWQ` with `awq_marlin` kernels
-at `--max-model-len=8192` and `--gpu-memory-utilization=0.80` (leaves
-VRAM headroom for the co-tenant `hatchet-worker` (`WORKER_POOL=all`)
-embed/rerank/sparse models); prod hardware sizes are set by the
-production-readiness doc.
+### Pointing at an operator-run vLLM endpoint
 
-```bash
-# 1. Confirm AWQ Qwen3-14B fits + serves at acceptable throughput
-./ops/validation/vllm_a4500_smoke.sh
-# 2. (gated models) provide HF token
-sed -i 's/^HF_TOKEN=.*/HF_TOKEN=hf_XXXX/' .env
-# 3. Start vLLM (overlay; mutually exclusive with the dev-llm Ollama
-#    profile during the cutover window)
-docker compose -f <canonical>.yml -f docker/compose.vllm.yml \
-  --profile gpu-llm up -d vllm
-# 4. Wait for healthy (cold weight-load takes 60-90 s on the A4500;
-#    cached afterwards via the named HF cache volume)
-docker compose ps vllm
-# 5. Flip the backend
-sed -i 's|^LLM_BACKEND=.*|LLM_BACKEND=vllm|' .env
-sed -i 's|^LLM_PRIMARY_URL=.*|LLM_PRIMARY_URL=http://vllm:8000/v1|' .env
-docker compose restart fastapi
-```
-
-### Anthropic + local-LLM failover (belt-and-braces production)
-
-When Anthropic returns 429/529 the orchestrator can either downshift
-(cheaper Anthropic tier) OR cross-backend-failover to the local vLLM.
-The cross-backend path captures a truly independent failure domain:
-
-```bash
-# Run BOTH services — Anthropic primary, vLLM as failover target
-docker compose -f <canonical>.yml -f docker/compose.vllm.yml \
-  --profile gpu-llm up -d vllm
-sed -i 's/^LLM_BACKEND_FALLBACK=.*/LLM_BACKEND_FALLBACK=local_llm/' .env
-docker compose restart fastapi
-```
-
-The orchestrator's `LLM_BACKEND_FALLBACK=local_llm` branch routes
-`anthropic.APIStatusError(429|529)` through `_call_openai_compatible_llm`
-against `VLLM_URL` / `VLLM_MODEL` (see
-`app/agent/orchestrator.py::run_deterministic_rag`). Failover events
-emit the `georag_llm_failovers_total{from_tier=…, to=…}` counter.
-
-The legacy alias `LLM_BACKEND_FALLBACK=deepseek` is still accepted by
-the orchestrator and routes to the same code path — kept for back-compat
-through the cutover window; will be removed in Phase 2.
+Set `LLM_BACKEND=vllm`, `VLLM_URL` (the endpoint's OpenAI-compatible base URL)
+and `VLLM_MODEL` (the model name that endpoint serves), then recreate
+`fastapi`. Nothing in this repo deploys or sizes that endpoint; see "vLLM prefix
+caching" above.
 
 ### Sanity checks after any flip
 
@@ -1004,151 +753,26 @@ print('ANTHROPIC_API_KEY set:', bool(settings.ANTHROPIC_API_KEY))
 
 # Per-attempt audit log shows which model handled each call
 docker compose logs fastapi --tail=200 | grep "_call_llm: attempt"
-# Expect: "_call_llm: attempt=1/8 label=primary model=claude-sonnet-4-6..."
+# Expect: "_call_llm: attempt=1/8 label=agentic_retrieval model=<effective_llm_model> ..."
 ```
 
 ---
 
-## Ollama model-upgrade decision matrix
+## Qdrant snapshots + re-embedding
 
-> **⚠️ HISTORICAL CONTEXT (pre-Module-5 migration, 2026-04-21)**
->
-> This section was written when `qwen2.5:14b` was the primary. The stack
-> has since migrated to **`qwen3:30b-a3b` (MoE)** via the Module 5 Qwen
-> migration. The VRAM math in this section is correct for dense-model
-> sizing but doesn't reflect MoE (A3B = 3B active params, different KV
-> cache math) or the Qwen 3 thinking-mode budget behavior.
->
-> Hardware refresh 2026-05-08 — the table below was sized for the prior
-> RTX 4080 16 GB. Actual dev hardware is now NVIDIA RTX A4500 20 GB
-> (Ampere) on a Threadripper Pro 5955WX. The +4 GB on the new card lets
-> qwen3:30b-a3b run cleanly at 24K context with `OLLAMA_NUM_PARALLEL=1`,
-> and Q5_K_M with a small Threadripper-friendly CPU offload.
->
-> For the current primary model, context, and thinking-mode state, see:
->   - `docs/model_migration.md` (final-state table at the bottom)
->   - `ops/baselines/capacity-planning.md` (refresh 2026-05-08)
->   - `ops/audit/2026-04-21-tool-call-01-investigation.md` (thinking-mode
->     budget discovery)
->   - `memory/project_module_5_status.md` (current state summary)
->
-> This section preserved unchanged below as the historical dense-model
-> reference. Use when evaluating a fallback-to-dense scenario.
-
-**Context.** The chat backend defaults to `qwen2.5:14b` Q4_K_M because
-that's the largest model that fits cleanly on RTX 4080 (16 GB VRAM)
-with 24 K context AND `OLLAMA_NUM_PARALLEL=2`. Disk size is rarely the
-binding constraint — VRAM is.
-
-### VRAM budget math (verify with `nvidia-smi --query-gpu=memory.total`)
-
-For any candidate model:
-
-```
-total_vram_needed
-  = model_weights_size                                  # Q4_K_M ≈ ~param_count × 0.6 bytes
-  + (n_layers × kv_heads × head_dim × 2 × ctx × 2)      # KV cache @ FP16
-        × num_parallel_sessions
-```
-
-With `OLLAMA_KV_CACHE_TYPE=q8_0`, KV cache size is halved.
-With `OLLAMA_FLASH_ATTENTION=1`, attention compute is faster but doesn't
-materially change memory.
-
-### Models we care about, on RTX 4080 (16 GB)
-
-| Model | Q4 weights | KV/session @ 24K, q8_0 | Total @ parallel=2 | Fits? | Quality vs current |
-|---|---|---|---|---|---|
-| `qwen2.5:14b` (current) | 9 GB | 2.3 GB | **~13.6 GB** | ✅ | baseline |
-| `qwen2.5:14b-georag` (current + bakes ctx + drops Qwen SYSTEM) | 9 GB | 2.3 GB | ~13.6 GB | ✅ | + identity-leak fix |
-| `qwen2.5:32b` Q4_K_M | 19 GB | 3.2 GB | **~25 GB** | ❌ overflows → measured **0.28 tok/s** (see below) | unusable |
-| `qwen2.5:32b` Q3_K_M | 14 GB | 3.2 GB | ~20 GB | ❌ overflows by 4 GB | likely also CPU-offload |
-| `deepseek-r1-distill-qwen-14b` | 9 GB | 2.3 GB | ~13.6 GB | ✅ | better reasoning per benchmarks; same VRAM |
-| `gpt-oss:20b` Q4 | 12 GB | 2.8 GB | ~17.6 GB | ❌ overflows by 1.6 GB | likely CPU-offload |
-| `mistral-small:24b` Q4 | 14 GB | 2.5 GB | ~19 GB | ❌ overflows by 3 GB | likely CPU-offload |
-| `llama3.1:8b` Q4 | 5 GB | 1.5 GB | ~8 GB | ✅ huge headroom | smaller / less agent-tuned |
-
-**Anything that overflows DOES load** — Ollama partially CPU-offloads
-rather than refusing. Live measurement against `qwen2.5:32b` on this
-hardware (RTX 4080 16 GB), 2026-04-17:
-
-```
-qwen2.5:32b    21 GB    46%/54% CPU/GPU    4096    ← Ollama auto-shrunk context from 24K
-nvidia-smi:    14,988 MiB used / 16,376 MiB total — 1 GB free
-Generation:    48 completion tokens in 173.9 s = 0.28 tok/s
-```
-
-That's **~125× slower** than `qwen2.5:14b` on full-GPU. A 1000-token
-RAG answer would take ≈60 minutes. The FastAPI `TIMEOUT_GATHER_S=8`
-fires on every query well before the LLM produces anything useful.
-
-`qwen2.5:32b` is on disk in `ollama_models` for independent
-verification but **must not be set as `LLM_PRIMARY_MODEL` on this
-hardware**. Remove with `docker compose exec ollama ollama rm qwen2.5:32b`
-to reclaim 19 GB of disk if you've satisfied yourself with the result.
-
-### What to do
-
-1. **Today (16 GB VRAM)**: stay on `qwen2.5:14b-georag` (the custom
-   variant built from `docker/ollama/Modelfile.qwen2.5-14b-georag`).
-   Switch `LLM_PRIMARY_MODEL=qwen2.5:14b-georag` in `.env` once you've
-   built the variant — it strips the baked-in Qwen SYSTEM, bakes the
-   24 K context, and bakes the 4 K output cap.
-2. **Same hardware, different model**: try
-   `deepseek-r1-distill-qwen-14b` — same VRAM footprint as current,
-   often better reasoning on multi-hop RAG. Pull and A/B against the
-   golden query set:
-   ```bash
-   docker compose exec ollama ollama pull deepseek-r1:14b
-   ```
-3. **Hardware refresh path**: 24 GB VRAM (RTX 4090, A5000) unlocks
-   `qwen2.5:32b` Q4 cleanly with 2 parallel sessions. 48 GB VRAM
-   (A6000) unlocks `qwen2.5:72b` Q4 + a 70b distill of DeepSeek R1.
-
-### Build the GeoRAG variant + switch primary
-
-```bash
-# Build (one-shot — image stays in ollama_models volume)
-docker compose exec -T ollama bash -c '
-cat > /tmp/Modelfile.georag <<EOF
-FROM qwen2.5:14b
-SYSTEM ""
-PARAMETER num_ctx 24576
-PARAMETER num_predict 4096
-PARAMETER temperature 0.1
-EOF
-ollama create qwen2.5:14b-georag -f /tmp/Modelfile.georag
-'
-
-# Switch primary
-sed -i 's/^LLM_PRIMARY_MODEL=.*/LLM_PRIMARY_MODEL=qwen2.5:14b-georag/' .env
-docker compose restart fastapi
-```
-
-### Verify which model just answered a query
-
-```bash
-docker compose exec ollama ollama ps
-# NAME                  ID  SIZE    PROCESSOR    CONTEXT  UNTIL
-# qwen2.5:14b-georag   ... 11.5 GB 100% GPU     24576    5 min
-```
-
-`PROCESSOR=100% GPU` is what you want. Anything with `% CPU` in the
-mix means the model didn't fit and you're paying ~5× latency penalty.
-
----
-
-## Qdrant snapshots + zero-downtime re-index
+The live collection is `georag_chunks` (1024-dim dense + SPLADE++ sparse
+vectors; `RETRIEVAL_USE_DOCUMENT_PASSAGES` defaults to true, ADR-0010).
+`georag_reports` is the legacy 384-dim collection: nothing writes it any more,
+and `search_documents` reads it only if that flag is set false.
 
 ### Online snapshot (Community Edition)
 
-Unlike Neo4j Community (which needs the DB stopped to dump), Qdrant's
-snapshot API works while the collection is online. A 100 MB collection
-snapshots in ~1 s on NVMe.
+Qdrant's snapshot API works while the collection is online. A 100 MB
+collection snapshots in ~1 s on NVMe.
 
 ```bash
 # Snapshot one collection
-curl -X POST http://localhost:6333/collections/georag_reports/snapshots
+curl -X POST http://localhost:6333/collections/georag_chunks/snapshots
 
 # Snapshot every collection
 for c in $(curl -s http://localhost:6333/collections | \
@@ -1157,21 +781,21 @@ for c in $(curl -s http://localhost:6333/collections | \
 done
 
 # List snapshots for a collection
-curl http://localhost:6333/collections/georag_reports/snapshots
+curl http://localhost:6333/collections/georag_chunks/snapshots
 
 # Download (snapshot file lives under /qdrant/storage/snapshots/<collection>/)
-SNAP=$(curl -s http://localhost:6333/collections/georag_reports/snapshots | \
+SNAP=$(curl -s http://localhost:6333/collections/georag_chunks/snapshots | \
        python3 -c "import sys,json; print(json.load(sys.stdin)['result'][-1]['name'])")
-curl -o backups/georag_reports.snapshot \
-  "http://localhost:6333/collections/georag_reports/snapshots/$SNAP"
+curl -o backups/georag_chunks.snapshot \
+  "http://localhost:6333/collections/georag_chunks/snapshots/$SNAP"
 ```
 
 ### Restore from snapshot
 
 ```bash
 # Upload + recover into a (possibly-wiped) collection
-curl -X PUT "http://localhost:6333/collections/georag_reports/snapshots/upload" \
-  -F "snapshot=@./backups/georag_reports.snapshot"
+curl -X PUT "http://localhost:6333/collections/georag_chunks/snapshots/upload" \
+  -F "snapshot=@./backups/georag_chunks.snapshot"
 ```
 
 ### Backup cadence (recommended)
@@ -1182,58 +806,39 @@ curl -X PUT "http://localhost:6333/collections/georag_reports/snapshots/upload" 
 | Staging | Nightly 02:00 UTC | 14 days | S3/MinIO |
 | Prod | Nightly + before any reindex | 30 days daily + 12 monthly | S3/MinIO + offsite |
 
-Automate with a host cron entry that iterates collections, posts
-snapshots, downloads each, ships to MinIO. Skeleton lives in
-`scripts/qdrant_snapshot.sh` — write when the prod path is on the
-roadmap.
+Nothing automates this today: the per-store `backup_*` workflows were deleted
+2026-08-23, no `scripts/qdrant_snapshot.sh` exists, and ADR-0024 records that
+Qdrant has no backup of its own beyond the snapshots
+`deploy/aws/upgrade/upgrade-qdrant.sh` takes when it runs (recovery from a
+corrupted collection is a re-embed). The ADR-0025 cutover took its snapshot with
+the `snapshot` step of `.github/workflows/embed5-cutover.yml`.
 
 ---
 
-## Qdrant zero-downtime re-index via collection alias
+## Re-embedding `georag_chunks` (there is no alias swap)
 
-HNSW `m` is IMMUTABLE after collection creation. Same for `distance`
-and `vector_size`. To change any of those you must create a fresh
-collection + copy data + swap.
-
-```bash
-# 1. Create v2 with new config
-curl -X PUT http://localhost:6333/collections/georag_reports_v2 \
-  -H "Content-Type: application/json" \
-  -d '{"vectors":{"size":384,"distance":"Cosine"},"hnsw_config":{"m":64}}'
-
-# 2. Re-ingest from source (Dagster re-run)
-docker compose exec dagster-webserver dagster asset materialize \
-  --select index_reports --config '{...}'
-
-# 3. Verify the new collection's health
-curl http://localhost:6333/collections/georag_reports_v2
-
-# 4. Atomic alias swap. Reads on `georag_reports` flip to v2 instantly
-#    without any downtime; any in-flight request completes against the
-#    old collection because Qdrant doesn't rescope in-flight queries.
-curl -X POST http://localhost:6333/collections/aliases \
-  -H "Content-Type: application/json" \
-  -d '{
-    "actions": [
-      {"create_alias": {"collection_name": "georag_reports_v2", "alias_name": "georag_reports"}},
-      {"delete_alias": {"alias_name": "georag_reports_old"}}
-    ]
-  }'
-
-# 5. Keep the old collection as "v1" for a week before deleting, so a
-#    bad migration can be rolled back instantly.
-```
-
-FastAPI `search_documents` targets the alias name `georag_reports`, so
-no code change is needed for the swap.
+There is no Qdrant alias: `search_documents` and the embed sweep address the
+concrete collection `georag_chunks`, so its name is fixed and the alias-swap
+re-index this section used to describe does not apply. To re-encode — a new
+embedding model, or enriched passage text — take a snapshot first (above), then
+run `src/fastapi/scripts/reset_embeddings_for_reencode.py` (`--all` for a model
+change; it asks first) and let `embed_pending_passages` (every 10 minutes, plus
+its daily run) re-encode every passage from `silver.document_passages`.
+Retrieval is degraded until that sweep finishes, and a collection holding two
+embedding models returns meaningless cosines, so run the reset and the sweep in
+one sitting. The ADR-0025 cutover
+(`docs/adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md`, run from
+`.github/workflows/embed5-cutover.yml`) is the worked example, including the
+snapshot rollback.
 
 ---
 
 ## Qdrant access control
 
-**Dev posture (current).** Qdrant listens on port 6333 but the port is
-not exposed externally — only the internal `georag` Docker network
-reaches it. `QDRANT_API_KEY` in `.env` is empty. This is fine because
+**Dev posture (current).** Qdrant listens on port 6333, published on the
+host loopback only (`${GEORAG_BIND_ADDR:-127.0.0.1}` in `docker-compose.yml`),
+so the `georag` Docker network and a shell on the host reach it, not other
+machines. `QDRANT_API_KEY` in `.env` is empty. This is fine because
 an attacker who can already reach the internal network has bypassed a
 much bigger security boundary.
 
@@ -1263,13 +868,13 @@ docker compose exec qdrant curl -s -o /dev/null -w "%{http_code}\n" \
 
 ## Redis — persistence, access control, and database schema
 
-**Context.** One Redis 8.4 instance backs four concerns:
+**Context.** One Redis instance (8.6.4 in compose, 8.10.0 on ECS) backs four concerns:
 
 | db | Purpose | Loss-tolerance |
 |----|---------|-----------------|
 | db0 | Horizon supervisor state + Laravel sessions + queue jobs | **NOT tolerant** — restart without persistence = logged-out users + lost queued jobs |
 | db1 | Laravel application cache | Tolerant (re-populates) |
-| db2 | FastAPI chat response cache + project-graph-entities cache | Tolerant |
+| db2 | FastAPI chat response cache | Tolerant |
 | db3 | Reserved for future / operator use | — |
 
 ### Persistence
@@ -1292,8 +897,7 @@ If you want to split into a durable queue Redis + a fast cache Redis (the split 
 
 ```
 REDIS_PASSWORD = georag_redis_dev   # weak well-known
-protected-mode = no                 # only the pass defends
-port = 6379 → 0.0.0.0:6380          # bound to every host interface
+port = 6379 → 127.0.0.1:6380        # host loopback only (GEORAG_BIND_ADDR, REDIS_PORT=6380)
 ```
 
 Before promoting to prod:
@@ -1305,11 +909,10 @@ sed -i "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$NEW_PASS|" .env
 
 # 2. Close the host port — services reach Redis via the internal
 #    Docker network hostname `redis:6379`. The host binding is only
-#    useful for `docker compose exec redis redis-cli` during triage.
-#    In prod, delete the `ports:` block from the redis service
-#    entirely OR bind to 127.0.0.1:6379 only:
-#    ports:
-#      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+#    useful for `redis-cli` during triage, and compose already limits it
+#    to the host loopback (`${GEORAG_BIND_ADDR:-127.0.0.1}`); leave
+#    GEORAG_BIND_ADDR unset, or delete the `ports:` block from the redis
+#    service entirely.
 
 # 3. Restart
 docker compose up -d redis
@@ -1350,42 +953,54 @@ docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning SLOWL
 
 ## Martin tile server — config changes and grant audit
 
-See `ops/runbooks/_archived/martin-tile-server.md` for:
-
-- Why `docker compose restart martin` is wrong on WSL2 and the correct
-  `docker rm -f georag-martin && docker compose up -d martin` workaround.
-- `cache_size_mb` division math (Martin 1.x splits it across four caches —
-  set `cache_size_mb: 512` to get 256 MB of tile cache).
-- `martin_readonly` role: what it can access, how to audit grants, smoke tests.
-- Diagnosing `db error` tile failures (missing schema USAGE vs missing SELECT).
-- Prometheus alert rules are DORMANT — Martin 1.5.0 has no `/metrics` endpoint.
+The tile config is `docker/martin/martin.yaml`; its header comments document
+the `cache_size_mb` arithmetic (Martin 1.x divides it across three caches: tile
+`/2`, sprite `/8`, font `/8`, so `cache_size_mb: 512` gives a 256 MB tile
+cache) and why a function source whose function does not exist is fatal to
+Martin (it exits, the container never passes its health check, and the ECS
+circuit breaker fails the deployment). Add a source to `martin.yaml` only
+together with its function, its grant and the Laravel proxy allow-list
+(`georag-architecture.html` §04d-tile and §07c-tile;
+`docs/architecture/manual/09-martin-and-maplibre.md`). Martin 1.11 serves
+`/metrics` (native since 1.7), but nothing scrapes it: no Prometheus is deployed
+and the Martin alert rules were deleted with it.
 
 ---
 
-## Phase H4 — FastAPI ↔ Laravel internal callback channel
+## FastAPI → Laravel callback channel
 
-**Context.** §7 Report Builder cockpit shows real-time build progress
-fed by Laravel Reverb. The producer is FastAPI's `generate_report`
-workflow; the consumer is the React cockpit subscribed to
-`private-admin.reports.{build_id}`. Bridging them requires FastAPI to
-push events INTO Laravel — the reverse direction of the normal
-Laravel → FastAPI service-key call.
-
-**Shared secret.** The same `FASTAPI_SERVICE_KEY` env var is reused
-symmetrically. Laravel-side `App\Http\Middleware\VerifyServiceKey`
-mirrors the FastAPI `verify_service_key` dep — constant-time compare
-via `hash_equals`. Endpoint mounted under `/api/internal/*`.
+**Context.** FastAPI pushes events INTO Laravel — the reverse of the normal
+Laravel → FastAPI service-key call — so Laravel can fan them out over Reverb.
+The same `FASTAPI_SERVICE_KEY` is reused symmetrically: Laravel-side
+`App\Http\Middleware\VerifyServiceKey` mirrors FastAPI's `verify_service_key`
+(constant-time compare via `hash_equals`), and the routes sit under
+`/api/internal/*` (`routes/api.php`, "Internal — FastAPI → Laravel callback
+bridge").
 
 ### Routes covered
 
-- `POST /api/internal/admin/reports/{build_id}/progress` — fires
-  `App\Events\Admin\ReportBuildProgress` on
-  `private-admin.reports.{build_id}`. Body:
-  `{stage, section_id?, message?, sections_completed?, sections_total?}`.
+Three routes exist:
+
+- `POST /api/internal/v1/ingest-progress/broadcast` — `IngestionProgressBroadcast`
+  on `project.{projectId}.ingestion`.
+- `POST /api/internal/v1/workspace-data-updated` — `WorkspaceDataUpdated` on the
+  same channel.
+- `POST /api/internal/v1/admin-surface-updated` — `Admin\AdminSurfaceUpdated`,
+  for the surfaces in the channel registry in `routes/channels.php`.
+
+Commit 3c58f72 (#337, 2026-10-06) deleted the other three — `v1/workspace-activity`,
+`v1/user-inbox-updated` and `admin/reports/{build_id}/progress` — together with
+their controllers and the `User\UserInboxUpdated`, `Admin\ReportBuildProgress` and
+`Admin\IngestionReviewDispositionChanged` events. FastAPI's `laravel_bridge.py`
+still defines helpers (`post_report_build_progress`, `post_workspace_activity`,
+`post_user_inbox_updated`) that post to those three URLs; they would get a 404,
+which the helper logs as a warning and swallows, and no application code calls them.
 
 ### Rotating the shared key
 
-The key must match between Laravel and FastAPI services. Steps:
+The key must match between Laravel and FastAPI services. On the production
+deployment follow `ops/runbooks/secret-rotation.md` §3 instead; for a dev or
+on-prem install:
 
 1. Generate a new random key on a workstation:
    ```bash
@@ -1398,66 +1013,35 @@ The key must match between Laravel and FastAPI services. Steps:
    then `php artisan config:clear && docker compose restart laravel-octane`.
    This window is ~5 s where outbound progress posts to the old key
    return 401; the Hatchet workflow continues — the broadcast is
-   best-effort and only the cockpit's live strip is affected.
+   best-effort and only the live progress strip is affected.
 4. Verify with `curl -H "X-Service-Key: $NEW" ...` against both
    directions.
 
 ### Failure mode — broadcast bridge unreachable
 
 When FastAPI calls Laravel and the call fails (Laravel down, key
-mismatch, network), `app.services.laravel_bridge.post_report_build_progress`
-logs `WARNING laravel_bridge: progress post failed` and continues. The
-workflow output is unaffected; only the live progress strip stops
-updating. The cockpit falls back to a stale "idle" indicator after no
-events for ~5 s; operators can refresh to get the audit-anchored
-build state via the `GET /admin/reports/{build_id}` path.
+mismatch, network), the `laravel_bridge` helper logs a `WARNING laravel_bridge:
+... failed` line and continues. The workflow output is unaffected; only the
+live update stops. If the warning is `Name or service not known`, see
+"`LARAVEL_INTERNAL_URL`" above.
 
 ---
 
-## Phase H4 — alerts inbox + acknowledge audit trail
+## Acknowledging an audit-ledger alert (break-glass)
 
-**Context.** `/admin/alerts-inbox` surfaces every audit row where
-`action_type LIKE '%.alert'` (cost burn, vLLM security, ingestion
-breaches, future SLA misses). Operators click Acknowledge; that
-writes an immutable `<original_action_type>.acknowledged` counter row
-keyed on the same `target_id`. Both rows are part of the audit hash
-chain — you cannot retroactively un-acknowledge.
+**Context.** An alert is an `audit.audit_ledger` row whose `action_type` ends in
+`.alert`. Acknowledging it writes an immutable `<original_action_type>.acknowledged`
+counter row keyed on the same `target_id`; both rows are part of the audit hash
+chain, so an acknowledgement cannot be retracted. The emitters today are
+`cost.burn.alert` (the `cost_burn_watcher` workflow, which stays quiet for a
+workspace while an unacknowledged alert is inside its window) and
+`security.cross_workspace_access.alert` (`services/cross_workspace_audit.py`).
+There is no alerts-inbox page or route and no FastAPI acknowledge endpoint any
+more (the `admin.alerts-inbox` broadcast channel is still registered in
+`routes/channels.php`, but no page subscribes to it), so the SQL below is the
+way to acknowledge one.
 
-### How to insert an alert (programmatic)
-
-Alerts are emitted by application code via `app.audit.emit_audit`
-with `action_type` ending in `.alert`. The convention:
-
-| action_type             | source                                    | payload required                                   |
-|-------------------------|-------------------------------------------|----------------------------------------------------|
-| `cost.burn.alert`       | §5 LLM cost tracker (per-workspace 1h)    | `severity, spent_usd, window, workspace_id`        |
-| `vllm_security.alert`   | Phase 0 §29 vLLM security gate            | `severity, model, finding`                         |
-| `ingestion.breach.alert`| Phase 1 ingestion quality gate            | `severity, table, breach_kind, run_id`             |
-
-The `severity` field in `payload` drives the UI badge. Accepted values:
-`critical`, `high`, `medium`, `low`. When absent the inbox infers
-medium and the badge falls back to a neutral yellow.
-
-### Indexes
-
-Two partial indexes back the listing query — see
-`database/raw/phase0/102-phase-h4-alerts-index.sql`:
-
-- `audit_ledger_alerts_idx` — `(created_at DESC) WHERE action_type LIKE '%.alert'`
-- `audit_ledger_acks_idx`   — `(action_type, target_id) WHERE action_type LIKE '%.acknowledged'`
-
-Production deploys with an existing populated `audit_ledger` should
-build these `CONCURRENTLY` rather than via the BEGIN…COMMIT migration:
-
-```sql
-CREATE INDEX CONCURRENTLY audit_ledger_alerts_idx
-    ON audit.audit_ledger (created_at DESC)
-    WHERE action_type LIKE '%.alert';
-```
-
-### Acknowledging from psql (break-glass)
-
-If the FastAPI endpoint is down, an ack can be written directly:
+### Acknowledging from psql
 
 ```sql
 -- Resolve the alert
@@ -1483,6 +1067,28 @@ SELECT workspace_id,
 ```
 
 The hash-chain trigger writes `previous_hash` automatically.
+
+---
+
+## Retired procedures
+
+These sections described components that no longer exist and were removed on
+2026-10-10 rather than kept as history. If an old link or checklist sends you
+looking for one:
+
+- **Query escalation tiers and the `GeoRAG — Signal Harvesting` Grafana
+  dashboard** — the `AGENTIC_ESCALATION_ENABLED`, `AGENTIC_FULL_ESCALATION_ENABLED`
+  and `AGENTIC_MAX_TOOL_CALLS` settings do not exist in `src/fastapi`, and compose
+  has no Grafana or `dev-monitor` service. Agentic retrieval is described in
+  `georag-architecture.html` §04j.
+- **Cypher allowlist update procedure and Neo4j backup/restore** — Neo4j was
+  removed on 2026-07-28 (CLAUDE.md hard rule 9). On AWS, Postgres relies on RDS
+  point-in-time restore and object storage on S3 versioning (see "What is NOT
+  covered here" in `ops/runbooks/aws-oncall.md`).
+- **Ollama model-upgrade decision matrix** — there is no local model host in this
+  repository; see "LLM backend selection".
+- **The `/admin/alerts-inbox` listing and its partial indexes** — see "Acknowledging
+  an audit-ledger alert".
 
 ---
 
