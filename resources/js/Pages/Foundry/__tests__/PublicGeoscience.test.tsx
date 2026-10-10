@@ -20,12 +20,15 @@ const { handlers, state } = vi.hoisted(() => ({
         sources: new Set<string>(),
         container: null as HTMLElement | null,
         rendered: [] as unknown[],
+        // Make the next Map construction throw, as maplibre-gl does with no WebGL 2.
+        failToStart: false,
     },
 }));
 
 vi.mock('maplibre-gl', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     function MapMock(this: any, opts: { container: HTMLElement }) {
+        if (state.failToStart) throw new Error('Failed to initialize WebGL');
         // Each map has its own removed flag: a basemap switch builds a new
         // map while the old one's layer cleanups are still pending.
         let removed = false;
@@ -156,6 +159,7 @@ beforeEach(() => {
     state.layers.clear();
     state.sources.clear();
     state.container = null;
+    state.failToStart = false;
     for (const key of Object.keys(handlers)) delete handlers[key];
     vi.stubGlobal(
         'fetch',
@@ -189,6 +193,17 @@ async function mountAndLoad() {
 }
 
 describe('PublicGeoscience', () => {
+    it('keeps the page and says why when the map cannot start (no WebGL 2)', async () => {
+        state.failToStart = true;
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        render(<PublicGeoscience />);
+
+        // Thrown into the root error boundary, this used to take the page.
+        expect(screen.getByTestId('map-start-failure')).toHaveTextContent(/needs WebGL 2/);
+        expect(state.maps).toBe(0);
+    });
+
     it('sizes the map element with an inline style, not a Tailwind position utility', async () => {
         await mountAndLoad();
         const el = state.container!;

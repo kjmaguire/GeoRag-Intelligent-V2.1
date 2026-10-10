@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, EmptyState, PageHeader, Pill, Stat } from '@/Components/Foundry/primitives';
 import WorkspaceModeBar from '@/Components/Foundry/WorkspaceModeBar';
 import { useBasemapStyleUrl } from '@/lib/basemap';
+import { mapStartFailure } from '@/lib/mapInit';
+import MapStartFailure from '@/Components/MapStartFailure';
 
 /**
  * RasterLayers — the project's raster catalogue.
@@ -189,6 +191,8 @@ function FootprintMap({
     const containerRef = useRef<HTMLDivElement | null>(null);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mapRef = useRef<any>(null);
+    // Set when the map itself could not start (no WebGL 2, the chunk failed).
+    const [mapError, setMapError] = useState<string | null>(null);
     // Read by the 'load' handler below. The handler is registered once, so
     // reading `selectedId` from its closure would paint the highlight for
     // whatever was selected when the map was BUILT — wrong every time the
@@ -232,8 +236,8 @@ function FootprintMap({
         if (!containerRef.current || overall === null) return;
         let cancelled = false;
 
-        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')]).then(
-            ([maplibregl, { configureMaplibreWorker }]) => {
+        Promise.all([import('maplibre-gl'), import('@/lib/maplibreWorker')])
+            .then(([maplibregl, { configureMaplibreWorker }]) => {
                 if (cancelled || !containerRef.current) return;
                 configureMaplibreWorker(maplibregl);
 
@@ -244,18 +248,26 @@ function FootprintMap({
                 // A single-raster footprint is a degenerate bbox at high zoom;
                 // padding it stops fitBounds from landing at maxZoom on a corner.
                 const pad = 0.02;
-                const map = new maplibregl.Map({
-                    container: containerRef.current,
-                    style: styleUrl,
-                    bounds: [overall[0] - pad, overall[1] - pad, overall[2] + pad, overall[3] + pad] as [
-                        number,
-                        number,
-                        number,
-                        number,
-                    ],
-                    fitBoundsOptions: { padding: 40, maxZoom: 12 },
-                    attributionControl: false,
-                });
+                let map: InstanceType<typeof maplibregl.Map>;
+                try {
+                    map = new maplibregl.Map({
+                        container: containerRef.current,
+                        style: styleUrl,
+                        bounds: [overall[0] - pad, overall[1] - pad, overall[2] + pad, overall[3] + pad] as [
+                            number,
+                            number,
+                            number,
+                            number,
+                        ],
+                        fitBoundsOptions: { padding: 40, maxZoom: 12 },
+                        attributionControl: false,
+                    });
+                } catch (startError) {
+                    // Inside this .then the throw was unhandled: a silent blank map.
+                    console.error('RasterLayers: the map could not start', startError);
+                    setMapError(mapStartFailure(startError));
+                    return;
+                }
                 mapRef.current = map;
 
                 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
@@ -299,8 +311,14 @@ function FootprintMap({
                         map.getCanvas().style.cursor = '';
                     });
                 });
-            },
-        );
+            })
+            .catch((loadError: unknown) => {
+                // The map chunk failed to load: this was an unhandled rejection
+                // and a blank panel.
+                if (cancelled) return;
+                console.error('RasterLayers: the map could not load', loadError);
+                setMapError(mapStartFailure(loadError));
+            });
 
         return () => {
             cancelled = true;
@@ -334,7 +352,12 @@ function FootprintMap({
         );
     }
 
-    return <div ref={containerRef} style={{ height: 320, width: '100%' }} />;
+    return (
+        <div style={{ position: 'relative', height: 320, width: '100%' }}>
+            <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
+            {mapError && <MapStartFailure message={mapError} />}
+        </div>
+    );
 }
 
 /** The expanded facts for one raster. */
