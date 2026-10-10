@@ -379,6 +379,7 @@ pikepdf==10.13.0.post1
 pillow==12.3.0
     # via
     #   georag-fastapi
+    #   georag-geoparsers
     #   matplotlib
     #   pdf2image
     #   pdfplumber

@@ -16,6 +16,7 @@ and reported, dates are ISO, and a repeated header is kept.
 from __future__ import annotations
 
 import datetime
+import re
 import zipfile
 from pathlib import Path
 
@@ -102,8 +103,13 @@ class TestRowsPastAnExcelTable:
             for item in src.infolist():
                 data = src.read(item.filename)
                 if item.filename == "xl/worksheets/sheet1.xml":
-                    assert b'<dimension ref="A1:D7"/>' in data
-                    data = data.replace(b'<dimension ref="A1:D7"/>', b'<dimension ref="A1:B2"/>')
+                    # `<dimension ref="A1:D7"/>` when openpyxl writes through
+                    # lxml, `<dimension ref="A1:D7" />` through the stdlib
+                    # writer it falls back to without it.
+                    data, replaced = re.subn(
+                        rb'<dimension ref="A1:D7"\s*/>', b'<dimension ref="A1:B2"/>', data
+                    )
+                    assert replaced == 1, data[:300]
                 dst.writestr(item, data)
 
         result = parse_xlsx_sheet(str(stale), "Collars", "collar")
