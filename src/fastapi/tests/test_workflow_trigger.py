@@ -31,9 +31,16 @@ _PROJECT = "b1000000-0000-0000-0000-000000000010"
 _TICKET = "c1000000-0000-0000-0000-000000000020"
 _AUDIT = "d1000000-0000-0000-0000-000000000030"
 _UUID = "e1000000-0000-0000-0000-000000000040"
+#: What deploy/aws/terraform/config.tf sets as AWS_BUCKET_EXPORTS.
+_EXPORTS = "georag-exports-123456789012"
 
 REPO = Path(__file__).resolve().parents[3]
 POLICY = REPO / "app" / "Policies" / "WorkflowTriggerPolicy.php"
+
+
+@pytest.fixture(autouse=True)
+def _exports_bucket(monkeypatch) -> None:
+    monkeypatch.setenv("AWS_BUCKET_EXPORTS", _EXPORTS)
 
 
 class _FakeConn:
@@ -189,13 +196,25 @@ def test_workspace_export_dispatches_for_an_existing_workspace(harness) -> None:
     r = _post(client, "workspace_export", {"workspace_id": _WS, "input": {"workspace_id": _WS}})
     assert r.status_code == 202, r.text
     assert "silver.workspaces" in db["conn"].calls[0][0]
-    assert dispatched[0][1].bucket == T.EXPORT_BUCKET
+    # Pinned to the configured EXPORTS bucket (AWS_BUCKET_EXPORTS), which is the
+    # one Terraform creates and the task role is granted, not "workspace-exports".
+    assert dispatched[0][1].bucket == _EXPORTS
 
 
-def test_workspace_export_refuses_another_bucket(harness) -> None:
+def test_workspace_export_accepts_the_configured_bucket_by_name(harness) -> None:
     client, dispatched, _ = harness
     r = _post(client, "workspace_export", {
-        "workspace_id": _WS, "input": {"workspace_id": _WS, "bucket": "reports"},
+        "workspace_id": _WS, "input": {"workspace_id": _WS, "bucket": _EXPORTS},
+    })
+    assert r.status_code == 202, r.text
+    assert dispatched[0][1].bucket == _EXPORTS
+
+
+@pytest.mark.parametrize("bucket", ["reports", "workspace-exports", "georag-backups-123456789012"])
+def test_workspace_export_refuses_another_bucket(harness, bucket: str) -> None:
+    client, dispatched, _ = harness
+    r = _post(client, "workspace_export", {
+        "workspace_id": _WS, "input": {"workspace_id": _WS, "bucket": bucket},
     })
     assert r.status_code == 422
     assert dispatched == []
@@ -203,10 +222,13 @@ def test_workspace_export_refuses_another_bucket(harness) -> None:
 
 @pytest.mark.parametrize("uri", [
     f"file:///etc/{_WS}/x.jsonl.gz",
-    f"s3://workspace-exports/{_OTHER_WS}/2026-09-29T000000-r.jsonl.gz",
-    f"s3://reports/{_WS}/x.jsonl.gz",
-    f"s3://workspace-exports/{_WS}/../{_OTHER_WS}/x.jsonl.gz",
-    f"s3://workspace-exports/{_WS}/",
+    f"s3://{_EXPORTS}/workspace-exports/{_OTHER_WS}/2026-09-29T000000-r.jsonl.gz",
+    f"s3://reports/workspace-exports/{_WS}/x.jsonl.gz",
+    f"s3://{_EXPORTS}/workspace-exports/{_WS}/../{_OTHER_WS}/x.jsonl.gz",
+    f"s3://{_EXPORTS}/workspace-exports/{_WS}/",
+    # The layout before 2026-10-10: a bucket of its own, and no key prefix.
+    f"s3://workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz",
+    f"s3://{_EXPORTS}/{_WS}/2026-09-29T000000-r.jsonl.gz",
 ])
 def test_restore_refuses_a_manifest_outside_the_workspace(harness, uri: str) -> None:
     client, dispatched, _ = harness
@@ -220,7 +242,7 @@ def test_restore_refuses_a_manifest_outside_the_workspace(harness, uri: str) -> 
 
 def test_restore_dispatches_an_own_workspace_manifest(harness) -> None:
     client, dispatched, _ = harness
-    uri = f"s3://workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
+    uri = f"s3://{_EXPORTS}/workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
     r = _post(client, "restore_workspace", {"workspace_id": _WS, "input": {
         "workspace_id": _WS, "snapshot_manifest_uri": uri,
         "initiated_by_user_id": 7, "restore_request_id": _UUID, "dry_run": False,
@@ -459,7 +481,7 @@ def test_each_deduped_workflow_names_a_real_input_field() -> None:
 
 def test_support_replay_and_restore_are_deduped_too(deduping) -> None:
     client, dispatched, _, _ = deduping
-    uri = f"s3://workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
+    uri = f"s3://{_EXPORTS}/workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
     restore = {"workspace_id": _WS, "input": {
         "workspace_id": _WS, "snapshot_manifest_uri": uri,
         "initiated_by_user_id": 7, "restore_request_id": _UUID,

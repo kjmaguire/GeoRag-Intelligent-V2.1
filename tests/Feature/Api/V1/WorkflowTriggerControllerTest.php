@@ -31,6 +31,8 @@ final class WorkflowTriggerControllerTest extends TestCase
 
     private const BASE = 'http://fastapi.test/internal/v1/workflows/';
 
+    private const EXPORTS_BUCKET = 'georag-exports-123456789012';
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -38,6 +40,8 @@ final class WorkflowTriggerControllerTest extends TestCase
         config([
             'services.fastapi.service_key' => 'test-service-key-must-be-at-least-32-bytes-long',
             'services.fastapi.internal_url' => 'http://fastapi.test',
+            // What deploy/aws/terraform/config.tf sets as AWS_BUCKET_EXPORTS.
+            'filesystems.disks.s3-exports.bucket' => self::EXPORTS_BUCKET,
         ]);
     }
 
@@ -424,15 +428,28 @@ final class WorkflowTriggerControllerTest extends TestCase
         [$admin, $project] = $this->member(admin: true);
         $workspace = (string) $project->workspace_id;
         $url = "/api/v1/admin/workspaces/{$workspace}/workflows/restore_workspace";
-        $own = "s3://workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz";
+        $bucket = self::EXPORTS_BUCKET;
+        $own = "s3://{$bucket}/workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz";
 
         $this->actingAs($admin)->postJson($url, [
-            'snapshot_manifest_uri' => 's3://workspace-exports/a0000000-0000-0000-0000-00000000dead/x.jsonl.gz',
+            'snapshot_manifest_uri' => "s3://{$bucket}/workspace-exports/a0000000-0000-0000-0000-00000000dead/x.jsonl.gz",
         ])->assertUnprocessable()->assertJsonValidationErrors('snapshot_manifest_uri');
 
         $this->actingAs($admin)->postJson($url, [
-            'snapshot_manifest_uri' => "s3://workspace-exports/{$workspace}/../other/x.jsonl.gz",
+            'snapshot_manifest_uri' => "s3://{$bucket}/workspace-exports/{$workspace}/../other/x.jsonl.gz",
         ])->assertUnprocessable()->assertJsonValidationErrors('snapshot_manifest_uri');
+
+        // The layouts that are no longer an export of this deployment: a bucket
+        // of its own named workspace-exports (Terraform never creates it), the
+        // exports bucket without the key prefix, and some other bucket.
+        foreach ([
+            "s3://workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz",
+            "s3://{$bucket}/{$workspace}/2026-09-29T000000-r.jsonl.gz",
+            "s3://georag-backups-123456789012/workspace-exports/{$workspace}/2026-09-29T000000-r.jsonl.gz",
+        ] as $refused) {
+            $this->actingAs($admin)->postJson($url, ['snapshot_manifest_uri' => $refused])
+                ->assertUnprocessable()->assertJsonValidationErrors('snapshot_manifest_uri');
+        }
 
         $this->actingAs($admin)->postJson($url, ['snapshot_manifest_uri' => $own, 'dry_run' => false])
             ->assertUnprocessable()

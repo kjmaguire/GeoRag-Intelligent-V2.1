@@ -71,7 +71,14 @@ final class WorkflowTriggerController extends Controller
         'csa11348_disclosure_pack',
     ];
 
-    private const EXPORT_BUCKET = 'workspace-exports';
+    /**
+     * Key prefix of every workspace export inside the exports bucket (FastAPI:
+     * workspace_export.EXPORT_KEY_PREFIX). The bucket itself is whatever the
+     * `s3-exports` disk is configured with (AWS_BUCKET_EXPORTS), the same
+     * value FastAPI's StorageConfig resolves. Both used to be a bare
+     * `workspace-exports` bucket, which Terraform never creates.
+     */
+    private const EXPORT_KEY_PREFIX = 'workspace-exports';
 
     public function project(
         Request $request,
@@ -232,7 +239,7 @@ final class WorkflowTriggerController extends Controller
      */
     private function restoreInput(Request $request, User $user, string $workspace): array
     {
-        $prefix = 's3://'.self::EXPORT_BUCKET.'/'.$workspace.'/';
+        $prefix = 's3://'.config('filesystems.disks.s3-exports.bucket').'/'.self::EXPORT_KEY_PREFIX.'/'.$workspace.'/';
         $validated = $request->validate([
             'snapshot_manifest_uri' => ['required', 'string', 'max:1024', 'starts_with:'.$prefix, 'not_regex:/\.\./'],
             'dry_run' => ['sometimes', 'boolean'],

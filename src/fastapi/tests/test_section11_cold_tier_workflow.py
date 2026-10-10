@@ -29,7 +29,8 @@ def test_cold_tier_archive_in_ai_pool() -> None:
 def test_cold_tier_input_defaults_match_kickoff_lock() -> None:
     inp = cta.ColdTierArchiveInput()
     assert inp.retention_days == 90  # 30/90/indef policy
-    assert inp.archive_bucket == "audit-cold-tier"
+    assert inp.archive_bucket == "audit-cold-tier"  # the key PREFIX, inside the backups bucket
+    assert inp.bucket is None  # resolved to AWS_BUCKET_BACKUPS when the run starts
     assert inp.chunk_rows == 10_000
     assert inp.workspace_id_scope is None
 
@@ -156,7 +157,10 @@ def archive_run(monkeypatch):
 
     monkeypatch.setattr("app.services.laravel_bridge.post_admin_surface_updated", _noop)
 
-    async def _run(*, window_result: ArchiveRun, watermark: datetime | None = _WATERMARK, fail_watermark: bool = False):
+    async def _run(
+        *, window_result: ArchiveRun, watermark: datetime | None = _WATERMARK,
+        fail_watermark: bool = False, bucket: str | None = None,
+    ):
         conn = _Conn(watermark, fail=fail_watermark)
         seen["conn"] = conn
 
@@ -173,7 +177,7 @@ def archive_run(monkeypatch):
         monkeypatch.setattr(cta.asyncpg, "connect", _connect)
         monkeypatch.setattr(cta, "archive_window", _archive_window)
         monkeypatch.setattr(cta, "emit_audit", _emit)
-        return await cta.run_archive.aio_mock_run(cta.ColdTierArchiveInput())
+        return await cta.run_archive.aio_mock_run(cta.ColdTierArchiveInput(bucket=bucket))
 
     return seen, _run
 
@@ -201,6 +205,31 @@ async def test_run_archive_continues_from_the_last_completed_run(archive_run) ->
     sql, args = seen["conn"].fetchval_calls[0]
     assert "audit.cold_tier.archive.completed" in sql and "max(" in sql
     assert args == (None,)
+
+
+async def test_run_archive_writes_to_the_configured_backups_bucket_under_the_prefix(
+    archive_run, monkeypatch,
+) -> None:
+    """'audit-cold-tier' was a bucket of its own, which Terraform never creates
+    (it provisions bronze, bronze-raster, exports and backups): every archive on
+    AWS ended in NoSuchBucket. It is now the key prefix inside the BACKUPS bucket."""
+    monkeypatch.setenv("AWS_BUCKET_BACKUPS", "georag-backups-123456789012")
+    seen, run = archive_run
+
+    await run(window_result=_ok())
+
+    window = seen["window"]
+    assert window["cold_tier"]._bucket == "georag-backups-123456789012"
+    assert window["archive_bucket"] == "audit-cold-tier"
+
+
+async def test_an_operator_can_name_another_bucket(archive_run, monkeypatch) -> None:
+    monkeypatch.setenv("AWS_BUCKET_BACKUPS", "georag-backups-123456789012")
+    seen, run = archive_run
+
+    await run(window_result=_ok(), bucket="drill-bucket")
+
+    assert seen["window"]["cold_tier"]._bucket == "drill-bucket"
 
 
 async def test_run_archive_with_no_earlier_run_archives_from_the_beginning(archive_run) -> None:

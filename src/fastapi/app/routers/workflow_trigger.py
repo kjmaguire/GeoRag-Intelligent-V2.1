@@ -78,7 +78,9 @@ from app.hatchet_workflows.restore_workspace import (
 from app.hatchet_workflows.score_targets import ScoreTargetsInput, score_targets
 from app.hatchet_workflows.support_replay import SupportReplayInput, support_replay
 from app.hatchet_workflows.workspace_export import (
+    EXPORT_KEY_PREFIX,
     WorkspaceExportInput,
+    exports_bucket,
     workspace_export,
 )
 from app.services.auth import verify_service_key
@@ -86,10 +88,6 @@ from app.services.auth import verify_service_key
 log = logging.getLogger("georag.workflow_trigger")
 
 router = APIRouter(prefix="/internal/v1/workflows", tags=["workflows"])
-
-#: The only bucket workspace_export may write to, and so the only bucket a
-#: restore manifest may come from. Matches WorkspaceExportInput's default.
-EXPORT_BUCKET = "workspace-exports"
 
 #: Starlette renamed HTTP_422_UNPROCESSABLE_ENTITY and deprecated the old
 #: name; the number is the contract, so use it.
@@ -202,12 +200,17 @@ async def _check_project(conn: asyncpg.Connection, validated: Any, scope: str) -
 
 def _prepare_export(validated: WorkspaceExportInput, scope: str | None) -> WorkspaceExportInput:
     _same_workspace(validated.workspace_id, scope)
-    if validated.bucket != EXPORT_BUCKET:
+    # The only bucket workspace_export may write to through this route, and so
+    # the only one a restore manifest may come from: the configured EXPORTS
+    # bucket. (It used to be a bare "workspace-exports", which Terraform never
+    # creates; see workspace_export.EXPORT_KEY_PREFIX.)
+    bucket = exports_bucket()
+    if validated.bucket not in (None, bucket):
         raise TriggerRefused(
             _UNPROCESSABLE,
-            f"workspace exports are written to {EXPORT_BUCKET!r} only",
+            f"workspace exports are written to {bucket!r} only",
         )
-    return validated
+    return validated.model_copy(update={"bucket": bucket})
 
 
 async def _check_workspace(conn: asyncpg.Connection, validated: Any, scope: str) -> None:
@@ -223,7 +226,7 @@ def _prepare_restore(validated: RestoreWorkspaceInput, scope: str | None) -> Res
     # Only a workspace_export object for THIS workspace. A file:// URI would
     # read the worker's own filesystem, and another workspace's key prefix
     # would restore that tenant's rows into this one.
-    prefix = f"s3://{EXPORT_BUCKET}/{scope}/"
+    prefix = f"s3://{exports_bucket()}/{EXPORT_KEY_PREFIX}/{scope}/"
     uri = validated.snapshot_manifest_uri
     if not uri.startswith(prefix) or ".." in uri or len(uri) <= len(prefix):
         raise TriggerRefused(

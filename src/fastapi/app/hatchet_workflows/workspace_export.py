@@ -23,8 +23,16 @@ Scope (v1)
 
 Postgres only. Every tenant-scoped table in `_WORKSPACE_TABLES` is
 walked under the target workspace's RLS scope (SET app.workspace_id),
-serialised to JSONL, gzipped, and uploaded to SeaweedFS under
+serialised to JSONL, gzipped, and uploaded to the configured EXPORTS bucket
+(``AWS_BUCKET_EXPORTS``: ``georag-exports-<account>`` on AWS, ``exports`` in
+compose) under
 ``workspace-exports/<workspace_id>/<timestamp>-<run_id>.jsonl.gz``.
+
+The bucket used to be a bare ``workspace-exports``, which Terraform never
+creates or grants (it provisions bronze, bronze-raster, exports and backups),
+so on AWS every export ended in NoSuchBucket. ``workspace-exports/`` is now a
+key prefix inside the EXPORTS bucket, and a restore manifest URI is
+``s3://<exports bucket>/workspace-exports/<workspace_id>/<file>``.
 
 Qdrant and Redis sections were added in manifest v2.0 (Qdrant: scroll API
 with a workspace_id payload filter; Redis: SCAN over the workspace-prefixed
@@ -66,7 +74,7 @@ No cron. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
 starts it with Laravel
 ``POST /api/v1/admin/workspaces/{workspace}/workflows/workspace_export``,
 which calls FastAPI ``POST /internal/v1/workflows/workspace_export/trigger``.
-That route only ever writes to the ``workspace-exports`` bucket. The Hatchet
+That route only ever writes to the configured EXPORTS bucket. The Hatchet
 UI still works for an operator, with ``{"workspace_id": "<uuid>"}``. Output
 run_id is logged + audit-row anchored.
 """
@@ -87,7 +95,7 @@ from typing import Any
 
 import aioboto3
 import asyncpg
-from georag_object_storage import StorageConfig, async_client_kwargs
+from georag_object_storage import Bucket, StorageConfig, async_client_kwargs
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -118,11 +126,24 @@ _WORKSPACE_TABLES: list[tuple[str, str]] = [
 ]
 
 
+#: Key prefix of every workspace export inside the EXPORTS bucket. The restore
+#: trigger route and Laravel's WorkflowTriggerController validate manifest URIs
+#: against it, so change all three together.
+EXPORT_KEY_PREFIX = "workspace-exports"
+
+
+def exports_bucket() -> str:
+    """The bucket exports are written to: the configured EXPORTS bucket
+    (``AWS_BUCKET_EXPORTS``; ``georag-exports-<account>`` on AWS)."""
+    return StorageConfig.from_env().bucket_name(Bucket.EXPORTS)
+
+
 class WorkspaceExportInput(BaseModel):
     workspace_id: str = Field(..., description="UUID of the workspace to export.")
-    bucket: str = Field(
-        default="workspace-exports",
-        description="SeaweedFS bucket receiving the export object.",
+    bucket: str | None = Field(
+        default=None,
+        description="Bucket receiving the export object. Default: the configured "
+                    "EXPORTS bucket (AWS_BUCKET_EXPORTS), resolved when the run starts.",
     )
     include_qdrant: bool = Field(
         default=True,
@@ -188,7 +209,7 @@ _build_dsn = build_dsn
 
 def _build_object_key(workspace_id: str, run_id: str, when: datetime) -> str:
     return (
-        f"{workspace_id}/"
+        f"{EXPORT_KEY_PREFIX}/{workspace_id}/"
         f"{when.year:04d}-{when.month:02d}-{when.day:02d}T"
         f"{when.hour:02d}{when.minute:02d}{when.second:02d}-{run_id}.jsonl.gz"
     )
@@ -485,11 +506,10 @@ def _assemble_archive(
 
 
 async def _upload_file_s3(bucket: str, key: str, path: str) -> None:
-    # bucket is a caller-supplied string (see run_export below —
-    # "workspace-exports" today, but not one of georag_object_storage's
-    # four fixed logical Bucket members), so this uses the raw-client
-    # escape hatch (async_client_kwargs) rather than the higher-level
-    # AsyncObjectStorage interface.
+    # bucket is the resolved physical name (the configured EXPORTS bucket,
+    # or an operator override -- see run_export below), so this uses the
+    # raw-client escape hatch (async_client_kwargs) rather than the
+    # higher-level AsyncObjectStorage interface, which takes a logical Bucket.
     #
     # upload_file, not put_object: it streams from disk and switches to a
     # multipart upload past 8 MiB, so the archive is never in memory (and is
@@ -505,6 +525,9 @@ async def run_export(
 ) -> WorkspaceExportOutput:
     started_at = datetime.now(tz=UTC)
     workspace_id = str(input.workspace_id)
+    # The configured EXPORTS bucket unless the operator named one (the trigger
+    # route pins it to the configured one).
+    bucket = input.bucket or exports_bucket()
 
     conn = await asyncpg.connect(_build_dsn(), statement_cache_size=0)
     try:
@@ -608,7 +631,7 @@ async def run_export(
                 archive_bytes = await asyncio.to_thread(
                     _assemble_archive, archive_path, manifest, spools,
                 )
-                await _upload_file_s3(input.bucket, object_key, archive_path)
+                await _upload_file_s3(bucket, object_key, archive_path)
             finally:
                 for spool in spools:
                     spool.close()
@@ -632,7 +655,7 @@ async def run_export(
             target_id=workspace_id,
             payload={
                 "run_id":            run_id,
-                "bucket":            input.bucket,
+                "bucket":            bucket,
                 "object_key":        object_key,
                 "bytes":             archive_bytes,
                 "rows_exported":     rows_exported,
@@ -676,7 +699,7 @@ async def run_export(
         return WorkspaceExportOutput(
             run_id=run_id,
             workspace_id=workspace_id,
-            bucket=input.bucket,
+            bucket=bucket,
             object_key=object_key,
             bytes=archive_bytes,
             rows_exported=rows_exported,

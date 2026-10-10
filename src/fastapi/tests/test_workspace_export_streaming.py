@@ -433,6 +433,9 @@ async def _run(  # noqa: ANN202
 
 
 async def test_run_export_streams_uploads_from_disk_and_reports_counts(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    # What Terraform sets (config.tf): the real EXPORTS bucket, not a bare
+    # "workspace-exports" that the account never creates.
+    monkeypatch.setenv("AWS_BUCKET_EXPORTS", "georag-exports-123456789012")
     conn = _RunConn(_rows())
     out, uploaded = await _run(monkeypatch, tmp_path, conn)
 
@@ -441,7 +444,9 @@ async def test_run_export_streams_uploads_from_disk_and_reports_counts(monkeypat
     # Each table got its own savepoint inside it.
     assert conn.max_txn_depth == 2
 
-    assert uploaded["bucket"] == "workspace-exports"
+    assert uploaded["bucket"] == out.bucket == "georag-exports-123456789012"
+    assert uploaded["key"] == out.object_key
+    assert uploaded["key"].startswith(f"workspace-exports/{WS}/"), "the old bucket name is the key prefix now"
     assert out.bytes == len(uploaded["body"])
     assert out.per_table == {
         "silver_workspaces": 1, "silver_hypotheses": 2,

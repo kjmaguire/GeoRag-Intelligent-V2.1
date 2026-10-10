@@ -31,8 +31,10 @@ Trigger. Since 2026-09-29 (HAT-13) an admin who belongs to the workspace
 starts it with Laravel
 ``POST /api/v1/admin/workspaces/{workspace}/workflows/restore_workspace``,
 which calls FastAPI ``POST /internal/v1/workflows/restore_workspace/trigger``.
-That route accepts only a ``s3://workspace-exports/<this workspace>/...``
-manifest; a ``file://`` URI or another workspace's export is refused. A
+That route accepts only a
+``s3://<exports bucket>/workspace-exports/<this workspace>/...`` manifest (the
+configured EXPORTS bucket, ``AWS_BUCKET_EXPORTS``); a ``file://`` URI or another
+workspace's export is refused. A
 ``dry_run=false`` restore also needs ``confirm_workspace_id`` on the Laravel
 side. No cron.
 """
@@ -352,7 +354,7 @@ async def execute(
         # §11.3 wave 1 — PG-only restore from a workspace_export manifest
         # produced by app.hatchet_workflows.workspace_export. The
         # snapshot_manifest_uri MUST point at a workspace_export object
-        # (s3://workspace-exports/<workspace_id>/...jsonl.gz) — full-
+        # (s3://<exports bucket>/workspace-exports/<workspace_id>/...jsonl.gz) — full-
         # store §11.1 dumps can't be restored per-workspace (pg_restore
         # is database-level, not workspace-level).
         #

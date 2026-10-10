@@ -38,7 +38,12 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from georag_object_storage import Bucket, get_async_storage_client, get_storage_client
+from georag_object_storage import (
+    Bucket,
+    StorageConfig,
+    get_async_storage_client,
+    get_storage_client,
+)
 from hatchet_sdk import (
     ConcurrencyExpression,
     ConcurrencyLimitStrategy,
@@ -803,6 +808,23 @@ def _env_bytes(name: str, default: int) -> int:
 
 PARSE_OUTPUT_INLINE_MAX_BYTES = _env_bytes("PARSE_OUTPUT_INLINE_MAX_BYTES", 2 * 1024 * 1024)
 PARSE_OUTPUT_MAX_BYTES = _env_bytes("PARSE_OUTPUT_MAX_BYTES", 3 * 1024 * 1024)
+
+
+def _bronze_bucket_name() -> str:
+    """The bronze bucket the object storage layer actually reads and writes.
+
+    ``AWS_BUCKET_BRONZE`` (``georag-bronze-<account>`` on AWS), through the same
+    resolution as every storage call. The OCR review rows recorded
+    ``s3://$MINIO_BUCKET_BRONZE/...``, and Terraform sets AWS_BUCKET_BRONZE, not
+    the MINIO_ name, so on AWS they pointed at a bucket called ``bronze`` that does
+    not exist.
+    """
+    try:
+        return StorageConfig.from_env().bucket_name(Bucket.BRONZE)
+    except ValueError:
+        # Half a credential pair. Every storage call will say so; a URI that is
+        # only a record of where the file is must not be what fails persist.
+        return os.environ.get("AWS_BUCKET_BRONZE") or Bucket.BRONZE.value
 
 
 def _serialised_size(out: BaseModel) -> int:
@@ -2239,10 +2261,7 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
         report_id=report_id,
         workspace_id=workspace_id_str,
         project_id=str(input.project_id),
-        bronze_uri=(
-            f"s3://{os.environ.get('MINIO_BUCKET_BRONZE', 'bronze')}/"
-            f"{input.minio_key}"
-        ),
+        bronze_uri=f"s3://{_bronze_bucket_name()}/{input.minio_key}",
     )
     ocr_review_pages = _ocr_review_pages(parsed)
 

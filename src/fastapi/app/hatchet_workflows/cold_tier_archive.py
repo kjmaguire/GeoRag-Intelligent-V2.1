@@ -41,7 +41,12 @@ Defaults
   the cutoff, once. Object keys carry the run's cutoff stamp, so cold-tier
   objects of different runs don't collide; archive_window writes a single
   manifest per run.
-- `archive_bucket="audit-cold-tier"` per §11 kickoff locked default.
+- `archive_bucket="audit-cold-tier"` per §11 kickoff locked default. It is the
+  KEY PREFIX of every object, inside the configured BACKUPS bucket
+  (`AWS_BUCKET_BACKUPS`: `georag-backups-<account>` on AWS). It used to name a
+  bucket of its own, which Terraform never creates or grants (it provisions
+  bronze, bronze-raster, exports and backups), so on AWS every archive run
+  ended in NoSuchBucket.
 """
 
 from __future__ import annotations
@@ -51,7 +56,7 @@ from datetime import UTC, datetime, timedelta
 
 import aioboto3
 import asyncpg
-from georag_object_storage import StorageConfig, async_client_kwargs
+from georag_object_storage import Bucket, StorageConfig, async_client_kwargs
 from hatchet_sdk import Context
 from pydantic import BaseModel, Field
 
@@ -71,7 +76,13 @@ class ColdTierArchiveInput(BaseModel):
     )
     archive_bucket: str = Field(
         default="audit-cold-tier",
-        description="SeaweedFS bucket receiving the gzipped JSONL chunks + manifest.",
+        description="Key prefix, inside the bucket below, of the gzipped JSONL "
+                    "chunks + manifest.",
+    )
+    bucket: str | None = Field(
+        default=None,
+        description="Bucket receiving the objects. Default: the configured "
+                    "BACKUPS bucket (AWS_BUCKET_BACKUPS), resolved when the run starts.",
     )
     chunk_rows: int = Field(
         default=10_000, ge=100, le=1_000_000,
@@ -114,11 +125,10 @@ class _SeaweedFsColdTierStore:
     chunk + once for the manifest. We use a per-run aioboto3 client
     so concurrent runs (if any) don't share connection pools.
 
-    ``bucket`` is a workflow-input string (default "audit-cold-tier",
-    overridable) — genuinely dynamic, not one of georag_object_storage's
-    four fixed logical Bucket members, so this uses the raw-client escape
-    hatch (async_client_kwargs) rather than the higher-level
-    AsyncObjectStorage interface.
+    ``bucket`` is the resolved physical name (the configured BACKUPS bucket,
+    or an operator override), so this uses the raw-client escape hatch
+    (async_client_kwargs) rather than the higher-level AsyncObjectStorage
+    interface, which takes a logical Bucket.
     """
 
     def __init__(self, bucket: str):
@@ -180,7 +190,9 @@ async def run_archive(
     conn = await asyncpg.connect(dsn, statement_cache_size=0)
     try:
         cutoff_after = await _last_archived_cutoff(conn, input.workspace_id_scope)
-        cold_tier = _SeaweedFsColdTierStore(input.archive_bucket)
+        cold_tier = _SeaweedFsColdTierStore(
+            input.bucket or StorageConfig.from_env().bucket_name(Bucket.BACKUPS),
+        )
         try:
             run: ArchiveRun = await archive_window(
                 conn,
