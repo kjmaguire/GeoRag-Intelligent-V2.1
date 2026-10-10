@@ -1,7 +1,7 @@
 /**
  * bootstrap.ts is an entry module with side effects: it wraps window.fetch so
- * a 401/419 from our own origin bounces to /login. Exercised by importing it
- * fresh against a stand-in fetch.
+ * a 401/419 from our own origin bounces to /login, and builds the Echo client.
+ * Both are exercised by importing it fresh against a stand-in fetch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,5 +93,34 @@ describe('window.fetch auth bounce', () => {
         await boot(() => new Response('{}', { status: 401 }));
         await window.fetch('https://tiles.example.com/14/1/2.pbf');
         expect(hrefSets).toEqual([]);
+    });
+});
+
+/** The slice of Echo's constructor options this file inspects. */
+interface CapturedEchoOptions {
+    channelAuthorization: {
+        transport: string;
+        endpoint: string;
+        headersProvider: () => Record<string, string>;
+    };
+}
+
+describe('Echo private-channel authorisation', () => {
+    it('reads the CURRENT xsrf cookie on every auth request, not the meta tag Echo freezes at construction', async () => {
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=cookie-1; path=/';
+        await boot(() => new Response('{}', { status: 200 }));
+
+        expect(echo.options).toHaveLength(1);
+        const auth = (echo.options[0] as CapturedEchoOptions).channelAuthorization;
+        expect(auth.transport).toBe('ajax');
+        expect(auth.endpoint).toBe('/broadcasting/auth');
+        expect(auth.headersProvider()).toEqual({ 'X-XSRF-TOKEN': 'cookie-1' });
+
+        // Sign-out then sign-in (here or in another tab) rotates the token; the
+        // next subscription picks the new one up without a reload.
+        document.cookie = 'XSRF-TOKEN=cookie-2; path=/';
+        expect(auth.headersProvider()).toEqual({ 'X-XSRF-TOKEN': 'cookie-2' });
+        expect(auth.headersProvider()).not.toHaveProperty('X-CSRF-TOKEN');
     });
 });

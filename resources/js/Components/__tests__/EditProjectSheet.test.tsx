@@ -93,6 +93,27 @@ describe('EditProjectSheet', () => {
         });
     });
 
+    it("adds no CSRF header of its own, so Inertia's live XSRF cookie header is not overridden by a stale meta token", async () => {
+        // Laravel prefers X-CSRF-TOKEN over X-XSRF-TOKEN. This sheet used to
+        // pass the page's <meta> token explicitly; once that is stale (after
+        // an SPA sign-out/in) it beat Inertia's correct cookie-derived header
+        // and the save 419'd.
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        try {
+            request.mockResolvedValue(respondWith(200, { data: project }));
+            const onOpenChange = vi.fn();
+            render(<EditProjectSheet project={project} open onOpenChange={onOpenChange} />);
+
+            fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+            await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+
+            const headers = (request.mock.calls[0][0].headers ?? {}) as Record<string, string>;
+            expect(Object.keys(headers).map((k) => k.toLowerCase())).not.toContain('x-csrf-token');
+        } finally {
+            document.head.innerHTML = '';
+        }
+    });
+
     describe('azimuth reference (Kyle, 2026-09-29)', () => {
         it('prefills the stored reference and declination', () => {
             render(

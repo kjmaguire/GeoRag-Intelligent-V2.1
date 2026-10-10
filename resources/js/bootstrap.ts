@@ -1,5 +1,6 @@
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
+import { csrfHeaders } from './lib/csrf';
 
 declare global {
     interface Window {
@@ -126,4 +127,18 @@ window.Echo = new Echo({
     // blocks it as mixed content. https page -> wss (forceTLS true).
     forceTLS: reverbScheme === 'https',
     enabledTransports: ['ws', 'wss'],
+    // Private-channel auth (POST /broadcasting/auth). Left to itself, Echo
+    // reads <meta name="csrf-token"> ONCE, here, at construction and freezes it
+    // into auth.headers['X-CSRF-TOKEN']. After a sign-out/sign-in (this tab or
+    // another) that token is dead, Laravel prefers it over the valid XSRF
+    // cookie, and every channel authorisation 419s — chat could not subscribe,
+    // ingest toasts stopped — until a full reload. pusher-js ignores the legacy
+    // `auth` block entirely when `channelAuthorization` is given, so the stale
+    // header is never sent, and `headersProvider` is evaluated on EACH auth
+    // request, so the cookie's current token is.
+    channelAuthorization: {
+        transport: 'ajax',
+        endpoint: '/broadcasting/auth',
+        headersProvider: () => csrfHeaders(),
+    },
 });

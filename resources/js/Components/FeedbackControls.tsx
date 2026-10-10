@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * FeedbackControls — §10p answer feedback (chat-adjacent slice, built
@@ -43,10 +44,6 @@ const CATEGORY_ORDER: FeedbackCategory[] = [
     'off_topic',
     'length_issue',
 ];
-
-function getCsrf(): string | null {
-    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-}
 
 interface Props {
     answerRunId: string | null;
@@ -104,7 +101,7 @@ export default function FeedbackControls({ answerRunId, presetCategory }: Props)
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
                     'X-Requested-With': 'XMLHttpRequest',
-                    ...(getCsrf() ? { 'X-CSRF-TOKEN': getCsrf() as string } : {}),
+                    ...csrfHeaders(),
                 },
                 body: JSON.stringify({
                     polarity,

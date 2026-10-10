@@ -5,6 +5,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import FeedbackControls from '@/Components/FeedbackControls';
 
+function clearCookies() {
+    for (const part of document.cookie.split(';')) {
+        const name = part.split('=')[0].trim();
+        if (name) document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    }
+}
+
 describe('FeedbackControls', () => {
     let originalFetch: typeof globalThis.fetch;
     let fetchMock: ReturnType<typeof vi.fn>;
@@ -36,6 +43,25 @@ describe('FeedbackControls', () => {
                 body: JSON.stringify({ polarity: 'up', category: null, note: null }),
             }),
         );
+    });
+
+    it('sends the live XSRF cookie token, never the stale csrf meta tag', async () => {
+        // The meta tag is rendered once at page load and is dead after an SPA
+        // sign-out/sign-in; Laravel prefers X-CSRF-TOKEN over the valid cookie.
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=live-token; path=/';
+        try {
+            render(<FeedbackControls answerRunId="run-1" />);
+            fireEvent.click(screen.getByLabelText('Good answer'));
+            await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+            const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+            expect(headers['X-XSRF-TOKEN']).toBe('live-token');
+            expect(headers).not.toHaveProperty('X-CSRF-TOKEN');
+        } finally {
+            document.head.innerHTML = '';
+            clearCookies();
+        }
     });
 
     it('expands a category + note form on thumbs-down click without submitting yet', () => {

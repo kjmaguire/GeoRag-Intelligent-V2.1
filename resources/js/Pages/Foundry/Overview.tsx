@@ -4,6 +4,7 @@ import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Stat, Card, Pill, EmptyState } from '@/Components/Foundry/primitives';
 import { useWorkspaceDataUpdated } from '@/Hooks/useWorkspaceDataUpdated';
 import EditProjectSheet from '@/Components/EditProjectSheet';
+import { csrfHeaders } from '@/lib/csrf';
 
 interface IngestSummary {
     in_flight: number;
@@ -137,14 +138,10 @@ export default function FoundryOverview({
         setDeleting(true);
         setDeleteError(null);
         try {
-            const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-            const headers: Record<string, string> = { Accept: 'application/json' };
-            if (csrf) headers['X-CSRF-TOKEN'] = csrf;
-
             const res = await fetch(`/api/v1/projects/${project.project_id}`, {
                 method: 'DELETE',
                 credentials: 'same-origin',
-                headers,
+                headers: { Accept: 'application/json', ...csrfHeaders() },
             });
             if (!res.ok && res.status !== 204) {
                 const body = await res.json().catch(() => ({}));

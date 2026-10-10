@@ -133,6 +133,27 @@ describe('Foundry chat', () => {
         expect(screen.getByLabelText('Ask a question')).toHaveValue('Summarise the ore zones');
     });
 
+    it('sends the live XSRF cookie token on every call, never the stale csrf meta tag', async () => {
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=live-token; path=/';
+        try {
+            renderChat();
+            await ask('How deep is PLS-22-08?');
+
+            const open = fetchCalls.find((c) => c.url === '/api/v1/queries')!;
+            const headers = open.init?.headers as Record<string, string>;
+            expect(headers['X-XSRF-TOKEN']).toBe('live-token');
+            expect(headers).not.toHaveProperty('X-CSRF-TOKEN');
+            // The same headers ride on the start call.
+            await waitFor(() => expect(fetchCalls.some((c) => c.url.endsWith('/start'))).toBe(true));
+            const start = fetchCalls.find((c) => c.url.endsWith('/start'))!;
+            expect((start.init?.headers as Record<string, string>)['X-XSRF-TOKEN']).toBe('live-token');
+        } finally {
+            document.head.innerHTML = '';
+            document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        }
+    });
+
     it('no longer offers the synthesis toggle nothing read (CHAT-11)', () => {
         renderChat();
         expect(screen.queryByText(/LLM synthesis/i)).toBeNull();

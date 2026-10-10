@@ -24,6 +24,7 @@ import {
     type Category,
 } from '@/lib/uploadCategories';
 import { bundleKey, dedupeFiles, fileKey, groupShapefiles, type CrsProvenance } from '@/lib/shapefileBundle';
+import { csrfHeaders } from '@/lib/csrf';
 
 const STEPS = ['Identity', 'Jurisdiction', 'Corpus', 'Review'] as const;
 type Step = (typeof STEPS)[number];
@@ -631,11 +632,9 @@ export default function FoundryNewProject() {
         setSubmitting(true);
         setSubmitError(null);
         try {
-            const csrf = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-            const headers: Record<string, string> = {
-                Accept: 'application/json',
-            };
-            if (csrf) headers['X-CSRF-TOKEN'] = csrf;
+            // Built per request, not once: the upload loop below can run for
+            // minutes, and the token cookie is rewritten by every response.
+            const requestHeaders = (): Record<string, string> => ({ Accept: 'application/json', ...csrfHeaders() });
 
             let projectId: string | undefined = createdProject?.id;
             let projectSlug: string | undefined = createdProject?.slug;
@@ -645,7 +644,7 @@ export default function FoundryNewProject() {
                 const createRes = await fetch('/api/v1/projects', {
                     method: 'POST',
                     credentials: 'same-origin',
-                    headers: { ...headers, 'Content-Type': 'application/json' },
+                    headers: { ...requestHeaders(), 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         project_name: form.name,
                         company: form.operator,
@@ -758,7 +757,7 @@ export default function FoundryNewProject() {
                     const upRes = await fetch(`/api/v1/projects/${projectId}/upload`, {
                         method: 'POST',
                         credentials: 'same-origin',
-                        headers, // no Content-Type — let the browser set the multipart boundary
+                        headers: requestHeaders(), // no Content-Type — let the browser set the multipart boundary
                         body: fd,
                     });
                     const upJson = await upRes.json().catch(() => ({}));

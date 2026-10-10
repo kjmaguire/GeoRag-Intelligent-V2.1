@@ -17,7 +17,7 @@ vi.mock('@inertiajs/react', () => ({
 
 import NewProject from '../NewProject';
 
-type Call = { url: string; body: unknown };
+type Call = { url: string; body: unknown; headers: Record<string, string> };
 
 let calls: Call[];
 let uploadResponses: Array<() => Response>;
@@ -30,7 +30,7 @@ beforeEach(() => {
     page.props = { upload_limit: { bytes: 10_000, human: '10 KB' } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        calls.push({ url, body: init?.body });
+        calls.push({ url, body: init?.body, headers: (init?.headers ?? {}) as Record<string, string> });
         if (url === '/api/v1/projects') {
             return new Response(JSON.stringify({ data: { project_id: 'p-1', slug: 'red-star' } }), { status: 201 });
         }
@@ -121,6 +121,28 @@ describe('NewProject', () => {
         fireEvent.click(screen.getByRole('button', { name: /create project/i }));
         await waitFor(() => expect(hrefSets).toHaveLength(1));
         expect(uploads().map((c) => ((c.body as FormData).get('file') as File).name)).toEqual(['report.pdf']);
+    });
+
+    it('sends the live XSRF cookie token on the create and on every upload, never the stale csrf meta tag', async () => {
+        // The <meta> token is rendered once at page load and is dead after an
+        // SPA sign-out/sign-in; Laravel prefers X-CSRF-TOKEN over the cookie.
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=live-token; path=/';
+        try {
+            uploadResponses = [];
+            await queueFilesAndReview([new File(['%PDF-1.4'], 'report.pdf', { type: 'application/pdf' })]);
+            fireEvent.click(screen.getByRole('button', { name: /next/i }));
+            fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+            await waitFor(() => expect(hrefSets).toHaveLength(1));
+
+            for (const call of [projectCreates()[0], uploads()[0]]) {
+                expect(call.headers['X-XSRF-TOKEN']).toBe('live-token');
+                expect(call.headers).not.toHaveProperty('X-CSRF-TOKEN');
+            }
+        } finally {
+            document.head.innerHTML = '';
+            document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        }
     });
 
     it('describes the upload flow with the server limit, not the retired Dagster/bronze wording', () => {

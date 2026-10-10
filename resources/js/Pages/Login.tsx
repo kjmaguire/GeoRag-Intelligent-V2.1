@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react';
 import { Head, router, usePage } from '@inertiajs/react';
 import type { PageProps } from '@/types';
 import { safeReturnTo } from '@/lib/safeReturnTo';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * Login — split-screen Foundry auth (TrustGauge-style).
@@ -34,12 +35,8 @@ export default function Login(): JSX.Element {
         setLoading(true);
 
         try {
+            // Primes the XSRF-TOKEN cookie csrfHeaders() reads.
             await fetch('/sanctum/csrf-cookie', { credentials: 'same-origin' });
-
-            const xsrfToken = document.cookie
-                .split('; ')
-                .find((row) => row.startsWith('XSRF-TOKEN='))
-                ?.split('=')[1];
 
             const res = await fetch('/api/v1/auth/spa-login', {
                 method: 'POST',
@@ -47,7 +44,7 @@ export default function Login(): JSX.Element {
                 headers: {
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
-                    ...(xsrfToken ? { 'X-XSRF-TOKEN': decodeURIComponent(xsrfToken) } : {}),
+                    ...csrfHeaders(),
                 },
                 body: JSON.stringify({ email, password }),
             });

@@ -20,6 +20,7 @@ import {
     type ValidationState,
 } from '@/lib/chatStream';
 import { formatTime, formatWhen } from '@/lib/time';
+import { csrfHeaders } from '@/lib/csrf';
 import {
     ContextEnvelopeForm,
     EMPTY_ENVELOPE,
@@ -228,18 +229,17 @@ function newUuid(): string {
     });
 }
 
-function getCsrf(): string | null {
-    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-}
-
-/** Headers every same-origin JSON call from this page sends. */
+/**
+ * Headers every same-origin JSON call from this page sends. The CSRF token is
+ * the live XSRF cookie, re-read per call (lib/csrf.ts): the <meta> tag this
+ * used to read goes stale after a SPA sign-out/sign-in and then 419s.
+ */
 function jsonHeaders(): Record<string, string> {
-    const csrf = getCsrf();
     return {
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'X-Requested-With': 'XMLHttpRequest',
-        ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}),
+        ...csrfHeaders(),
     };
 }
 
