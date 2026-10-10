@@ -280,6 +280,11 @@
                  2026-08-17 pass. -->
             <file>tests/Feature/Foundry/ReportControllerTest.php</file>
             <file>tests/Feature/Foundry/SourcesControllerTest.php</file>
+            <!-- 2026-10-10: the project-scoped half of the Foundry routes
+                 smoke test. It used to sit in FoundryRoutesSmokeTest under
+                 `Project::query()->first()` + markTestSkipped, where no
+                 project exists, so every case skipped on every run. -->
+            <file>tests/Feature/Foundry/FoundryProjectRoutesSmokeTest.php</file>
             <!-- Deliberately last: does NOT use RefreshDatabase, asserts
                  against whatever project already exists after the
                  RefreshDatabase group above has run — see its own docblock. -->
