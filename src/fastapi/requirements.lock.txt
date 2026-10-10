@@ -57,7 +57,7 @@ attrs==26.1.0
     #   rasterio
 backoff==2.2.1
     # via langfuse
-boto3==1.40.61
+boto3==1.43.97
     # via
     #   aiobotocore
     #   georag-object-storage
