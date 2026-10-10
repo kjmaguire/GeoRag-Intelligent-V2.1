@@ -31,10 +31,13 @@ describe('xsrfToken / csrfHeaders', () => {
     });
 
     it('sends the cookie as X-XSRF-TOKEN, URL-decoded the way Laravel encodes it', () => {
-        // Laravel writes the encrypted token base64 with `=` padding, URL-encoded.
-        document.cookie = 'XSRF-TOKEN=eyJpdiI6ImFiYyJ9%3D%3D; path=/';
-        expect(xsrfToken()).toBe('eyJpdiI6ImFiYyJ9==');
-        expect(csrfHeaders()).toEqual({ 'X-XSRF-TOKEN': 'eyJpdiI6ImFiYyJ9==' });
+        // Laravel writes the encrypted token base64 with `=` padding, URL-encoded;
+        // `+` and `/` are the base64 characters that encoding changes. (A marked
+        // fake: scripts/check-no-committed-secrets.php reads a random-looking
+        // value here as a committed credential.)
+        document.cookie = 'XSRF-TOKEN=fake%2Bxsrf%2Ftoken%3D%3D; path=/';
+        expect(xsrfToken()).toBe('fake+xsrf/token==');
+        expect(csrfHeaders()).toEqual({ 'X-XSRF-TOKEN': 'fake+xsrf/token==' });
     });
 
     it('finds the cookie among others and ignores one that merely ends in the same name', () => {
