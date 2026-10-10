@@ -1536,6 +1536,17 @@ SELECT count(*) - count(DISTINCT (s.collar_id, round(s.from_depth::numeric, 3),
 #: computed in SQL so the gold row is self-contained: a client that cannot
 #: run the projection still gets x/y.
 #:
+#: THE POLE, NOT THE PLANE (GIS audit 2026-10). The point plotted is the pole
+#: to the plane: trend = dip direction + 180, plunge = 90 - dip, lower
+#: hemisphere. An equal-area LINE of plunge p sits at radius
+#: sqrt(2) * sin((90 - p) / 2) with the primitive circle at 1, so the pole
+#: (p = 90 - dip) sits at sqrt(2) * sin(dip / 2): a horizontal bed (dip 0)
+#: plots at the centre, a vertical one (dip 90) on the rim. The statement
+#: used to put ``90 - dip`` in that formula - the radius of a LINE plunging
+#: ``dip`` - which swapped the two. Rows are rebuilt from silver on every
+#: promotion (_STRUCTURES_VISUAL_CLEAR below), so old rows correct themselves
+#: on the next run. x is east and y north, both normalised to <= 1.
+#:
 #: TWO THINGS THIS STATEMENT MUST SURVIVE, both learned when silver.structure
 #: gained a real writer (ingest_tabular, 2026-09-29):
 #:
@@ -1572,11 +1583,11 @@ SELECT gen_random_uuid(), s.collar_id, c.workspace_id, c.project_id,
        s.dip, s.dip_dir,
        NULL, NULL,
        CASE WHEN s.dip IS NULL OR s.dip_dir IS NULL THEN NULL ELSE
-            SQRT(2) * SIN(RADIANS((90 - s.dip) / 2.0))
+            SQRT(2) * SIN(RADIANS(s.dip / 2.0))
                     * SIN(RADIANS(MOD((s.dip_dir + 180)::numeric, 360)))
        END,
        CASE WHEN s.dip IS NULL OR s.dip_dir IS NULL THEN NULL ELSE
-            SQRT(2) * SIN(RADIANS((90 - s.dip) / 2.0))
+            SQRT(2) * SIN(RADIANS(s.dip / 2.0))
                     * COS(RADIANS(MOD((s.dip_dir + 180)::numeric, 360)))
        END,
        'equal_area', NOW(), NOW()

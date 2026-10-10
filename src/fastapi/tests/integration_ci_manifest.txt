@@ -117,7 +117,8 @@ tests/test_spatial_plans_prepare_integration.py
 # executes the stale-clearing, unnest UPDATE and datum-withdrawal statements.
 tests/test_dem_elevation_pg.py
 
-# ── Drill traces (GIS audit 2026-10) ───────────────────────────────────
-# The stored trace must start at the collar; the ST_Translate/ST_Transform that
-# puts the metre offsets onto it only runs here.
+# ── Drill traces and stereonet poles (GIS audit 2026-10) ───────────────
+# The stored trace must start at the collar (the ST_Translate/ST_Transform that
+# puts the metre offsets onto it only runs here) and gold stereonet_x/y must be
+# the pole of the plane (an expression inside one INSERT ... SELECT).
 tests/test_promote_gis_pg.py

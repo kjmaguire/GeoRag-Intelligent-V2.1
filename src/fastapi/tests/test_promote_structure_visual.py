@@ -86,3 +86,79 @@ class TestPromotionIsSafeAndIdempotent:
         sql = promo._STRUCTURES_VISUAL
         assert "'equal_area'" in sql and "SQRT(2)" in sql
         assert "MOD((s.dip_dir - 90 + 360)::numeric, 360)" in sql   # RHR strike
+
+
+def _stereonet_xy(dip: float, dip_dir: float) -> tuple[float, float]:
+    """Evaluate the stereonet x / y expressions of ``_STRUCTURES_VISUAL``.
+
+    The expressions are plain arithmetic over SIN / COS / RADIANS / SQRT / MOD,
+    so they can be evaluated here without a database: the SQL TEXT is what is
+    under test, not a copy of it. (The same statement runs against PostGIS in
+    test_promote_gis_pg.py.)
+    """
+    import math
+
+    blocks = re.findall(r"ELSE\s+(SQRT\(2\).*?)\s+END", promo._STRUCTURES_VISUAL, re.DOTALL)
+    assert len(blocks) == 2, "expected one x and one y expression"
+
+    def evaluate(expr: str) -> float:
+        py = (
+            " ".join(expr.split())
+            .replace("::numeric", "")
+            .replace("s.dip_dir", repr(dip_dir))
+            .replace("s.dip", repr(dip))
+            .replace("SQRT(", "math.sqrt(")
+            .replace("SIN(", "math.sin(")
+            .replace("COS(", "math.cos(")
+            .replace("RADIANS(", "math.radians(")
+            .replace("MOD(", "_mod(")
+        )
+        return float(eval(py, {"math": math, "_mod": lambda a, b: a % b}))  # noqa: S307 - our own constant
+
+    return evaluate(blocks[0]), evaluate(blocks[1])
+
+
+class TestStereonetIsThePoleOfThePlane:
+    """GIS audit 2026-10: the radius was the LINE formula with dip as the plunge.
+
+    sqrt(2) * sin((90 - dip) / 2) is the radius of a LINE plunging ``dip``;
+    the point plotted is the POLE, which plunges 90 - dip, so the radius is
+    sqrt(2) * sin(dip / 2). The two are mirror images: a horizontal bed (pole
+    vertical) landed on the rim and a vertical plane (pole horizontal) at the
+    centre.
+    """
+
+    def test_a_horizontal_bed_plots_at_the_centre(self) -> None:
+        x, y = _stereonet_xy(dip=0.0, dip_dir=135.0)
+        assert (x, y) == pytest.approx((0.0, 0.0), abs=1e-9)
+
+    @pytest.mark.parametrize(
+        "dip_dir,expected",
+        [(90.0, (-1.0, 0.0)), (0.0, (0.0, -1.0)), (270.0, (1.0, 0.0)), (180.0, (0.0, 1.0))],
+    )
+    def test_a_vertical_plane_plots_on_the_rim_opposite_its_dip_direction(
+        self, dip_dir: float, expected: tuple[float, float],
+    ) -> None:
+        """Lower hemisphere: the pole trends dip direction + 180."""
+        assert _stereonet_xy(dip=90.0, dip_dir=dip_dir) == pytest.approx(expected, abs=1e-9)
+
+    @pytest.mark.parametrize("dip", [0.0, 10.0, 30.0, 45.0, 60.0, 80.0, 90.0])
+    def test_the_radius_is_the_equal_area_radius_of_the_pole(self, dip: float) -> None:
+        import math
+
+        x, y = _stereonet_xy(dip=dip, dip_dir=40.0)
+        pole_plunge = 90.0 - dip
+        expected = math.sqrt(2.0) * math.sin(math.radians((90.0 - pole_plunge) / 2.0))
+        assert math.hypot(x, y) == pytest.approx(expected, abs=1e-9)
+        assert math.hypot(x, y) <= 1.0 + 1e-9, "normalised to the primitive circle"
+
+    def test_the_old_line_formula_is_gone(self) -> None:
+        assert "(90 - s.dip)" not in promo._STRUCTURES_VISUAL
+
+    def test_the_gold_rows_are_rebuilt_every_promotion_so_old_x_y_correct_themselves(self) -> None:
+        """No hash, no skip: DELETE the project's rows and INSERT them again."""
+        source = Path(promo.__file__).read_text()
+        clear = source.index("await conn.execute(_STRUCTURES_VISUAL_CLEAR")
+        insert = source.index("await conn.execute(_STRUCTURES_VISUAL,")
+        assert clear < insert
+        assert "DELETE FROM gold.structure_measurements_visual" in promo._STRUCTURES_VISUAL_CLEAR

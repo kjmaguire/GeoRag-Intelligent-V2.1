@@ -1,11 +1,14 @@
-"""The promote step's drill-trace SQL against a real PostGIS.
+"""The promote step's drill-trace and stereonet SQL against a real PostGIS.
 
-GIS audit 2026-10, finding 1. The unit tests drive ``_promote_traces`` through
-a scripted connection, so the ST_Translate / ST_Transform that puts the metre
-offsets onto the collar never runs there.
+GIS audit 2026-10, findings 1 and 2. The unit tests drive ``_promote_traces``
+through a scripted connection, so the ST_Translate / ST_Transform that puts
+the metre offsets onto the collar never runs there; and the stereonet maths is
+an expression inside one INSERT ... SELECT, which only a database evaluates.
 
 * The line stored in ``silver.drill_traces`` must START AT THE COLLAR even when
   the survey's first reading is 30 m down.
+* ``gold.structure_measurements_visual.stereonet_x/y`` must be the POLE of the
+  plane: a horizontal bed at the centre, a vertical plane on the rim.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ async def conn():
     try:
         yield c
     finally:
+        await c.execute("DELETE FROM gold.structure_measurements_visual WHERE workspace_id = $1::uuid", _WORKSPACE)
         await c.execute("DELETE FROM silver.collars WHERE workspace_id = $1::uuid", _WORKSPACE)
         await c.execute("DELETE FROM silver.projects WHERE workspace_id = $1::uuid", _WORKSPACE)
         await c.close()
@@ -187,3 +191,109 @@ async def test_a_trace_written_by_the_collarless_builder_is_replaced_on_the_next
 
     assert (out.traces_written, out.traces_unchanged) == (1, 0)
     assert await conn.fetchval("SELECT ST_NPoints(geom) FROM silver.drill_traces WHERE collar_id = $1::uuid", collar) == 3
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 - the stereonet is the POLE
+# ---------------------------------------------------------------------------
+async def _structure(conn: asyncpg.Connection, collar_id: str, depth: float, dip: float | None, dip_dir: float | None) -> None:
+    await conn.execute(
+        """
+        INSERT INTO silver.structure (workspace_id, collar_id, depth, structure_type, true_dip, true_dip_dir)
+        VALUES ($1::uuid, $2::uuid, $3, 'bedding', $4, $5)
+        """,
+        _WORKSPACE,
+        collar_id,
+        depth,
+        dip,
+        dip_dir,
+    )
+
+
+async def _rebuild(conn: asyncpg.Connection, project: str) -> dict[float, tuple[float | None, float | None]]:
+    async with conn.transaction():
+        await conn.execute(m._STRUCTURES_VISUAL_CLEAR, project)
+        await conn.execute(m._STRUCTURES_VISUAL, project)
+    rows = await conn.fetch(
+        "SELECT depth, stereonet_x, stereonet_y FROM gold.structure_measurements_visual WHERE project_id = $1::uuid",
+        project,
+    )
+    return {
+        float(r["depth"]): (
+            None if r["stereonet_x"] is None else float(r["stereonet_x"]),
+            None if r["stereonet_y"] is None else float(r["stereonet_y"]),
+        )
+        for r in rows
+    }
+
+
+def _pole(dip: float, dip_dir: float) -> tuple[float, float]:
+    """Reference: lower-hemisphere equal-area pole, primitive at radius 1, x east / y north."""
+    trend = math.radians((dip_dir + 180.0) % 360.0)
+    plunge = 90.0 - dip
+    r = math.sqrt(2.0) * math.sin(math.radians((90.0 - plunge) / 2.0))
+    return r * math.sin(trend), r * math.cos(trend)
+
+
+async def test_a_horizontal_bed_plots_at_the_centre_and_a_vertical_plane_on_the_rim(conn: asyncpg.Connection) -> None:
+    project = await _project(conn)
+    collar = await _collar(conn, project, "S1")
+    await _structure(conn, collar, 10.0, 0.0, 135.0)     # horizontal
+    await _structure(conn, collar, 20.0, 90.0, 90.0)     # vertical, dipping east
+    await _structure(conn, collar, 30.0, 90.0, 0.0)      # vertical, dipping north
+
+    xy = await _rebuild(conn, project)
+
+    assert math.hypot(*xy[10.0]) == pytest.approx(0.0, abs=1e-6), "a horizontal bed's pole is vertical: the centre"
+    assert math.hypot(*xy[20.0]) == pytest.approx(1.0, abs=1e-6), "a vertical plane's pole is horizontal: the rim"
+    assert math.hypot(*xy[30.0]) == pytest.approx(1.0, abs=1e-6)
+    # Lower hemisphere: the pole of a plane dipping EAST trends WEST, and one dipping NORTH trends SOUTH.
+    assert xy[20.0] == pytest.approx((-1.0, 0.0), abs=1e-6)
+    assert xy[30.0] == pytest.approx((0.0, -1.0), abs=1e-6)
+
+
+@pytest.mark.parametrize("dip,dip_dir", [(15.0, 20.0), (45.0, 90.0), (60.0, 225.0), (80.0, 310.0)])
+async def test_oblique_planes_match_the_reference_pole(conn: asyncpg.Connection, dip: float, dip_dir: float) -> None:
+    project = await _project(conn)
+    collar = await _collar(conn, project, "S2")
+    await _structure(conn, collar, 5.0, dip, dip_dir)
+
+    x, y = (await _rebuild(conn, project))[5.0]
+
+    ex, ey = _pole(dip, dip_dir)
+    assert (x, y) == pytest.approx((ex, ey), abs=1e-5)
+    assert math.hypot(x, y) <= 1.0 + 1e-9, "stored values are normalised to the primitive circle"
+
+
+async def test_a_measurement_without_an_orientation_has_no_x_y_not_zero(conn: asyncpg.Connection) -> None:
+    project = await _project(conn)
+    collar = await _collar(conn, project, "S3")
+    await _structure(conn, collar, 7.0, None, None)
+    await _structure(conn, collar, 8.0, 40.0, None)
+
+    xy = await _rebuild(conn, project)
+    assert xy[7.0] == (None, None)
+    assert xy[8.0] == (None, None)
+
+
+async def test_rows_written_with_the_old_formula_are_corrected_by_the_next_promotion(conn: asyncpg.Connection) -> None:
+    project = await _project(conn)
+    collar = await _collar(conn, project, "S4")
+    await _structure(conn, collar, 12.0, 0.0, 90.0)
+    # What the old statement stored for dip 0 / dip direction 90: the rim, at (-1, 0).
+    await conn.execute(
+        """
+        INSERT INTO gold.structure_measurements_visual
+            (collar_id, workspace_id, project_id, depth, structure_type, dip_deg, dip_direction_deg,
+             stereonet_x, stereonet_y, projection)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, 12.0, 'bedding', 0, 90, -1.0, 0.0, 'equal_area')
+        """,
+        collar,
+        _WORKSPACE,
+        project,
+    )
+
+    xy = await _rebuild(conn, project)
+
+    assert list(xy) == [12.0], "the old row is replaced, not duplicated"
+    assert math.hypot(*xy[12.0]) == pytest.approx(0.0, abs=1e-6)
