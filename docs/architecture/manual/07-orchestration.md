@@ -148,7 +148,7 @@ three times and will move again.
 | `mv_refresh_silver` | `0 18 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
 | `public_geo_sync` | `30 18 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
 | `flow_jwt_key_reaper` | `0 19 * * *` | Expires `workflow.flow_jwt_keys` rows |
-| `cold_tier_archive` | `0 19 * * *` | Writes-only cold-tier archive; pruning is operator-gated |
+| `cold_tier_archive` | `0 19 * * *` | Writes-only cold-tier archive; pruning is operator-gated. Archives the rows since the last completed run's `cutoff_before` (the watermark, read from its audit anchor), verifying each workspace's hash chain separately and each chain's first row against the row before the window; a failed check logs `AUDIT_LEDGER_CHAIN_BREAK` and fails the run |
 | `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 19 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
 | `retention_sweep` | `45 19 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
 | `model_upgrade_watch_run` | `0 20 * * *` | Phase 0 agent |

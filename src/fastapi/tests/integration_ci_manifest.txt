@@ -66,6 +66,10 @@ tests/test_support_access_audit.py
 tests/test_audit_verify_window_seed.py
 # The §35.1 hard stop must not wait on the alert (2026-10-10).
 tests/test_cost_burn_hard_stop.py
+# The cold-tier archive against the real ledger: one hash chain per workspace,
+# the watermark window continuing each chain, and the asyncpg cursor/snapshot
+# plumbing (2026-10-10).
+tests/test_cold_tier_archive_pg.py
 tests/test_workspace_export_rls_scope.py
 # The restore half: exact per-table counts through run_export -> archive ->
 # restore, idempotent re-run, a rejected row reported, and the same under a

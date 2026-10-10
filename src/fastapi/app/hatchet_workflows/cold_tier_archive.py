@@ -8,12 +8,18 @@ relies on RDS PITR. The constraint the old slot satisfied went with it.
 What this workflow does
 =======================
 
-1. Compute the cutoff = `now() - retention_days days`.
-2. Call `app.audit.cold_tier_archive.archive_window` with the
-   SeaweedFS S3 destination bucket.
-3. Verify chain integrity over the window (the function already
-   does this inline — failure aborts the upload).
-4. Emit `audit.cold_tier.archive.completed` (or `.failed`) audit row.
+1. Compute the cutoff = `now() - retention_days days`, and the watermark: the
+   `cutoff_before` of the newest `audit.cold_tier.archive.completed` anchor
+   for this scope (what earlier runs already archived).
+2. Call `app.audit.cold_tier_archive.archive_window` for the window between
+   them with the SeaweedFS S3 destination bucket.
+3. Verify chain integrity over the window, one chain per `workspace_id`
+   (the function does this inline — failure aborts the upload).
+4. Emit `audit.cold_tier.archive.completed` (or `.failed`) audit row. The
+   watermark only advances on a completed row.
+5. On a verification failure, log `AUDIT_LEDGER_CHAIN_BREAK` (the alarm the
+   nightly verifier already has) and FAIL the run: it used to return
+   `status="failed"` as a normal result, so Hatchet recorded a green run.
 
 What it does NOT do
 ===================
@@ -28,10 +34,12 @@ Defaults
 ========
 
 - `retention_days=90` per §11 kickoff (30d hot / 90d warm / indef cold).
-  At 19:00 UTC each night the cron archives everything older than 90
-  days. The same row may be archived multiple times across runs —
-  the per-run object_key is timestamped, so cold-tier objects don't
-  collide; the archive_window function's chunking writes a single
+  At 19:00 UTC each night the cron archives the rows that crossed the 90-day
+  line since the last completed run, not the whole history again (it used to
+  re-read and re-upload everything older than 90 days every night). The first
+  run with no completed anchor to continue from archives everything older than
+  the cutoff, once. Object keys carry the run's cutoff stamp, so cold-tier
+  objects of different runs don't collide; archive_window writes a single
   manifest per run.
 - `archive_bucket="audit-cold-tier"` per §11 kickoff locked default.
 """
@@ -51,6 +59,7 @@ from app.audit import emit_audit
 from app.audit.cold_tier_archive import ArchiveRun, archive_window
 from app.db.dsn import build_dsn
 from app.hatchet_workflows import hatchet
+from app.hatchet_workflows.audit_ledger_verify import AUDIT_CHAIN_BREAK_MARKER
 
 log = logging.getLogger("georag.hatchet.cold_tier_archive")
 
@@ -127,6 +136,39 @@ class _SeaweedFsColdTierStore:
         return f"s3://{self._bucket}/{key}"
 
 
+async def _last_archived_cutoff(
+    conn: asyncpg.Connection, workspace_id_scope: str | None,
+) -> datetime | None:
+    """The newest cutoff a COMPLETED archive run covered for this scope, or None.
+
+    Read from the run's own audit anchor rather than from the cold tier (the
+    store only has ``put``). The anchor is written after the manifest, so a run
+    that died between the two is simply done again. ``max`` rather than "the
+    latest anchor": a run with a shorter ``retention_days`` completes with an
+    earlier cutoff and must not move the watermark back.
+
+    If the anchors cannot be read the answer is None: archiving more than
+    needed is safe (it is what every run did before the watermark existed),
+    archiving less is not.
+    """
+    try:
+        return await conn.fetchval(
+            """
+            SELECT max((payload->>'cutoff_before')::timestamptz)
+              FROM audit.audit_ledger
+             WHERE action_type = 'audit.cold_tier.archive.completed'
+               AND workspace_id IS NOT DISTINCT FROM $1::uuid
+            """,
+            workspace_id_scope,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "cold_tier_archive: could not read the watermark, archiving from the "
+            "beginning of the ledger. err=%s", exc,
+        )
+        return None
+
+
 @cold_tier_archive_workflow.task(execution_timeout="60m")
 async def run_archive(
     input: ColdTierArchiveInput, ctx: Context,
@@ -137,6 +179,7 @@ async def run_archive(
     dsn = _build_dsn()
     conn = await asyncpg.connect(dsn, statement_cache_size=0)
     try:
+        cutoff_after = await _last_archived_cutoff(conn, input.workspace_id_scope)
         cold_tier = _SeaweedFsColdTierStore(input.archive_bucket)
         try:
             run: ArchiveRun = await archive_window(
@@ -147,6 +190,7 @@ async def run_archive(
                 workspace_id_scope=input.workspace_id_scope,
                 chunk_rows=input.chunk_rows,
                 dry_run=False,
+                cutoff_after=cutoff_after,
             )
         except Exception as exc:  # noqa: BLE001
             duration_s = (datetime.now(tz=UTC) - started_at).total_seconds()
@@ -186,6 +230,9 @@ async def run_archive(
             target_table="audit_ledger",
             target_id=run.manifest_key or None,
             payload={
+                # The window this run covered. The next run starts at
+                # cutoff_before of the newest COMPLETED anchor.
+                "window_start":        cutoff_after.isoformat() if cutoff_after else None,
                 "cutoff_before":       cutoff.isoformat(),
                 "rows_archived":       run.rows_archived,
                 "cold_tier_uri":       run.cold_tier_uri,
@@ -194,6 +241,7 @@ async def run_archive(
                 "failure_reason":      run.failure_reason,
                 "manifest_key":        run.manifest_key,
                 "chunks":              len(run.chunks),
+                "chains":              len(run.chain_heads),
                 "duration_s":          duration_s,
             },
         )
@@ -202,6 +250,15 @@ async def run_archive(
             "OK" if run.verification_passed else "FAIL",
             run.rows_archived, run.cold_tier_uri, run.verification_passed,
         )
+        if not run.verification_passed:
+            # The same alarm the nightly verifier raises: this is the hot ledger
+            # failing its own hash chain, and nothing was archived.
+            log.error(
+                "%s source=cold_tier_archive window=[%s, %s) reason=%s",
+                AUDIT_CHAIN_BREAK_MARKER,
+                cutoff_after.isoformat() if cutoff_after else "-inf",
+                cutoff.isoformat(), run.failure_reason,
+            )
 
         # Phase 2 admin surface push — Admin/AuditFindings displays the
         # archive_runs list; Admin/WorkflowRuns gets the workflow row.
@@ -238,6 +295,14 @@ async def run_archive(
         except Exception as exc:  # noqa: BLE001
             log.warning(
                 "cold_tier_archive: admin surface broadcasts failed err=%s", exc,
+            )
+
+        if not run.verification_passed:
+            # Not a result to return: a verification failure used to come back
+            # as status="failed" and Hatchet recorded a green run. The failed
+            # anchor and the alarm marker above are written; fail the run too.
+            raise RuntimeError(
+                f"cold_tier_archive verification failed, nothing archived: {run.failure_reason}"
             )
 
         return ColdTierArchiveOutput(
