@@ -1296,7 +1296,13 @@ async def run_ingest_spatial(
                 )
 
     except Exception as exc:
-        if run_id:
+        # Close the row, and tell the page, only when Hatchet will not run this
+        # task again (see _progress.is_final_attempt). Both used to happen on
+        # EVERY attempt: the first failure made the row terminal, so a retry
+        # that succeeded could not complete it, skipped the completion
+        # broadcast, and the page had already been told "failed". The failure
+        # hook below closes the row if the last attempt cannot.
+        if run_id and _progress.is_final_attempt(ctx, exc):
             # kwarg is `error`, not `error_text` -- passing the wrong name
             # raised TypeError *inside* the handler, so the real failure
             # was replaced by the TypeError and the progress row never

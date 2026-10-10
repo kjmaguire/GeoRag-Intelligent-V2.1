@@ -46,6 +46,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import asyncpg
+from hatchet_sdk import NonRetryableException
 
 from app import ingest_status as _ingest_status
 from app.db.dsn import build_dsn
@@ -1149,6 +1150,35 @@ async def mark_completed_by_run(
             extra={"run_id": run_id, "alert": True},
         )
         return None
+
+
+def is_final_attempt(ctx: object | None, exc: BaseException | None = None) -> bool:
+    """True when Hatchet will not run this task again after the failure ``exc``.
+
+    The ingest task bodies used to close their progress row 'failed' from an
+    outer ``except`` and then re-raise. With ``retries=1`` Hatchet runs the body
+    a second time, and every write that second run makes -- ``start_run``, the
+    stage marks, ``mark_completed_by_run`` -- is a no-op against a terminal row.
+    A retry that SUCCEEDED therefore left the run 'failed' and skipped the
+    completion broadcast and the gold promotion that hang off
+    ``mark_completed_by_run`` returning True: the data had landed and nothing
+    downstream was told.
+
+    Close the row from the body only on the last attempt, or for an exception
+    Hatchet will not retry. Earlier attempts leave it open for the retry to
+    finish; the workflow's ``on_failure_task`` is the backstop that closes it
+    if the last attempt dies before it can (worker crash, cancellation).
+
+    If the context cannot say -- a test double, an SDK without the accessors --
+    the answer is False. Not closing early is always safe, because the failure
+    hook closes the row; closing early is the bug.
+    """
+    if isinstance(exc, NonRetryableException):
+        return True
+    try:
+        return int(ctx.attempt_number) >= int(ctx.max_attempts)  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 async def mark_failed_by_run(

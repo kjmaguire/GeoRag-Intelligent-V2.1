@@ -45,6 +45,9 @@
 # real defects (a swallowed terminal-write failure, a test whose FK could
 # never be satisfied, and a staleness window the test never caught up with).
 tests/test_ingest_progress_state_machine.py
+# A failed first attempt must leave the run open: a retry that succeeds has to
+# be able to complete it (2026-10-10; the body closed it 'failed' on EVERY attempt).
+tests/test_ingest_retry_keeps_run_open.py
 tests/test_stale_run_detector.py
 tests/test_orphan_sweep.py
 tests/test_mv_refresh.py
