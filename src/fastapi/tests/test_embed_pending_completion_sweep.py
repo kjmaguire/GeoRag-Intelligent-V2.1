@@ -83,13 +83,12 @@ if not os.environ.get("POSTGRES_USER"):
 import contextlib  # noqa: E402
 
 from app.hatchet_workflows import _progress as ingest_progress  # noqa: E402
+from tests import _live_db  # noqa: E402
 
-# Reuse the workspace + project already provisioned by the state-machine
-# tests. Inserting fresh workspace/project rows fails under RLS when the
-# test connection lands as georag_app (the default POSTGRES_USER inside
-# the fastapi container).
-_TEST_WORKSPACE = "a0000000-0000-0000-0000-00000000feed"
-_TEST_PROJECT = "b1000000-0000-0000-0000-0000000000a0"
+# The canary workspace + project `test_ingest_progress_state_machine.py` also
+# uses; provisioned idempotently by _live_db, whichever module runs first.
+_TEST_WORKSPACE = _live_db.CANARY_WORKSPACE_ID
+_TEST_PROJECT = _live_db.CANARY_PROJECT_ID
 
 
 def _unique_key(suffix: str) -> str:
@@ -97,19 +96,20 @@ def _unique_key(suffix: str) -> str:
 
 
 async def _ensure_test_workspace() -> None:
-    conn = await asyncpg.connect(ingest_progress._dsn(), statement_cache_size=0)
+    """Provision the canary workspace + project this test hangs its row off.
+
+    This module used to SKIP when `test_ingest_progress_state_machine.py` had
+    not run first to create them, so its result depended on module order: run
+    alone on a freshly migrated database, every test in it skipped. The INSERTs
+    are idempotent, so whichever module runs first provisions them.
+
+    A login that cannot insert them (georag_app, under RLS) is an environment
+    problem, not a pass: the skip below fails the job under REQUIRE_LIVE_DB=1.
+    """
     try:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM silver.projects WHERE project_id = $1::uuid",
-            _TEST_PROJECT,
-        )
-    finally:
-        await conn.close()
-    if not exists:
-        pytest.skip(
-            "shared test project not present — run "
-            "test_ingest_progress_state_machine.py first to provision it"
-        )
+        await _live_db.ensure_canary_workspace_and_project(ingest_progress._dsn())
+    except asyncpg.PostgresError as exc:
+        pytest.skip(f"cannot provision the canary workspace/project: {exc}")
 
 
 async def _cleanup(key: str) -> None:
@@ -122,8 +122,11 @@ async def _cleanup(key: str) -> None:
         await conn.close()
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 async def _bootstrap():
+    # Opt-in (the DB test below asks for it) rather than autouse: the three
+    # source-inspection tests above need no database, and an autouse
+    # bootstrap made them skip whenever the canary project was missing.
     if ingest_progress._pool is not None:
         with contextlib.suppress(Exception):
             await ingest_progress._pool.close()
@@ -136,7 +139,7 @@ async def _bootstrap():
         ingest_progress._pool = None
 
 
-async def test_started_row_in_embedding_stage_transitions_to_completed():
+async def test_started_row_in_embedding_stage_transitions_to_completed(_bootstrap):
     """End-to-end: a row at current_step='embedding' for a project with
     zero unembedded passages must reach status='completed' after the
     sweep runs."""

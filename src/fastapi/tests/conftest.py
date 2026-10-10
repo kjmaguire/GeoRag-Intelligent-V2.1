@@ -35,6 +35,15 @@ import httpx
 import pytest
 import pytest_asyncio
 
+# REQUIRE_LIVE_DB=1 (set by the CI jobs that provision the database) turns a
+# skip into a failure, so a gate that did not run cannot read as one that
+# passed. The hooks and the allow-list live in tests/_live_db.py; registering
+# them here is what makes them apply to every test module.
+from tests._live_db import (  # noqa: F401 -- hook registration by import
+    pytest_make_collect_report,
+    pytest_runtest_makereport,
+)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
