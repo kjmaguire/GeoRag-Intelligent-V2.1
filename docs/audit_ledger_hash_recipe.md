@@ -50,6 +50,8 @@ Where:
 
 **Chain scoping:** rows are chained per workspace. Two rows belong to the same chain iff their `workspace_id` values are equal under `IS NOT DISTINCT FROM` (so `NULL = NULL` for system-wide events). The chain order within a scope is `(created_at ASC, id ASC)`.
 
+**Where `created_at` comes from.** The trigger assigns it: `NEW.created_at := clock_timestamp()`, taken *after* the per-workspace advisory lock is held and before the previous row is read (`2026_10_10_100100`). A caller cannot choose it, and an explicit value in the `INSERT` is overwritten. This is what keeps the chain order `(created_at ASC, id ASC)` equal to the order in which writers actually linked to each other. Taking the timestamp from the column `DEFAULT` instead was evaluated before the trigger waited for the lock, so a writer that locked later could carry an earlier timestamp, and the verifier would report a break on a chain that was never touched.
+
 ---
 
 ## Where this recipe lives in the system
@@ -133,7 +135,7 @@ Walk the rows in `(workspace_id, created_at, id)` order, threading `prev_hash` f
 
 3. **Genesis row.** The first row inserted (action_type `audit_ledger.genesis`) has `previous_hash = NULL`. The verifier treats this correctly (empty-string prefix in the hash input). If the genesis row is ever deleted, every subsequent verification fails — by design.
 
-4. **Trigger UPDATE protection.** Today nothing prevents a privileged user from `UPDATE`-ing audit_ledger rows directly. The chain check would surface that — but Phase 11 should add a constraint trigger that rejects UPDATE / DELETE, plus revoke those grants from the application role.
+4. ~~**Trigger UPDATE protection.**~~ **Closed 2026-10-10** (`2026_10_10_100200_make_audit_ledger_append_only`). `UPDATE` and `DELETE` are revoked from `georag_app` (and the NOLOGIN grant-holder `georag_write`), and a `BEFORE UPDATE OR DELETE` row trigger, `audit_ledger_append_only_trg`, raises for every other role, the table owner and superusers included. The only way to change a stored row is a superuser setting `session_replication_role = replica` for the transaction, which stops ordinary triggers firing; that is the break-glass for a deliberate, reviewed prune. `TRUNCATE` is not covered (the application role has never held it). The hash trigger no longer takes a row lock on the tail row, because `SELECT ... FOR UPDATE` needs the `UPDATE` privilege that the role no longer has; the advisory lock was always the serialiser.
 
 ---
 
