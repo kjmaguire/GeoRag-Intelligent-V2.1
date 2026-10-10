@@ -39,13 +39,16 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$HERE"
 
-# Where LangGraph code lives (FastAPI services that wrap pydantic-ai or
-# build state graphs over agent reasoning steps).
-LANGGRAPH_PATHS=(
-    "src/fastapi/app/services/report_builder"
-    "src/fastapi/app/agent/pipeline"
-    "src/fastapi/app/agent/orchestrator"
-)
+# Where LangGraph code lives: every module under the FastAPI app that mentions
+# LangGraph, derived on each run. This was a hand-kept list of three
+# directories. One of them, agent/pipeline, no longer exists and `[ -d ] ||
+# continue` skipped it without a word, and the packages that actually build
+# state graphs (agent/agentic_retrieval, services/target_recommendation,
+# services/llm_incident_diagnosis) were never on it -- so the gate scanned a
+# fraction of the code it names and printed "clean". Deriving the list means a
+# new LangGraph module is covered the day it lands.
+mapfile -t LANGGRAPH_FILES < <(grep -rilI --include='*.py' langgraph src/fastapi/app 2>/dev/null \
+    | grep -v '__pycache__' | sort)
 
 # Disallowed patterns + which orchestrator should own them.
 # Format: <regex>|<owner>
@@ -63,24 +66,28 @@ PATTERNS=(
 FOUND=0
 
 echo "==> LangGraph boundary check (master plan §1)"
-echo "    Scanning: ${LANGGRAPH_PATHS[*]}"
 
-for path in "${LANGGRAPH_PATHS[@]}"; do
-    [ -d "$path" ] || continue
-    for entry in "${PATTERNS[@]}"; do
-        pattern="${entry%%|*}"
-        owner="${entry##*|}"
-        hits=$(grep -rnE -i "$pattern" "$path" 2>/dev/null \
-            | grep -v 'langgraph-boundary-ok:' \
-            | grep -v '__pycache__' \
-            | grep -v '\.pyc' || true)
-        if [ -n "$hits" ]; then
-            echo ""
-            echo "  [VIOLATION] pattern: '$pattern' (belongs to: $owner)"
-            echo "$hits" | sed 's/^/    /'
-            FOUND=$((FOUND + 1))
-        fi
-    done
+# A scan of nothing is not a pass. If no module mentions LangGraph, either it
+# was removed (then retire this gate) or the search above stopped finding it
+# (then this gate has been reporting "clean" about nothing).
+if [ "${#LANGGRAPH_FILES[@]}" -eq 0 ]; then
+    echo "==> LangGraph boundary check FAILED — found no module under src/fastapi/app"
+    echo "    that mentions LangGraph, so there is nothing to scan."
+    exit 1
+fi
+echo "    Scanning: ${#LANGGRAPH_FILES[@]} module(s) under src/fastapi/app that mention LangGraph"
+
+for entry in "${PATTERNS[@]}"; do
+    pattern="${entry%%|*}"
+    owner="${entry##*|}"
+    hits=$(grep -nHE -i "$pattern" "${LANGGRAPH_FILES[@]}" 2>/dev/null \
+        | grep -v 'langgraph-boundary-ok:' || true)
+    if [ -n "$hits" ]; then
+        echo ""
+        echo "  [VIOLATION] pattern: '$pattern' (belongs to: $owner)"
+        echo "$hits" | sed 's/^/    /'
+        FOUND=$((FOUND + 1))
+    fi
 done
 
 echo
