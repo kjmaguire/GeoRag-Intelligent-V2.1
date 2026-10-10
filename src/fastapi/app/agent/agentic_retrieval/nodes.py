@@ -2123,6 +2123,8 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         rendered_results,
         map_payload=map_payload,
         viz_payload=viz_payload,
+        intent=state.effective_intent or state.intent,
+        query=state.query,
     )
 
     # Step 2.4 — surface unspecified envelope fields in the OIUR
@@ -3555,7 +3557,12 @@ async def _reissue_llm_only(
         tool_results=state.tool_results,
     )
     new_response = assemble_response(
-        text, rendered_results, map_payload=map_payload, viz_payload=viz_payload,
+        text,
+        rendered_results,
+        map_payload=map_payload,
+        viz_payload=viz_payload,
+        intent=state.effective_intent or state.intent,
+        query=state.query,
     )
     new_response = _attach_envelope_notes_to_uncertainty(
         new_response,
