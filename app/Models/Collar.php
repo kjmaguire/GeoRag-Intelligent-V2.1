@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Casts\TolerantEnum;
 use App\Enums\CollarStatus;
 use App\Enums\HoleType;
 use Database\Factories\CollarFactory;
@@ -65,8 +66,15 @@ class Collar extends Model
         // (industry-standard closed vocab), distinct from SME-managed open
         // vocabularies (commodity / alt_type / lith_code / mineralogy)
         // which stay as plain strings backed by SmeConfig validation.
-        'hole_type' => HoleType::class,
-        'status' => CollarStatus::class,
+        //
+        // Through TolerantEnum, not the enum directly: the ingestion stores
+        // whatever the file said ("DDH", "Core", "Closed"), and a straight
+        // enum cast turns one such row into a ValueError — a 500 for every
+        // page of the collar list that holds it. Out-of-vocabulary reads as
+        // null; CollarResource and the exporters read getRawOriginal() so the
+        // stored word is not lost. Writes are still refused outside the enum.
+        'hole_type' => TolerantEnum::class.':'.HoleType::class,
+        'status' => TolerantEnum::class.':'.CollarStatus::class,
     ];
 
     /**
