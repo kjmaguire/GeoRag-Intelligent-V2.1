@@ -1,0 +1,193 @@
+{{- /*
+Model sidecars — embedding, reranker, sparse. The same three docker-compose.yml
+runs (`embedding`, `reranker`, `sparse`): the fastapi image with a different
+uvicorn app, ONE worker, port 8000, GET /health (200 once the model is loaded,
+503 before), every route behind X-Service-Key.
+
+They exist so the fastapi uvicorn processes and the Hatchet worker share one
+copy of each model instead of loading their own (six workers each loading a
+~2.4 GiB embedding model OOM-killed the container, 2026-06-24). Never fold them
+back into the FastAPI pods. A sidecar must NOT be given its own service URL
+(EMBEDDING_SERVICE_URL, RERANKER_SERVICE_URL, SPARSE_SERVICE_URL): it is the
+model host, and the setting would make it proxy to itself.
+
+embedding and reranker download their weights on first start into a PVC at
+/tmp/hf_cache (HF_HOME and friends are redirected there because the image's own
+HF_HOME, /opt/hf_cache, is read-only to the www-data user and is where the baked
+SPLADE++ weights live). sparse keeps the image's HF_HOME and downloads nothing.
+*/}}
+{{- $sidecars := list
+  (dict "name" "embedding" "cfg" .Values.modelSidecars.embedding "module" "app.embedding_service:app" "downloads" true)
+  (dict "name" "reranker" "cfg" .Values.modelSidecars.reranker "module" "app.reranker_service:app" "downloads" true)
+  (dict "name" "sparse" "cfg" .Values.modelSidecars.sparse "module" "app.sparse_service:app" "downloads" false) }}
+{{- range $s := $sidecars }}
+{{- if $s.cfg.enabled }}
+{{- $persist := dig "persistence" "enabled" false $s.cfg }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $.Release.Name }}-{{ $s.name }}
+  namespace: {{ $.Values.global.namespace }}
+  labels: {{- include "georag.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $s.name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $s.cfg.service.port }}
+      targetPort: http
+      name: http
+  selector: {{- include "georag.selectorLabels" (dict "component" $s.name "root" $) | nindent 4 }}
+{{- if $persist }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $.Release.Name }}-{{ $s.name }}-hf-cache
+  namespace: {{ $.Values.global.namespace }}
+  labels: {{- include "georag.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $s.name }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- $sc := include "georag.storageClass" (dict "svcStorageClass" "" "global" $.Values.global) }}
+  {{- if $sc }}
+  storageClassName: {{ $sc }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $s.cfg.persistence.size }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-{{ $s.name }}
+  namespace: {{ $.Values.global.namespace }}
+  labels: {{- include "georag.labels" $ | nindent 4 }}
+spec:
+  replicas: 1
+  {{- if $persist }}
+  # A ReadWriteOnce volume cannot be attached to the old and the new pod at
+  # once, so a rolling update would wedge on the new pod's mount.
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels: {{- include "georag.selectorLabels" (dict "component" $s.name "root" $) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" $s.name "root" $) | nindent 8 }}
+    spec:
+      {{- include "georag.imagePullSecrets" $ | nindent 6 }}
+      {{- if $s.downloads }}
+      # The image runs as www-data (uid 33); the cache volume has to be
+      # writable by it.
+      securityContext:
+        fsGroup: 33
+      {{- end }}
+      containers:
+        - name: {{ $s.name }}
+          image: {{ include "georag.image" (dict "repo" $.Values.fastapi.image.repository "tag" $.Values.fastapi.image.tag "global" $.Values.global) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          command:
+            - uvicorn
+            - {{ $s.module }}
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --workers
+            - "1"
+            - --no-access-log
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Service-to-service auth: every route checks X-Service-Key against
+            # this (app/sidecar_auth.py), and the proxies in the fastapi pods
+            # and the worker send the same key.
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Release.Name }}-secrets
+                  key: FASTAPI_SERVICE_KEY
+            # Import-time cache mkdirs (numba, matplotlib, HF) target $HOME,
+            # which is not writable for www-data in this image.
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg_cache
+            - name: MPLCONFIGDIR
+              value: /tmp/mpl_cache
+            - name: OMP_NUM_THREADS
+              value: {{ $s.cfg.threads | quote }}
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            {{- if $s.downloads }}
+            - name: HF_HOME
+              value: /tmp/hf_cache
+            - name: HF_HUB_CACHE
+              value: /tmp/hf_cache
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: /tmp/hf_cache
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/hf_cache
+            {{- if $.Values.modelSidecars.offline }}
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+            {{- end }}
+            {{- end }}
+            {{- if eq $s.name "embedding" }}
+            # The same model and revision the fastapi pods and the worker are
+            # given (georag.modelServiceEnv).
+            - name: EMBEDDING_MODEL_NAME
+              value: {{ $s.cfg.model | quote }}
+            - name: EMBEDDING_MODEL_REVISION
+              value: {{ $s.cfg.revision | quote }}
+            {{- end }}
+            {{- if eq $s.name "reranker" }}
+            - name: RERANKER_BACKEND
+              value: {{ $s.cfg.backend | quote }}
+            - name: RERANKER_TORCH_THREADS
+              value: {{ $s.cfg.threads | quote }}
+            {{- end }}
+          resources: {{- toYaml $s.cfg.resources | nindent 12 }}
+          # A model that has to be downloaded first can take many minutes; the
+          # startup probe holds the other two off for up to 15, and /health
+          # answers 503 until the model is loaded.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          {{- if $s.downloads }}
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /tmp/hf_cache
+          {{- end }}
+      {{- if $s.downloads }}
+      volumes:
+        - name: hf-cache
+          {{- if $persist }}
+          persistentVolumeClaim:
+            claimName: {{ $.Release.Name }}-{{ $s.name }}-hf-cache
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- end }}
+{{- end }}
+{{- end }}

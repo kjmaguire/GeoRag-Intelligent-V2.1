@@ -35,48 +35,13 @@ spec:
           image: {{ include "georag.image" (dict "repo" .Values.laravelOctane.image.repository "tag" .Values.laravelOctane.image.tag "global" .Values.global) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
-            - containerPort: 8000
+            # The image's CMD is `octane:start --port=80` (docker/laravel.Dockerfile
+            # EXPOSEs 80), and this chart does not override it. The Service,
+            # the probe and the Ingress all reach this by the name `http`.
+            - containerPort: 80
               name: http
           env:
-            - name: APP_ENV
-              value: production
-            - name: APP_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-secrets
-                  key: LARAVEL_APP_KEY
-            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
-            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
-            # and talks to Postgres DIRECTLY, as on AWS. A superuser
-            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
-            # BindWorkspaceRlsContext's session-scoped binding is unsound
-            # behind PgBouncer's transaction pooling (it refuses to serve
-            # when DB_POOLED is true). No Laravel connection is configured
-            # with the superuser; migrations are an operator step.
-            - name: DB_CONNECTION
-              value: pgsql
-            - name: DB_HOST
-              value: {{ .Release.Name }}-postgresql
-            - name: DB_PORT
-              value: "5432"
-            - name: DB_POOLED
-              value: "false"
-            - name: DB_DATABASE
-              value: georag
-            - name: DB_USERNAME
-              value: georag_app
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-secrets
-                  key: PG_APP_PASSWORD
-            - name: REDIS_HOST
-              value: {{ .Release.Name }}-redis
-            - name: REDIS_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-secrets
-                  key: REDIS_PASSWORD
+            {{- include "georag.laravelEnv" . | nindent 12 }}
             - name: FASTAPI_INTERNAL_URL
               value: http://{{ .Release.Name }}-fastapi:{{ .Values.fastapi.service.port }}
             - name: FASTAPI_SERVICE_KEY
@@ -84,6 +49,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: FASTAPI_SERVICE_KEY
+            # config/services.php falls back to http://martin:3000, the compose
+            # service name, which does not resolve here. Octane alone reads it
+            # (TileProxyController); no queued job touches Martin.
+            - name: MARTIN_INTERNAL_URL
+              value: http://{{ .Release.Name }}-martin:{{ .Values.martin.service.port }}
+            {{- with (include "georag.reverbPublisherEnv" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
           resources: {{- toYaml .Values.laravelOctane.resources | nindent 12 }}
           readinessProbe:
             httpGet:
@@ -137,37 +110,25 @@ spec:
           image: {{ include "georag.image" (dict "repo" .Values.laravelOctane.image.repository "tag" .Values.laravelOctane.image.tag "global" .Values.global) }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           command: ["php", "artisan", "horizon"]
-          envFrom:
-            - secretRef:
-                name: {{ .Release.Name }}-secrets
+          # No envFrom: it handed this pod every key in the release Secret —
+          # the Postgres superuser password included — and, since the Secret
+          # keys the app key LARAVEL_APP_KEY, still left it without APP_KEY.
+          # Laravel reads exactly the variables below.
           env:
-            - name: REDIS_HOST
-              value: {{ .Release.Name }}-redis
-            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
-            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
-            # and talks to Postgres DIRECTLY, as on AWS. A superuser
-            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
-            # BindWorkspaceRlsContext's session-scoped binding is unsound
-            # behind PgBouncer's transaction pooling (it refuses to serve
-            # when DB_POOLED is true). No Laravel connection is configured
-            # with the superuser; migrations are an operator step.
-            - name: DB_CONNECTION
-              value: pgsql
-            - name: DB_HOST
-              value: {{ .Release.Name }}-postgresql
-            - name: DB_PORT
-              value: "5432"
-            - name: DB_POOLED
-              value: "false"
-            - name: DB_DATABASE
-              value: georag
-            - name: DB_USERNAME
-              value: georag_app
-            - name: DB_PASSWORD
+            {{- include "georag.laravelEnv" . | nindent 12 }}
+            # The queued job IS the chat (StreamQueryFromFastApi), and it reads
+            # config('services.fastapi.internal_url'), whose fallback is the
+            # compose hostname http://fastapi:8000. Octane only dispatches.
+            - name: FASTAPI_INTERNAL_URL
+              value: http://{{ .Release.Name }}-fastapi:{{ .Values.fastapi.service.port }}
+            - name: FASTAPI_SERVICE_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
-                  key: PG_APP_PASSWORD
+                  key: FASTAPI_SERVICE_KEY
+            {{- with (include "georag.reverbPublisherEnv" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
           resources: {{- toYaml .Values.laravelHorizon.resources | nindent 12 }}
 {{- end }}
 {{- if .Values.laravelReverb.enabled }}
@@ -209,34 +170,51 @@ spec:
           ports:
             - containerPort: 8080
               name: ws
-          envFrom:
-            - secretRef:
-                name: {{ .Release.Name }}-secrets
+          # No envFrom, for the same reason as Horizon.
           env:
-            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
-            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
-            # and talks to Postgres DIRECTLY, as on AWS. A superuser
-            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
-            # BindWorkspaceRlsContext's session-scoped binding is unsound
-            # behind PgBouncer's transaction pooling (it refuses to serve
-            # when DB_POOLED is true). No Laravel connection is configured
-            # with the superuser; migrations are an operator step.
-            - name: DB_CONNECTION
-              value: pgsql
-            - name: DB_HOST
-              value: {{ .Release.Name }}-postgresql
-            - name: DB_PORT
-              value: "5432"
-            - name: DB_POOLED
-              value: "false"
-            - name: DB_DATABASE
-              value: georag
-            - name: DB_USERNAME
-              value: georag_app
-            - name: DB_PASSWORD
+            {{- include "georag.laravelEnv" . | nindent 12 }}
+            - name: REVERB_APP_ID
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
-                  key: PG_APP_PASSWORD
+                  key: REVERB_APP_ID
+            - name: REVERB_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: REVERB_APP_KEY
+            - name: REVERB_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: REVERB_APP_SECRET
+            # The WebSocket origin allowlist. config/reverb.php defaults to a
+            # localhost/georag.local list for dev; left at that, every upgrade
+            # from the real host is rejected and no answer ever streams.
+            - name: REVERB_ALLOWED_ORIGINS
+              value: {{ default .Values.ingress.host .Values.laravelReverb.allowedOrigins | quote }}
+            # REQUIRED. Both default to 10000 bytes, far below a completed LLM
+            # answer frame, and Reverb silently rejects an oversized payload.
+            # int64, not the bare value: Helm reads a YAML number as a float and
+            # `quote` would print 1000000 as "1e+06".
+            - name: REVERB_MAX_REQUEST_SIZE
+              value: {{ .Values.laravelReverb.maxRequestSize | int64 | quote }}
+            - name: REVERB_APP_MAX_MESSAGE_SIZE
+              value: {{ .Values.laravelReverb.maxMessageSize | int64 | quote }}
+            # The Redis pub/sub backplane (REDIS_HOST / REDIS_PASSWORD above).
+            # Each replica holds only the sockets connected to IT, and a
+            # publish reaches one replica, so with more than one and no
+            # backplane the frames that land on the wrong one are dropped
+            # silently. Harmless at one replica.
+            - name: REVERB_SCALING_ENABLED
+              value: {{ gt (int .Values.laravelReverb.replicas) 1 | quote }}
+            - name: REVERB_SCALING_CHANNEL
+              value: reverb
           resources: {{- toYaml .Values.laravelReverb.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: ws
+            initialDelaySeconds: 10
+            periodSeconds: 10
 {{- end }}

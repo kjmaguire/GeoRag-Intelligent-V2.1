@@ -1,8 +1,15 @@
 {{- if .Values.jobs.pgInit.enabled }}
 ---
-# One-shot Job that runs the bundled Phase 0 SQL migrations on first install.
-# Subsequent helm upgrades re-run it (idempotent — every migration uses
-# CREATE * IF NOT EXISTS / DO NOTHING ON CONFLICT).
+# First of two install/upgrade hooks: the database roles (georag_app,
+# martin_readonly) and the Hatchet engine's own role and database. Runs on every
+# install and upgrade (idempotent: create if absent, then re-set LOGIN and the
+# password, so a rotated Secret takes effect at the next `helm upgrade`).
+#
+# It used to loop over /app/database/raw/phase0/*.sql inside the fastapi image
+# as well, and ran the role block AFTER the loop. /app in that image is
+# src/fastapi, which holds no SQL, so psql was handed the literal glob, the
+# hook failed, and the roles below were never created. The roles depend on no
+# file and now run first; the schema is the next Job's.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -31,11 +38,6 @@ spec:
               set -e
               echo "Waiting for postgres to be ready..."
               until pg_isready -h $PGHOST -U $PGUSER; do sleep 2; done
-              echo "Applying migrations..."
-              for f in /app/database/raw/phase0/*.sql; do
-                echo "→ $f"
-                PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f "$f" -v ON_ERROR_STOP=1
-              done
               # SEC-1 (2026-09-29): the runtime roles. Every Laravel pod and
               # the Hatchet worker log in as georag_app, Martin as
               # martin_readonly — neither may be a superuser or BYPASSRLS,
@@ -45,13 +47,25 @@ spec:
               # $$$$ is how a literal $$ survives kubelet's $(VAR) expansion.
               echo "Provisioning runtime roles..."
               PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -v ON_ERROR_STOP=1 \
-                -v app_pw="$PG_APP_PASSWORD" -v martin_pw="$MARTIN_DB_PASSWORD" <<'SQL'
+                -v app_pw="$PG_APP_PASSWORD" -v martin_pw="$MARTIN_DB_PASSWORD" \
+                -v hatchet_pw="$HATCHET_DB_PASSWORD" <<'SQL'
               SELECT format('CREATE ROLE georag_app LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'app_pw')
                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'georag_app')\gexec
               ALTER ROLE georag_app LOGIN PASSWORD :'app_pw';
               SELECT format('CREATE ROLE martin_readonly LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'martin_pw')
                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'martin_readonly')\gexec
               ALTER ROLE martin_readonly LOGIN PASSWORD :'martin_pw';
+              -- The Hatchet engine's own database and role, inside this same
+              -- Postgres (docker/postgresql/init/20-hatchet-database.sql, which
+              -- compose gets from its bind-mounted init directory and this
+              -- chart's image does not run). Created here so the engine's
+              -- DATABASE_URL points at something; CREATE DATABASE cannot run in
+              -- a transaction block, which \gexec does not open.
+              SELECT format('CREATE ROLE hatchet LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'hatchet_pw')
+               WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hatchet')\gexec
+              ALTER ROLE hatchet LOGIN PASSWORD :'hatchet_pw';
+              SELECT 'CREATE DATABASE hatchet OWNER hatchet'
+               WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'hatchet')\gexec
               DO $$$$
               BEGIN
                 IF EXISTS (SELECT 1 FROM pg_roles
@@ -85,41 +99,103 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: MARTIN_DB_PASSWORD
+            - name: HATCHET_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: HATCHET_DB_PASSWORD
 {{- end }}
-{{- if .Values.jobs.auditChainVerify.enabled }}
+{{- if .Values.jobs.schema.enabled }}
 ---
-# Nightly hash-chain verifier. Reports via audit row; fails the Job
-# (and surfaces as a K8s event) if the chain is broken.
+# Second hook: the schema. `php artisan migrate`, then `db:apply-raw`, as the
+# owner role and from the laravel image — the two commands, in this order, that
+# the AWS schema task runs (deploy/aws/terraform/services.tf). Migrations first:
+# several database/raw files are guarded on tables the migrations create.
+# `db:apply-raw` walks database/raw/manifest.json, an explicit ordered list of
+# idempotent files, one transaction each, failing loudly
+# (ops/runbooks/raw-sql-layer.md). Globbing database/raw/phase0/ instead, as
+# the old pg-init did, cannot work on a fresh database: a lexical glob runs
+# `100-` before `20-`, and 96-98 alter silver.* tables the migrations create.
+#
+# --database=pgsql_migrations on BOTH commands. MIGRATE_DB_CONNECTION does not
+# steer `migrate` (it reads its connection from --database, not from config),
+# so without the flag it runs as georag_app and dies creating the `migrations`
+# table. No --isolated here: a hook Job is the only migration runner, and it
+# needs no cache lock.
+#
+# Runs after pg-init (hook weight 10 vs 5), so the roles the migrations GRANT to
+# exist and Postgres is already accepting connections.
 apiVersion: batch/v1
-kind: CronJob
+kind: Job
 metadata:
-  name: {{ .Release.Name }}-audit-chain-verify
+  name: {{ .Release.Name }}-schema
   namespace: {{ .Values.global.namespace }}
   labels: {{- include "georag.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  schedule: {{ .Values.jobs.auditChainVerify.schedule | quote }}
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  concurrencyPolicy: Forbid
-  jobTemplate:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels: {{- include "georag.selectorLabels" (dict "component" "schema" "root" .) | nindent 8 }}
     spec:
-      template:
-        metadata:
-          labels: {{- include "georag.selectorLabels" (dict "component" "audit-chain-verify" "root" .) | nindent 12 }}
-        spec:
-          restartPolicy: OnFailure
-          {{- include "georag.imagePullSecrets" . | nindent 10 }}
-          containers:
-            - name: verify
-              image: {{ include "georag.image" (dict "repo" .Values.fastapi.image.repository "tag" .Values.fastapi.image.tag "global" .Values.global) }}
-              imagePullPolicy: {{ .Values.global.imagePullPolicy }}
-              command: ["python", "-m", "app.audit.chain_verify"]
-              env:
-                - name: POSTGRES_HOST
-                  value: {{ .Release.Name }}-postgresql
-                - name: POSTGRES_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Release.Name }}-secrets
-                      key: POSTGRES_PASSWORD
+      restartPolicy: OnFailure
+      {{- include "georag.imagePullSecrets" . | nindent 6 }}
+      {{- if .Values.jobs.pgInit.enabled }}
+      # Under `helm install` the hook weights already order the two Jobs and
+      # this passes at once. Applied raw (`kubectl apply -f
+      # kubernetes/manifests/<flavor>.yaml`) there are no hooks and both Jobs
+      # start together: the migrations GRANT to roles pg-init creates, and
+      # Postgres may still be initialising its data directory, so without this
+      # the Job spends its backoffLimit before either is true and stays failed.
+      initContainers:
+        - name: wait-for-roles
+          image: {{ include "georag.image" (dict "repo" .Values.jobs.pgInit.image.repository "tag" .Values.jobs.pgInit.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              until psql -h $PGHOST -U $PGUSER -d $PGDATABASE -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'martin_readonly'" 2>/dev/null | grep -qx 1; do
+                echo "Waiting for pg-init to create the runtime roles..."
+                sleep 3
+              done
+          env:
+            - name: PGHOST
+              value: {{ .Release.Name }}-postgresql
+            - name: PGUSER
+              value: georag
+            - name: PGDATABASE
+              value: georag
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
+      {{- end }}
+      containers:
+        - name: schema
+          image: {{ include "georag.image" (dict "repo" .Values.laravelOctane.image.repository "tag" .Values.laravelOctane.image.tag "global" .Values.global) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - php artisan migrate --force --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations
+          env:
+            {{- include "georag.laravelEnv" . | nindent 12 }}
+            # The owner role (config/database.php -> pgsql_migrations). The
+            # runtime connection above stays georag_app.
+            - name: MIGRATE_DB_CONNECTION
+              value: pgsql_migrations
+            - name: MIGRATE_DB_HOST
+              value: {{ .Release.Name }}-postgresql
+            - name: MIGRATE_DB_PORT
+              value: "5432"
+            - name: MIGRATE_DB_USERNAME
+              value: georag
+            - name: MIGRATE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-secrets
+                  key: POSTGRES_PASSWORD
 {{- end }}

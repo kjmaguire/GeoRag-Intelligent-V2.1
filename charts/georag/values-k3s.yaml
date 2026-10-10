@@ -25,4 +25,8 @@ postgresql:
 
 # Optional services off by default in the K3s preset
 laravelReverb:
-  enabled: false   # turn on once you wire a websocket-aware ingress
+  # Off, so chat answers do not stream live. There is nothing left to wire: the
+  # chart's Ingress routes /app to Reverb when this is on, and Traefik passes
+  # WebSocket upgrades through. Set it true together with secrets.reverbAppKey
+  # and secrets.reverbAppSecret (charts/georag/README.md, "Live chat (Reverb)").
+  enabled: false
