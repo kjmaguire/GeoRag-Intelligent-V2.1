@@ -158,7 +158,16 @@ resource "aws_lb_listener_rule" "reverb" {
 
   condition {
     path_pattern {
-      values = ["/app/*", "/apps/*"]
+      # /app/* is the WebSocket the browser opens. /apps/* is Reverb's signed
+      # REST API (the Pusher events API), and nothing outside the VPC calls
+      # it: laravel-octane and laravel-horizon publish over Cloud Map
+      # (REVERB_HOST in config.tf), the health check goes straight to the
+      # target, and the browser authorises private channels against Laravel's
+      # /broadcasting/auth. It used to be routed here too, which put a publish
+      # and channel-listing API on the public hostname, protected by nothing
+      # but the app secret. Anything under /apps now falls to the default
+      # action, where Laravel answers 404.
+      values = ["/app/*"]
     }
   }
 

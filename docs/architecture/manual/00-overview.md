@@ -150,7 +150,7 @@ Production is ECS Fargate, cluster `georag`, no GPU
 ([deploy/aws/README.md](../../../deploy/aws/README.md)):
 
 - Ten services: `laravel-octane` and `laravel-reverb` — the two the ALB
-  routes to (`/app/*` and `/apps/*` go to Reverb) and the two at desired
+  routes to (`/app/*` goes to Reverb) and the two at desired
   2 — then `laravel-horizon`,
   `fastapi`, `hatchet`, `hatchet-worker` (4 vCPU / 8 GiB, desired 1),
   `qdrant`, `redis`, `martin`, and `sparse` — the SPLADE++ sidecar, which
