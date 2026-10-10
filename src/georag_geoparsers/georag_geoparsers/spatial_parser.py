@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from georag_geoparsers._area_of_use import classify_bounds
+
 logger = logging.getLogger(__name__)
 
 PARSER_VERSION = "2.4.0"
@@ -695,30 +697,14 @@ def _score_crs_confidence(gdf) -> tuple[float, str]:
         bounds = gdf.to_crs("EPSG:4326").geometry.total_bounds  # (minx, miny, maxx, maxy)
         data_west, data_south, data_east, data_north = bounds
 
-        aou_west = area.west
-        aou_south = area.south
-        aou_east = area.east
-        aou_north = area.north
-
-        # Fully inside
-        if (
-            data_west >= aou_west
-            and data_east <= aou_east
-            and data_south >= aou_south
-            and data_north <= aou_north
-        ):
+        # Antimeridian-aware: NAD83 (4269), NAD27 (4267) and Alaska Albers
+        # (3338) publish west > east, and a plain west <= lon <= east scored
+        # correctly placed Saskatchewan / Alaska data 0.0 (GIS audit 2026-10).
+        fit = classify_bounds(area, data_west, data_south, data_east, data_north)
+        if fit == "inside":
             return 1.0, "bounds match CRS extent"
-
-        # Fully outside — no overlap
-        if (
-            data_east < aou_west
-            or data_west > aou_east
-            or data_north < aou_south
-            or data_south > aou_north
-        ):
+        if fit == "outside":
             return 0.0, "coordinates outside declared CRS extent"
-
-        # Partial overlap
         return 0.5, "partial CRS extent overlap"
 
     except Exception as exc:

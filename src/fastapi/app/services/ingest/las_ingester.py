@@ -52,6 +52,7 @@ from typing import Any
 
 import asyncpg
 import lasio
+from georag_geoparsers._area_of_use import within_area
 from georag_geoparsers.las_parser import (
     las_depth_unit_warning,
     resolve_las_depth_unit,
@@ -213,13 +214,10 @@ def _within_crs_area(epsg: int, x: float, y: float) -> bool:
     if abs(lat) > 90 or abs(lon) > 180:
         return False
     area = crs.area_of_use
-    if area is not None:
-        slack = 3.0
-        if not (
-            area.west - slack <= lon <= area.east + slack
-            and area.south - slack <= lat <= area.north + slack
-        ):
-            return False
+    # Antimeridian-aware (NAD83's area is west 167.65 / east -40.73): a plain
+    # west <= lon <= east refused every point of such a CRS (GIS audit 2026-10).
+    if area is not None and not within_area(area, lon, lat, slack_deg=3.0):
+        return False
     return True
 
 
