@@ -203,6 +203,15 @@ bearer from `app/Services/FastApiJwtMinter.php` (signed with the same
   ranges from 2 minutes to 24 hours. `on_failure` hooks exist on
   `ingest_pdf`, `ingest_zip_archive`, `tiff_normalize` and
   `stale_run_detector` only.
+- **Hatchet retries immediately unless a task sets `backoff_factor`.**
+  `ingest_pdf`'s `preflight`, `parse`, `persist` and `embed_verify` and
+  `tiff_normalize.normalize` (the tasks that call S3, Postgres, Cohere or the
+  embed dispatch) set `backoff_factor=8.0, backoff_max_seconds=60`: about 1-8 s
+  before the first retry, up to a minute before the second. Before this a
+  transient outage spent the whole budget in milliseconds. A
+  `TiffNormalizeError` (the input is unusable) is raised as a
+  `NonRetryableException`, so `normalize` fails once instead of downloading and
+  decoding the same bytes twice.
 - **Cross-workspace sweeps run once per workspace with the scope bound**
   (`app/db/workspace_sweep.py`, HAT-1, 2026-09-29). On AWS the worker is
   `georag_app` (NOBYPASSRLS), and an unscoped read of a fail-closed table

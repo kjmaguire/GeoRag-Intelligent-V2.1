@@ -37,7 +37,7 @@ from typing import Any
 from uuid import UUID
 
 from georag_object_storage import Bucket, ObjectStorage, get_storage_client
-from hatchet_sdk import Context
+from hatchet_sdk import Context, NonRetryableException
 from pydantic import BaseModel, Field
 
 from app.hatchet_workflows import _progress as ingest_progress
@@ -268,20 +268,50 @@ tiff_normalize = hatchet.workflow(
 )
 
 
+class _InputRejected(NonRetryableException, TiffNormalizeError):
+    """A ``TiffNormalizeError`` that Hatchet will not retry.
+
+    ``TiffNormalizeError`` means the INPUT is the problem (an unsupported
+    extension, bytes Pillow cannot open, a file over the size cap). The task
+    declared ``retries=1`` and nothing said so, so Hatchet downloaded and decoded
+    the same file a second time to fail the same way -- the docstring below
+    claimed a malformed TIFF "doesn't burn Hatchet retries" while it did. It is
+    still a ``TiffNormalizeError`` for anything that catches that.
+    """
+
+
 # F6 (2026-08-11) — schedule_timeout added so a queue-saturated normalize is
 # cancelled by Hatchet (and surfaced via on_failure below) instead of being
 # silently dropped with the default schedule window.
-@tiff_normalize.task(execution_timeout="20m", schedule_timeout="2h", retries=1)
+#
+# backoff_*: what IS retried here is a storage or database hiccup, and Hatchet
+# retries immediately unless told otherwise (~1-8 s before the one retry).
+@tiff_normalize.task(
+    execution_timeout="20m", schedule_timeout="2h", retries=1,
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def normalize(
     input: TiffNormalizeInput, ctx: Context
 ) -> TiffNormalizeOutput:
     """Normalise a TIFF to PDF and trigger ingest_pdf.
 
     Single task — the wrap step is in-memory and bounded by the
-    MAX_TIFF_BYTES + MAX_FRAMES caps in ``tiff_to_pdf``. Failures are
-    routed to TiffNormalizeError so a hand-malformed TIFF doesn't burn
-    Hatchet retries forever.
+    MAX_TIFF_BYTES + MAX_FRAMES caps in ``tiff_to_pdf``. A
+    ``TiffNormalizeError`` (the input is unusable) is re-raised as
+    ``_InputRejected`` so Hatchet fails the run once, instead of retrying a
+    hand-malformed TIFF; anything else (storage, database) still retries.
     """
+    try:
+        return await _normalize(input, ctx)
+    except TiffNormalizeError as exc:
+        if isinstance(exc, NonRetryableException):
+            raise
+        raise _InputRejected(str(exc)) from exc
+
+
+async def _normalize(
+    input: TiffNormalizeInput, ctx: Context
+) -> TiffNormalizeOutput:
     log.info(
         "tiff_normalize.start ws=%s project=%s key=%s size=%d",
         input.workspace_id, input.project_id, input.minio_key, input.file_size,

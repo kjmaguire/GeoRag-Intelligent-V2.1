@@ -965,7 +965,17 @@ ingest_pdf = hatchet.workflow(
 # ~20 MB blob download + sha256, but on a saturated worker (concurrent parse
 # using all cores) the event loop starves and the old 60s budget expired 3×
 # in a row, terminally failing a whole workflow (Madsen, 2026-08-07 11:32Z).
-@ingest_pdf.task(execution_timeout="180s", schedule_timeout="2h", retries=2)
+#
+# backoff_* on this task and the three below (2026-10-10): every one of them
+# calls something remote (S3, Postgres, Qdrant/Cohere through the embed
+# dispatch), and Hatchet retries IMMEDIATELY unless it is given a backoff, so a
+# transient outage spent the whole retry budget in a few milliseconds. The delay
+# before a retry is factor ** (retries so far), capped: about 1-8 s before the
+# first retry and up to a minute before the second.
+@ingest_pdf.task(
+    execution_timeout="180s", schedule_timeout="2h", retries=2,
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def preflight(input: IngestPdfInput, ctx: Context) -> PreflightOut:
     """Stream from S3 to disk, hash it, validate magic bytes + size + encryption.
 
@@ -1181,7 +1191,10 @@ def _parse_wall_cap_s(page_count: int | None) -> int:
 # here has confirmed the pinned hatchet-lite engine honours a refresh, and a
 # silently ignored refresh would let Hatchet kill the task mid-parse with a
 # poisoned pool, the exact failure the in-process cap exists to prevent.
-@ingest_pdf.task(execution_timeout="4h", schedule_timeout="2h", retries=1, parents=[preflight])
+@ingest_pdf.task(
+    execution_timeout="4h", schedule_timeout="2h", retries=1, parents=[preflight],
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def parse(input: IngestPdfInput, ctx: Context) -> ParseOut:
     """Call the canonical v1.49 ``parse_pdf_report`` end to end.
 
@@ -1919,7 +1932,10 @@ def build_run_warnings(
     return out
 
 
-@ingest_pdf.task(execution_timeout="15m", schedule_timeout="2h", retries=2, parents=[parse])
+@ingest_pdf.task(
+    execution_timeout="15m", schedule_timeout="2h", retries=2, parents=[parse],
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def persist(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOut:
     """Write silver.reports + silver.shadow_runs + audit.audit_ledger."""
     if input.project_id and input.workspace_id:
@@ -2850,7 +2866,10 @@ async def _scoped_acquire(pool: Any, workspace_id: str, site: str):
 # unembedded passage count and re-dispatches the embed workflow if anything
 # is still pending. This is belt-and-suspenders alongside the every-10-min
 # cron — gives users near-realtime "I just uploaded this and chat sees it".
-@ingest_pdf.task(execution_timeout="60s", schedule_timeout="2h", retries=1, parents=[persist])
+@ingest_pdf.task(
+    execution_timeout="60s", schedule_timeout="2h", retries=1, parents=[persist],
+    backoff_factor=8.0, backoff_max_seconds=60,
+)
 async def embed_verify(input: IngestPdfInput, ctx: Context) -> dict:
     """Phase 8 (2026-05-22) — single check + dispatch, no polling loop.
 
