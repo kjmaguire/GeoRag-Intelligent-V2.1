@@ -68,7 +68,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -139,6 +139,14 @@ class QueryRequest(BaseModel):
     #         ...
     #     ]
     #   }
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "The chat conversation this question belongs to (Laravel's "
+            "conversation id). Stored as answer_runs.session_id so a "
+            "conversation's runs can be grouped; dropped if not a UUID."
+        ),
+    )
     history: list[dict] | None = Field(
         default=None,
         max_length=50,
@@ -150,6 +158,18 @@ class QueryRequest(BaseModel):
             "single-turn."
         ),
     )
+
+    @field_validator("session_id")
+    @classmethod
+    def _session_id_is_a_uuid_or_nothing(cls, value: str | None) -> str | None:
+        """A lineage field: a malformed id is dropped, never a 422 for the query."""
+        if value is None:
+            return None
+        try:
+            return str(UUID(str(value)))
+        except ValueError:
+            logger.warning("queries: ignoring a session_id that is not a UUID")
+            return None
 
     @field_validator("context_envelope")
     @classmethod
@@ -409,6 +429,7 @@ async def _agent_rag_stream(
         # writes. Comes off the stamper so there is exactly one trace
         # id per request rather than two that nearly agree.
         trace_id=(getattr(stamper, "trace_id", None) if stamper else None),
+        session_id=body.session_id,
     )
 
     # B7 — defensive check that JWT project_id matches request body.

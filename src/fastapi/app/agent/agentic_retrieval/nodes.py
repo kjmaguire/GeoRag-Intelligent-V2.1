@@ -4229,10 +4229,15 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     ).workspace_id
 
     try:
+        from uuid import UUID  # noqa: PLC0415
+
         from app.agent.lineage import build_lineage_payload  # noqa: PLC0415
+
+        _session = getattr(state.deps, "session_id", None)
         lineage = build_lineage_payload(
             response=state.response,
             fused_candidates=(),  # the agentic execute_node doesn't surface a fused list
+            session_id=UUID(_session) if _session else None,
         )
         cols = lineage.to_db_columns()
     except Exception:

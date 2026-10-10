@@ -305,6 +305,13 @@ class StreamQueryFromFastApi implements ShouldQueue
             if ($history !== []) {
                 $payloadData['history'] = $history;
             }
+            // The chat thread this question belongs to, recorded as
+            // answer_runs.session_id so a conversation's runs can be grouped
+            // for replay. A UUID (QueryController drops anything else); older
+            // FastAPI builds ignore the key.
+            if ($this->conversationId !== null) {
+                $payloadData['session_id'] = $this->conversationId;
+            }
             $payload = json_encode($payloadData);
 
             $context = stream_context_create([
