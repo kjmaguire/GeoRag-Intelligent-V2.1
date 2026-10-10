@@ -10,13 +10,16 @@ when a check refuses.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -50,12 +53,15 @@ def harness(monkeypatch):
     db: dict[str, Any] = {"exists": True, "scopes": [], "conn": None}
 
     class _Ref:
-        workflow_run_id = "run-123"
+        def __init__(self, n: int) -> None:
+            # The first run keeps the historical id; later ones are distinct, so
+            # a test can tell a repeated dispatch from a repeated answer.
+            self.workflow_run_id = f"run-{122 + n}"
 
     for name, spec in T.TRIGGERS.items():
         async def _run_no_wait(inp: Any, _name: str = name) -> _Ref:
             dispatched.append((_name, inp))
-            return _Ref()
+            return _Ref(len(dispatched))
 
         monkeypatch.setattr(spec.workflow, "aio_run_no_wait", _run_no_wait)
 
@@ -367,3 +373,188 @@ def test_incident_diagnosis_bounds_the_window(harness) -> None:
     }})
     assert r.status_code == 422
     assert dispatched == []
+
+
+# ---------------------------------------------------------------------------
+# Request-id dedupe (2026-10 Hatchet audit, finding 8)
+# ---------------------------------------------------------------------------
+class _FakeRedis:
+    """The three calls the route makes, with SET NX and TTL semantics."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.ttls: dict[str, int | None] = {}
+        self.down = False
+
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        if self.down:
+            raise ConnectionError("redis is down")
+        if nx and key in self.store:
+            return None
+        self.store[key], self.ttls[key] = value, ex
+        return True
+
+    async def get(self, key: str) -> str | None:
+        if self.down:
+            raise ConnectionError("redis is down")
+        return self.store.get(key)
+
+
+@pytest.fixture
+def deduping(harness):
+    """(client, dispatched, db, redis): the harness with a fake Redis attached."""
+    client, dispatched, db = harness
+    redis = _FakeRedis()
+    client.app.state.redis_client = redis
+    return client, dispatched, db, redis
+
+
+def _report(request_id: str = _UUID, **over: Any) -> dict[str, Any]:
+    return {"workspace_id": _WS, "input": _report_input(export_request_id=request_id, **over)}
+
+
+def test_a_repeated_request_id_returns_the_first_run_and_dispatches_once(deduping) -> None:
+    client, dispatched, _, redis = deduping
+
+    first = _post(client, "generate_report", _report())
+    second = _post(client, "generate_report", _report())
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["workflow_run_id"] == "run-123"
+    assert second.json() == first.json(), "the repeat gets the run the first request started"
+    assert len(dispatched) == 1
+    (key,) = redis.store
+    assert key == f"workflow_trigger:generate_report:{_WS}:{_UUID}"
+    assert redis.store[key] == "run-123" and redis.ttls[key] == T.DEDUPE_TTL_SECONDS == 3600
+
+
+def test_a_new_request_id_is_a_new_run(deduping) -> None:
+    client, dispatched, _, _ = deduping
+
+    a = _post(client, "generate_report", _report(_UUID))
+    b = _post(client, "generate_report", _report("e1000000-0000-0000-0000-000000000041"))
+
+    assert len(dispatched) == 2
+    assert a.json()["workflow_run_id"] != b.json()["workflow_run_id"]
+
+
+def test_the_same_request_id_in_another_workspace_is_another_request(deduping) -> None:
+    """The workspace is part of the key, so one tenant's request id can never
+    be answered with a run reference that belongs to another."""
+    client, dispatched, _, _ = deduping
+
+    _post(client, "generate_report", _report())
+    other = _post(client, "generate_report", {
+        "workspace_id": _OTHER_WS, "input": _report_input(workspace_id=_OTHER_WS),
+    })
+
+    assert other.status_code == 202
+    assert len(dispatched) == 2
+
+
+def test_each_deduped_workflow_names_a_real_input_field() -> None:
+    for workflow, field in T.REQUEST_ID_FIELDS.items():
+        assert field in T.TRIGGERS[workflow].input_model.model_fields, workflow
+
+
+def test_support_replay_and_restore_are_deduped_too(deduping) -> None:
+    client, dispatched, _, _ = deduping
+    uri = f"s3://workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
+    restore = {"workspace_id": _WS, "input": {
+        "workspace_id": _WS, "snapshot_manifest_uri": uri,
+        "initiated_by_user_id": 7, "restore_request_id": _UUID,
+    }}
+
+    for workflow, body in (
+        ("support_replay", {"workspace_id": _WS, "input": _replay()}),
+        ("restore_workspace", restore),
+    ):
+        before = len(dispatched)
+        first = _post(client, workflow, body)
+        second = _post(client, workflow, body)
+        assert second.json() == first.json(), workflow
+        assert len(dispatched) == before + 1, workflow
+
+
+def test_a_workflow_with_no_request_id_is_never_deduped(deduping) -> None:
+    client, dispatched, _, redis = deduping
+    body = {"workspace_id": _WS, "input": {"workspace_id": _WS}}
+
+    _post(client, "workspace_export", body)
+    _post(client, "workspace_export", body)
+
+    assert len(dispatched) == 2
+    assert redis.store == {}
+
+
+def test_a_request_the_scope_check_refused_does_not_claim_its_id(deduping) -> None:
+    client, dispatched, db, redis = deduping
+    db["exists"] = False
+    assert _post(client, "generate_report", _report()).status_code == 404
+    assert redis.store == {}
+
+    db["exists"] = True
+    assert _post(client, "generate_report", _report()).status_code == 202
+    assert len(dispatched) == 1
+
+
+def test_a_request_id_still_being_dispatched_is_409_not_a_second_run(deduping) -> None:
+    client, dispatched, _, redis = deduping
+    redis.store[f"workflow_trigger:generate_report:{_WS}:{_UUID}"] = T._IN_PROGRESS
+
+    r = _post(client, "generate_report", _report())
+
+    assert r.status_code == 409
+    assert dispatched == []
+
+
+def test_a_dispatch_that_raises_keeps_the_id_claimed(deduping, monkeypatch) -> None:
+    """Whether the engine started the run is unknown after an error (a deadline
+    can expire after it did). Releasing the id would let a retry start a second
+    run, the one outcome the claim exists to prevent."""
+    client, dispatched, _, redis = deduping
+
+    async def _boom(_inp: Any) -> None:
+        raise RuntimeError("engine deadline exceeded")
+
+    monkeypatch.setattr(T.TRIGGERS["generate_report"].workflow, "aio_run_no_wait", _boom)
+    with pytest.raises(RuntimeError, match="deadline"):
+        _post(client, "generate_report", _report())
+    assert list(redis.store.values()) == [T._IN_PROGRESS]
+
+    r = _post(client, "generate_report", _report())
+    assert r.status_code == 409
+    assert dispatched == []
+
+
+def test_redis_down_still_dispatches(deduping) -> None:
+    """The dedupe is a safety net under the Laravel cooldown, not a gate."""
+    client, dispatched, _, redis = deduping
+    redis.down = True
+
+    r = _post(client, "generate_report", _report())
+
+    assert r.status_code == 202
+    assert len(dispatched) == 1
+
+
+def test_no_redis_client_at_all_still_dispatches(harness) -> None:
+    client, dispatched, _ = harness  # the plain harness has no redis_client
+
+    assert _post(client, "generate_report", _report()).status_code == 202
+    assert len(dispatched) == 1
+
+
+async def test_of_two_concurrent_claims_exactly_one_wins() -> None:
+    redis = _FakeRedis()
+    validated = SimpleNamespace(export_request_id=UUID(_UUID))
+
+    results = await asyncio.gather(
+        T._claim_request_id(redis, "generate_report", _WS, validated),
+        T._claim_request_id(redis, "generate_report", _WS, validated),
+        return_exceptions=True,
+    )
+
+    owners = [r for r in results if isinstance(r, str)]
+    refused = [r for r in results if isinstance(r, HTTPException)]
+    assert len(owners) == 1 and len(refused) == 1 and refused[0].status_code == 409

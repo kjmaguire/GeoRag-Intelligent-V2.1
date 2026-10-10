@@ -368,17 +368,27 @@ final class WorkflowTriggerController extends Controller
         }
 
         // The cooldown claim above exists to stop a double click dispatching
-        // twice. It must therefore be released on EVERY path where nothing was
+        // twice. It must therefore be released on every path where nothing was
         // dispatched, not only on HatchetWorkflowTriggerException: any other
         // throwable (a JWT-mint failure, a serialisation error, a cache or
         // driver exception inside trigger()) used to leave the key set, so the
         // user's retry was answered 429 "sent less than 60 seconds ago" for a
         // request that never went anywhere.
+        //
+        // It must NOT be released when the outcome is unknown. A read timeout
+        // or a reset after the request was written means FastAPI may have
+        // started the run and lost only the reply; releasing the claim then
+        // invited the very retry that starts it twice (each click mints a new
+        // request id, so FastAPI cannot tell them apart). The claim lapses on
+        // its own after COOLDOWN_SECONDS.
         $dispatched = false;
+        $outcomeUnknown = false;
         try {
             $result = $trigger->trigger($workflow, $workspaceId, $input, $user, $jwtProject);
             $dispatched = true;
         } catch (HatchetWorkflowTriggerException $exc) {
+            $outcomeUnknown = $exc->maybeDispatched;
+
             // 5xx means FastAPI was unreachable or answered with an error, and
             // the message carries the upstream URL, driver text or response
             // body. That detail is for the log; the caller gets a neutral
@@ -388,17 +398,21 @@ final class WorkflowTriggerController extends Controller
                     'workflow' => $workflow,
                     'status' => $exc->status,
                     'detail' => $exc->getMessage(),
+                    'outcome_unknown' => $outcomeUnknown,
                 ]);
 
                 return response()->json([
                     'error' => 'trigger_failed',
-                    'message' => 'The '.$workflow.' workflow could not be started right now. Please try again shortly.',
+                    'message' => $outcomeUnknown
+                        ? 'The '.$workflow.' request was sent but no answer came back, so it may have started. '
+                            .'Check its status before trying again.'
+                        : 'The '.$workflow.' workflow could not be started right now. Please try again shortly.',
                 ], $exc->status);
             }
 
             return response()->json(['error' => 'trigger_failed', 'message' => $exc->getMessage()], $exc->status);
         } finally {
-            if (! $dispatched) {
+            if (! $dispatched && ! $outcomeUnknown) {
                 Cache::forget($cooldownKey);
             }
         }
