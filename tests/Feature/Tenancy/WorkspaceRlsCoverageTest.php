@@ -333,10 +333,10 @@ final class WorkspaceRlsCoverageTest extends TestCase
             }
 
             $qualified = "{$schema}.{$table}";
-            if (str_contains((string) $row->qual, 'IS NULL OR')) {
+            if (self::hasUnboundEscape($row->qual)) {
                 $gaps[] = "{$qualified} → {$policy} (USING still has an IS NULL OR escape)";
             }
-            if ($row->with_check !== null && str_contains((string) $row->with_check, 'IS NULL OR')) {
+            if (self::hasUnboundEscape($row->with_check)) {
                 $gaps[] = "{$qualified} → {$policy} (WITH CHECK still has an IS NULL OR escape)";
             }
         }
@@ -425,10 +425,10 @@ final class WorkspaceRlsCoverageTest extends TestCase
             }
 
             $qualified = "{$schema}.{$table}";
-            if (str_contains((string) $row->qual, 'IS NULL OR')) {
+            if (self::hasUnboundEscape($row->qual)) {
                 $gaps[] = "{$qualified} → {$policy} (USING still has an IS NULL OR escape)";
             }
-            if ($row->with_check !== null && str_contains((string) $row->with_check, 'IS NULL OR')) {
+            if (self::hasUnboundEscape($row->with_check)) {
                 $gaps[] = "{$qualified} → {$policy} (WITH CHECK still has an IS NULL OR escape)";
             }
         }
@@ -520,10 +520,10 @@ final class WorkspaceRlsCoverageTest extends TestCase
         }
 
         $gaps = [];
-        if (str_contains((string) $row->qual, 'IS NULL OR')) {
+        if (self::hasUnboundEscape($row->qual)) {
             $gaps[] = 'silver.document_passages → document_passages_workspace_isolation (USING still has an IS NULL OR escape)';
         }
-        if ($row->with_check !== null && str_contains((string) $row->with_check, 'IS NULL OR')) {
+        if (self::hasUnboundEscape($row->with_check)) {
             $gaps[] = 'silver.document_passages → document_passages_workspace_isolation (WITH CHECK still has an IS NULL OR escape)';
         }
 
@@ -534,6 +534,80 @@ final class WorkspaceRlsCoverageTest extends TestCase
             PHP_EOL.PHP_EOL.
             'See 2026_08_15_030000_close_rls_admin_escape_hatch_third_pass for the '
             .'canonical fail-closed shape.',
+        );
+    }
+
+    /**
+     * Does a policy expression, as pg_policies deparses it, contain an
+     * `IS NULL` test?
+     *
+     * Every fail-open shape in this schema has one: `GUC IS NULL OR ...`,
+     * `... OR current_setting(...) IS NULL`, `workspace_id IS NULL OR ...`.
+     * The detector used to be `str_contains($expr, 'IS NULL OR')`, which can
+     * never match: PostgreSQL deparses each OR operand in parentheses, so the
+     * text is `(... IS NULL) OR (...)` and the needle `IS NULL OR` does not
+     * occur. Measured on a migrate + db:apply-raw database: 101 of 176 policies
+     * contain an `IS NULL`, and none contains `IS NULL OR`. That made the
+     * "verified subset" tests below pass whatever the policies said --
+     * including with the fail-open shape db:apply-raw had re-installed on five
+     * of those tables. The census in docs/architecture/fail-open-rls-posture-
+     * 2026-08-21.md reached the same conclusion and recommends this form.
+     *
+     * Shape-independent on purpose: `IS NOT DISTINCT FROM` (the platform-aware
+     * shape on outbox.*) is not an `IS NULL` test and does not match.
+     */
+    private static function hasUnboundEscape(mixed $expression): bool
+    {
+        return is_string($expression) && preg_match('/\bIS\s+NULL\b/i', $expression) === 1;
+    }
+
+    /**
+     * The fail-open-by-layering half of the same bug: two PERMISSIVE policies
+     * on one table are OR-ed, so a strict policy next to a fail-open one is
+     * fail-open. On a migrate-only database every verified-subset table must
+     * carry exactly the one policy the migration chain gives it.
+     *
+     * The database/raw layer, which is where a second policy used to come from,
+     * is not applied here (RefreshDatabase migrates only); the same assertion
+     * against a migrate-THEN-raw database lives in
+     * src/fastapi/tests/test_rls_after_raw.py, run by the CI job
+     * cron-sweeps-app-role.
+     */
+    public function test_verified_subset_tables_carry_exactly_one_policy_each(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('RLS is Postgres-only.');
+        }
+
+        $tables = [
+            ['workspace', 'workspace_memberships'],
+            ['workspace', 'workspace_agent_config'],
+            ['workspace', 'dry_run_outputs'],
+            ['outbox', 'pending_propagations'],
+            ['outbox', 'propagation_attempts'],
+            ['usage', 'usage_events'],
+            ['usage', 'workspace_cost_ceilings'],
+        ];
+
+        $layered = [];
+        foreach ($tables as [$schema, $table]) {
+            $names = array_map(
+                static fn ($r) => $r->policyname,
+                DB::select(
+                    'SELECT policyname FROM pg_policies WHERE schemaname = ? AND tablename = ? ORDER BY policyname',
+                    [$schema, $table],
+                ),
+            );
+
+            if (count($names) > 1) {
+                $layered[] = "{$schema}.{$table}: ".implode(', ', $names);
+            }
+        }
+
+        $this->assertSame(
+            [],
+            $layered,
+            'These tables carry more than one policy, and permissive policies OR together: '.PHP_EOL.implode(PHP_EOL, $layered),
         );
     }
 }
