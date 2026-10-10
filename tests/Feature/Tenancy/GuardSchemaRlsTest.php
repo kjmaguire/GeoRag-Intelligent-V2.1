@@ -6,6 +6,7 @@ namespace Tests\Feature\Tenancy;
 
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
@@ -19,21 +20,29 @@ use Tests\TestCase;
  *   silver.entity_aliases         (plan §1a + §2c)
  *   silver.alias_gaps             (plan §2c)
  *
- * For each table, this test:
- *   1. Binds the app.workspace_id GUC to workspace A and inserts a row
- *   2. Binds the GUC to workspace B and re-selects from the same table
- *   3. Asserts B sees ZERO rows belonging to A (RLS isolation working)
- *   4. Asserts B can ONLY see its own rows after inserting under B
+ * Both tests below run once per table, from the one `guardArmTables()`
+ * provider, so a table cannot be in the list and untested (document_versions
+ * was: the provider named it, no test method did).
+ *
+ * Reads. Bind the app.workspace_id GUC to workspace A and insert a row; bind
+ * it to workspace B and re-select; B must see ZERO of A's rows, and A must
+ * still see its own after the switch.
+ *
+ * Writes. Bound to workspace B, inserting a row tagged for workspace A must be
+ * REJECTED by the policy's check (the policy has a USING clause only, which
+ * PostgreSQL also applies to new rows). Isolation that only filters reads
+ * would let one tenant plant rows in another's workspace.
  *
  * The canonical RLS pattern on every guard-arm table is:
  *
  *     CREATE POLICY <table>_workspace_isolation ON silver.<table>
  *         USING (workspace_id::text = current_setting('app.workspace_id', true))
- *         WITH CHECK (workspace_id::text = current_setting('app.workspace_id', true))
  *
- * The test runs as the migrations role (which has BYPASSRLS off by default)
- * so the policy is enforced. If a future migration accidentally drops FORCE
- * ROW LEVEL SECURITY on one of these tables, this test catches it.
+ * The test drops to the app role (`georag_app`, no BYPASSRLS) so the policy
+ * is enforced. That catches a dropped or loosened policy and a table whose
+ * RLS was switched off. It does NOT catch FORCE ROW LEVEL SECURITY being
+ * dropped: FORCE only matters to the table OWNER, which this role is not.
+ * That flag is pinned at catalog level by WorkspaceRlsCoverageTest.
  *
  * NOTE: this test uses real DB writes inside an outer transaction that
  * always rolls back, so it leaves no residue. RefreshDatabase is NOT used
@@ -46,24 +55,30 @@ final class GuardSchemaRlsTest extends TestCase
 
     private const WS_B = '22222222-2222-2222-2222-222222222222';
 
+    /** Placeholder: replaced by a fresh UUID for every insert. */
+    private const FRESH_UUID = '{fresh-uuid}';
+
+    /** Placeholder: replaced by the id of a silver.reports row seeded for this test. */
+    private const SEEDED_REPORT = '{seeded-report}';
+
     /**
-     * Each row: [table, columns-array-for-insert-builder].
+     * Each row: [table, columns-for-insert-builder].
      * The columns list contains the MINIMUM required NOT NULL fields
      * besides workspace_id; defaults fill the rest.
      *
-     * @return array<int, array{0: string, 1: array<string, mixed>}>
+     * @return array<string, array{0: string, 1: array<string, mixed>}>
      */
     public static function guardArmTables(): array
     {
         return [
-            [
+            'query_traces' => [
                 'silver.query_traces',
                 [
-                    'query_id' => '00000000-0000-0000-0000-000000000001',
+                    'query_id' => self::FRESH_UUID,
                     'query_text' => 'rls pen-test',
                 ],
             ],
-            [
+            'data_quality_flags' => [
                 'silver.data_quality_flags',
                 [
                     'record_type' => 'assay_interval',
@@ -73,33 +88,30 @@ final class GuardSchemaRlsTest extends TestCase
                     'description' => 'rls pen-test',
                 ],
             ],
-            [
+            'document_versions' => [
                 'silver.document_versions',
                 [
-                    // FK to silver.reports — we'll insert a synthetic
-                    // report row first in setUp() under each workspace,
-                    // then use its ID here. To keep this test self-
-                    // contained, we DELETE the FK temporarily via SAVEPOINT
-                    // and skip if FK is enforced. The pen-test still
-                    // validates RLS at the table level.
-                    'document_id' => '00000000-0000-0000-0000-0000000000aa',
+                    // FK to silver.reports(report_id): a report row is seeded
+                    // for each run (see seedReport()) so the insert is real
+                    // instead of being skipped on the FK error.
+                    'document_id' => self::SEEDED_REPORT,
                     'report_type' => 'pen_test_report',
                 ],
             ],
-            [
+            'entity_aliases' => [
                 'silver.entity_aliases',
                 [
                     'entity_type' => 'property',
                     'canonical_name' => 'PenTestProperty',
                     'alias' => 'PTP',
-                    'alias_normalised' => 'ptp',
+                    'alias_normalised' => self::FRESH_UUID, // unique per insert
                 ],
             ],
-            [
+            'alias_gaps' => [
                 'silver.alias_gaps',
                 [
                     'entity_text' => 'unknown-pen-test-entity',
-                    'entity_text_normalised' => 'unknown-pen-test-entity',
+                    'entity_text_normalised' => self::FRESH_UUID,
                 ],
             ],
         ];
@@ -109,28 +121,31 @@ final class GuardSchemaRlsTest extends TestCase
     {
         parent::setUp();
 
-        // Skip on sqlite — RLS is a Postgres concept.
+        // Skip on sqlite — RLS is a Postgres concept. The default phpunit.xml
+        // suite is SQLite; phpunit.pgsql.xml lists this class and runs it.
         if (DB::connection()->getDriverName() !== 'pgsql') {
             $this->markTestSkipped('Workspace isolation pen-test requires PostgreSQL RLS.');
         }
 
-        // Skip when target tables don't exist on the test DB yet.
-        // The 5 guard-arm tables were added 2026-05-26 and may not be
-        // present on every test DB until migrations are re-run with the
-        // `georag` owner role (memory: project_pg_role_membership_gap).
-        $exists = DB::selectOne(<<<'SQL'
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = 'silver' AND table_name = 'query_traces'
-            ) AS present
+        // From here on we ARE on the Postgres suite, where a missing table or
+        // role means the pen-test cannot run. That is a failure, not a skip: a
+        // tenant-isolation test that quietly does nothing looks like a pass.
+        $missing = DB::selectOne(<<<'SQL'
+            SELECT count(*) AS missing
+            FROM unnest(ARRAY[
+                'query_traces', 'data_quality_flags', 'document_versions', 'entity_aliases', 'alias_gaps'
+            ]) AS wanted(name)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'silver' AND table_name = wanted.name
+            )
         SQL);
-        if (! ($exists->present ?? false)) {
-            $this->markTestSkipped(
-                'silver.query_traces missing on test DB — apply 2026-05-26 migrations '.
-                'via the pgsql_migrations connection before running this pen-test.',
-            );
-        }
+        $this->assertSame(
+            0,
+            (int) ($missing->missing ?? -1),
+            'A guard-arm table is missing on the test DB (migrations 2026_05_26_*). The pen-test cannot run; '.
+            'apply them via the pgsql_migrations connection.',
+        );
 
         // Phpunit.pgsql.xml connects as `georag` (owner role, BYPASSRLS=true).
         // To exercise RLS we drop to the app role `georag_app`
@@ -142,12 +157,11 @@ final class GuardSchemaRlsTest extends TestCase
                 WHERE rolname = 'georag_app' AND rolbypassrls = false
             ) AS present
         SQL);
-        if (! ($hasAppRole->present ?? false)) {
-            $this->markTestSkipped(
-                'georag_app role not provisioned on this PG cluster — '.
-                'RLS pen-test requires it to drop BYPASSRLS.',
-            );
-        }
+        $this->assertTrue(
+            (bool) ($hasAppRole->present ?? false),
+            'The georag_app role (NOBYPASSRLS) is not provisioned on this PG cluster; the RLS pen-test needs it '.
+            'to drop BYPASSRLS. CI creates it before the PHPUnit step.',
+        );
         DB::statement('SET ROLE georag_app');
     }
 
@@ -164,47 +178,6 @@ final class GuardSchemaRlsTest extends TestCase
         parent::tearDown();
     }
 
-    #[Test]
-    public function workspace_a_cannot_see_workspace_b_rows_in_query_traces(): void
-    {
-        $this->assertIsolatedFor('silver.query_traces', [
-            'query_id' => fn () => self::syntheticUuid('q'),
-            'query_text' => 'rls pen-test',
-        ]);
-    }
-
-    #[Test]
-    public function workspace_a_cannot_see_workspace_b_rows_in_data_quality_flags(): void
-    {
-        $this->assertIsolatedFor('silver.data_quality_flags', [
-            'record_type' => 'assay_interval',
-            'record_id' => 'pen-test-record',
-            'flag_type' => 'pen_test_synthetic',
-            'severity' => 'INFO',
-            'description' => 'rls pen-test',
-        ]);
-    }
-
-    #[Test]
-    public function workspace_a_cannot_see_workspace_b_rows_in_entity_aliases(): void
-    {
-        $this->assertIsolatedFor('silver.entity_aliases', [
-            'entity_type' => 'property',
-            'canonical_name' => 'PenTestProperty',
-            'alias' => 'PTP',
-            'alias_normalised' => self::syntheticUuid('a'), // unique per insert
-        ]);
-    }
-
-    #[Test]
-    public function workspace_a_cannot_see_workspace_b_rows_in_alias_gaps(): void
-    {
-        $this->assertIsolatedFor('silver.alias_gaps', [
-            'entity_text' => 'unknown-pen-test-entity',
-            'entity_text_normalised' => self::syntheticUuid('g'),
-        ]);
-    }
-
     /**
      * Bind GUC → workspace A, insert row tagged for A, then bind GUC →
      * workspace B and assert SELECT returns zero rows belonging to A.
@@ -212,7 +185,9 @@ final class GuardSchemaRlsTest extends TestCase
      *
      * @param array<string, mixed> $columns
      */
-    private function assertIsolatedFor(string $table, array $columns): void
+    #[Test]
+    #[DataProvider('guardArmTables')]
+    public function workspace_b_cannot_see_workspace_a_rows(string $table, array $columns): void
     {
         // Pre-flight: make sure the workspaces exist in silver.workspaces.
         // RLS-enabled writes need a referenced workspace row.
@@ -223,24 +198,8 @@ final class GuardSchemaRlsTest extends TestCase
         try {
             // ── Insert under workspace A ────────────────────────────────
             $this->bindWorkspace(self::WS_A);
-            $rowA = array_merge(['workspace_id' => self::WS_A], self::resolveDeferred($columns));
-            try {
-                DB::table($table)->insert($rowA);
-            } catch (QueryException $e) {
-                // Document_versions has a FK to silver.reports — skip
-                // that case only. Other constraint failures should
-                // surface so the test actually validates.
-                if (str_contains($e->getMessage(), 'document_id') ||
-                    str_contains($e->getMessage(), 'foreign key')) {
-                    $this->markTestSkipped(
-                        "Insert into {$table} blocked by FK (expected for document_versions): "
-                        .substr($e->getMessage(), 0, 200),
-                    );
-
-                    return;
-                }
-                throw $e;
-            }
+            $rowA = array_merge(['workspace_id' => self::WS_A], $this->resolveDeferred($columns, self::WS_A));
+            DB::table($table)->insert($rowA);
 
             $aCount = DB::table($table)
                 ->where('workspace_id', self::WS_A)
@@ -275,6 +234,46 @@ final class GuardSchemaRlsTest extends TestCase
                 $aCount,
                 $aRecount,
                 "Workspace A lost visibility of its own rows after GUC switch in {$table}",
+            );
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    /**
+     * Bound to workspace B, a row tagged for workspace A must be refused.
+     *
+     * @param array<string, mixed> $columns
+     */
+    #[Test]
+    #[DataProvider('guardArmTables')]
+    public function workspace_b_cannot_write_a_row_tagged_for_workspace_a(string $table, array $columns): void
+    {
+        $this->ensureSyntheticWorkspaces();
+
+        DB::beginTransaction();
+
+        try {
+            $this->bindWorkspace(self::WS_B);
+            $rowForA = array_merge(['workspace_id' => self::WS_A], $this->resolveDeferred($columns, self::WS_B));
+
+            try {
+                // A nested transaction is a SAVEPOINT: the refused insert
+                // aborts only that, and the outer transaction can still roll
+                // back cleanly.
+                DB::transaction(static fn () => DB::table($table)->insert($rowForA));
+            } catch (QueryException $e) {
+                $this->assertStringContainsString(
+                    'row-level security',
+                    $e->getMessage(),
+                    "The insert into {$table} was refused, but not by the RLS policy: ".substr($e->getMessage(), 0, 200),
+                );
+
+                return;
+            }
+
+            $this->fail(
+                "RLS WRITE LEAK: bound to workspace B, a row tagged for workspace A was accepted into {$table}",
             );
         } finally {
             DB::rollBack();
@@ -334,17 +333,49 @@ final class GuardSchemaRlsTest extends TestCase
     }
 
     /**
-     * Resolve any closure-valued columns to their concrete values.
-     * Lets tests use `'col' => fn () => self::syntheticUuid('q')` to
-     * get a fresh UUID per assertion.
+     * Seed a silver.reports row for a document_versions row to point at.
+     *
+     * Runs INSIDE the test transaction (so it rolls back with it), as the
+     * owner role, because the point of the test is the table under test and
+     * not who may create reports. Returns to georag_app before it returns.
+     */
+    private function seedReport(string $workspaceId): string
+    {
+        $reportId = self::syntheticUuid('r');
+
+        DB::statement('SET ROLE georag');
+        try {
+            DB::statement(
+                'INSERT INTO silver.reports (report_id, title, workspace_id) VALUES (?, ?, ?)',
+                [$reportId, 'rls pen-test report', $workspaceId],
+            );
+        } finally {
+            DB::statement('SET ROLE georag_app');
+        }
+
+        return $reportId;
+    }
+
+    /**
+     * Resolve the placeholders in a provider row: a fresh UUID where a unique
+     * value is needed, and a seeded report id where a foreign key needs one.
      *
      * @param array<string, mixed> $columns
      *
      * @return array<string, mixed>
      */
-    private static function resolveDeferred(array $columns): array
+    private function resolveDeferred(array $columns, string $reportWorkspaceId): array
     {
-        return array_map(fn ($v) => $v instanceof \Closure ? $v() : $v, $columns);
+        $resolved = [];
+        foreach ($columns as $name => $value) {
+            $resolved[$name] = match ($value) {
+                self::FRESH_UUID => self::syntheticUuid('q'),
+                self::SEEDED_REPORT => $this->seedReport($reportWorkspaceId),
+                default => $value,
+            };
+        }
+
+        return $resolved;
     }
 
     private static function syntheticUuid(string $prefix): string
