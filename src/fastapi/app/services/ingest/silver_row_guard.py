@@ -121,6 +121,11 @@ class RowIssues:
     #: ``(row, file hole_id, stored hole_id)`` for a collar row that updated
     #: an existing collar spelled differently (ING-14).
     merged: list[tuple[Any, str, str]] = field(default_factory=list)
+    #: A collar row that repeats a hole already given EARLIER IN THE SAME FILE
+    #: (``georag_geoparsers._hole_id.duplicate_of``): the first row was kept,
+    #: this one was not stored. Kept apart from ``skipped`` because it is not a
+    #: row the table could not hold, and has its own warning code.
+    duplicates: list[dict[str, Any]] = field(default_factory=list)
 
     def blank(self, fld: str, rec: dict[str, Any], value: Any, reason: str) -> None:
         self.blanked.append((fld, _row(rec), _hole(rec), value, reason))
@@ -129,10 +134,12 @@ class RowIssues:
         self.skipped.append((_row(rec), _hole(rec), reason))
 
     def __bool__(self) -> bool:
-        return bool(self.blanked or self.skipped or self.merged)
+        return bool(self.blanked or self.skipped or self.merged or self.duplicates)
 
     def skipped_details(self) -> list[dict[str, Any]]:
         """The skips in the parsers' ``skipped_details`` shape."""
+        from georag_geoparsers._hole_id import duplicate_hole_skip_entry  # noqa: PLC0415
+
         return [
             {
                 "row": row if row is not None else 0,
@@ -140,7 +147,7 @@ class RowIssues:
                 "reason": f"row {row}: {reason}" if row is not None else reason,
             }
             for row, _hole_id, reason in self.skipped
-        ]
+        ] + [duplicate_hole_skip_entry(dup) for dup in self.duplicates]
 
 
 def _row(rec: dict[str, Any]) -> Any:
@@ -359,6 +366,12 @@ def issue_warnings(
             )[:900],
             "fields": by_field,
         })
+    if issues.duplicates:
+        from georag_geoparsers._hole_id import duplicate_hole_warning  # noqa: PLC0415
+
+        duplicate_note = duplicate_hole_warning(issues.duplicates, label=label)
+        if duplicate_note is not None:
+            out.append(duplicate_note)
     if issues.merged:
         examples = ", ".join(
             f"{given!r} -> {stored!r}" for _row_no, given, stored in issues.merged[:_MAX_EXAMPLES]

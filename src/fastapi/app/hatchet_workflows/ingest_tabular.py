@@ -1256,12 +1256,21 @@ async def _write_collars(
     ``issues`` collects what was blanked, skipped and merged so the caller
     can turn it into the run's warnings.
     """
-    from georag_geoparsers._hole_id import canonicalize  # noqa: PLC0415
+    from georag_geoparsers._hole_id import canonicalize, duplicate_of  # noqa: PLC0415
 
     issues = issues if issues is not None else RowIssues()
     skipped_before = len(issues.skipped)
+    duplicates_before = len(issues.duplicates)
     existing = await _existing_collars_by_canonical(conn, project_id)
     existing_ids = {stored for stored, _td in existing.values()}
+
+    #: The first row of each hole that passed the guard, by canonical id. A
+    #: later row for the same hole is NOT upserted: it would land on the same
+    #: collar (ON CONFLICT (project_id, hole_id_canonical)) and the last row
+    #: would silently replace the first's position (audit finding 6). Rows the
+    #: guard rejected are not registered, so a hole whose first row was
+    #: unusable can still be written from its second.
+    first_in_file: dict[str, dict] = {}
 
     rows = []
     for rec in records:
@@ -1274,6 +1283,10 @@ async def _write_collars(
             # All separators ("--", "./"): no canonical key, so no collar the
             # canonical-key upsert could land on — reported, not sent.
             issues.skip(rec, f"hole id {hole_id!r} has no letters or digits")
+            continue
+        earlier = first_in_file.get(str(canon).upper()) if canon else None
+        if earlier is not None:
+            issues.duplicates.append(duplicate_of(rec, earlier))
             continue
         match = existing.get(str(canon).upper()) if canon else None
         existing_td: float | None = None
@@ -1288,6 +1301,8 @@ async def _write_collars(
         values = guard_collar(rec, issues, existing_total_depth=existing_td)
         if values is None:
             continue
+        if canon:
+            first_in_file[str(canon).upper()] = rec
         if canon and match is None:
             # A second spelling of the same hole LATER IN THIS FILE lands on
             # the collar this row creates, not on a ghost of its own.
@@ -1314,7 +1329,10 @@ async def _write_collars(
             written += len(chunk)
     return {
         "written": written,
-        "skipped": len(issues.skipped) - skipped_before,
+        "skipped": (
+            len(issues.skipped) - skipped_before
+            + len(issues.duplicates) - duplicates_before
+        ),
         "orphaned": 0,
     }
 

@@ -38,7 +38,13 @@ from georag_geoparsers._drill_schema import (
 )
 from georag_geoparsers._encoding import decode_warnings, is_utf8_compatible
 from georag_geoparsers._header_match import build_column_map
-from georag_geoparsers._hole_id import canonicalize, suggest_collisions
+from georag_geoparsers._hole_id import (
+    canonicalize,
+    duplicate_hole_skip_entry,
+    duplicate_hole_warning,
+    split_duplicate_holes,
+    suggest_collisions,
+)
 from georag_geoparsers._vendor_aliases import merge_vendor_aliases
 
 logger = logging.getLogger(__name__)
@@ -551,6 +557,20 @@ def parse_csv_collars(
                 skip_entry.get("code"),
             )
             skipped.append(skip_entry)
+
+    # --- Repeated hole ids (audit finding 6) ---
+    # Two rows for one hole reach the database as two upserts onto one
+    # collar, and the LAST silently replaced the first's position. The first
+    # is kept deliberately, the repeats are skipped, and the warning names
+    # both rows and their coordinates.
+    records, duplicate_rows = split_duplicate_holes(records)
+    skipped.extend(duplicate_hole_skip_entry(dup) for dup in duplicate_rows)
+    duplicate_warning = duplicate_hole_warning(duplicate_rows)
+    if duplicate_warning is not None:
+        global_warnings.append(duplicate_warning)
+        logger.warning(
+            "csv_collar: %d repeated hole id row(s) skipped", len(duplicate_rows),
+        )
 
     valid_rows = len(records)
     skipped_rows = len(skipped)
