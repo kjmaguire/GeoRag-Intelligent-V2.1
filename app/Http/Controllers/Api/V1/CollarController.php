@@ -213,6 +213,10 @@ class CollarController extends Controller
             // Confirm the project exists to give a useful 404 if the project is wrong.
             Project::findOrFail($projectId);
 
+            // Only what CollarResource serialises. wellLogCurves used to be
+            // eager-loaded here too, though the resource never emits it: each
+            // curve carries two float8[] arrays (every depth and every value),
+            // so this read megabytes per hole to throw them away.
             $collar = Collar::with([
                 'surveys',
                 'lithologyLogs',
@@ -221,7 +225,6 @@ class CollarController extends Controller
                 'structures',
                 'samples',
                 'geochemistry',
-                'wellLogCurves',
             ])
                 ->withCount(['surveys', 'samples'])
                 ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')

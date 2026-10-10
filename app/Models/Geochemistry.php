@@ -48,6 +48,10 @@ class Geochemistry extends Model
         'na2o_wt_pct' => 'float',
         'k2o_wt_pct' => 'float',
         'ree_json' => 'array',
+        // Multi-element lab results keyed by element, in ppm. Added by
+        // 2026_04_22_140000 beside assay_element_codes (a text[] this model
+        // does not read).
+        'assay_values_ppm' => 'array',
         'mg_number' => 'float',
         'cia' => 'float',
         'eu_anomaly' => 'float',

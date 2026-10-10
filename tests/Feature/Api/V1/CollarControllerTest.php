@@ -536,6 +536,136 @@ class CollarControllerTest extends TestCase
         $this->assertSame(['desurveyed_trace', 'unknown'], $methods);
     }
 
+    public function test_index_and_show_survive_a_hole_type_and_status_outside_the_vocabulary(): void
+    {
+        // THE BUG THIS PINS. hole_type and status are free text capped at
+        // varchar(20), and the ingestion stores whatever the collar file said
+        // ("DDH", "Core", "Closed", "completed" — silver_row_guard.py). Cast
+        // straight to the HoleType / CollarStatus enums, reading such a row
+        // threw a ValueError, the controller's catch-all turned it into a 500,
+        // and it did so for EVERY page of the list containing the row and for
+        // GET .../collars/{id}.
+        //
+        // Inserted raw because that is how it happens: the ingestion writes to
+        // Postgres from Python and never passes through Eloquent, so the `set`
+        // cast that refuses this value is not in the path. The factory would
+        // test the guard instead of the bug.
+        $ingested = (string) Str::uuid();
+        DB::table(Collar::getModel()->getTable())->insert([
+            'collar_id' => $ingested,
+            'hole_id' => 'LEB 23/001',
+            'project_id' => $this->project->project_id,
+            'workspace_id' => $this->project->workspace_id,
+            'easting' => 500000.0,
+            'northing' => 4500000.0,
+            'hole_type' => 'DDH',
+            'status' => 'Closed',
+        ]);
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_type' => 'RC',
+            'status' => 'Active',
+        ]);
+
+        $index = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars");
+
+        $index->assertOk();
+        $this->assertCount(2, $index->json('data'));
+        $row = collect($index->json('data'))->firstWhere('collar_id', $ingested);
+        // The stored words come back, not a blank: nothing is lost by degrading.
+        $this->assertSame('DDH', $row['hole_type']);
+        $this->assertSame('Closed', $row['status']);
+
+        $show = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$ingested}");
+
+        $show->assertOk()
+            ->assertJsonPath('data.hole_type', 'DDH')
+            ->assertJsonPath('data.status', 'Closed');
+    }
+
+    public function test_in_vocabulary_values_serialise_exactly_as_they_did(): void
+    {
+        Collar::factory()->create([
+            'project_id' => $this->project->project_id,
+            'hole_type' => 'Diamond',
+            'status' => 'Completed',
+        ]);
+
+        $row = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars")
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertSame('Diamond', $row['hole_type']);
+        $this->assertSame('Completed', $row['status']);
+    }
+
+    public function test_show_does_not_read_well_log_curves_it_never_serialises(): void
+    {
+        // Each curve row holds two float8[] arrays (every depth, every value).
+        // CollarResource never emits them, so loading them was pure cost.
+        $collar = Collar::factory()->create(['project_id' => $this->project->project_id]);
+        DB::table('well_log_curves')->insert([
+            'curve_id' => (string) Str::uuid(),
+            'collar_id' => $collar->collar_id,
+            'workspace_id' => $this->project->workspace_id,
+            'curve_name' => 'GR',
+            'min_depth' => 0,
+            'max_depth' => 2,
+            'sample_count' => 3,
+            'depths' => '{0,1,2}',
+            'values' => '{10,11,12}',
+        ]);
+
+        DB::enableQueryLog();
+        $response = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}");
+        $queries = array_column(DB::getQueryLog(), 'query');
+        DB::disableQueryLog();
+
+        $response->assertOk()->assertJsonMissingPath('data.well_log_curves');
+        $this->assertSame([], array_values(array_filter(
+            $queries,
+            fn (string $sql): bool => str_contains($sql, 'well_log_curves'),
+        )));
+    }
+
+    public function test_show_projects_the_geochemistry_columns_the_table_has(): void
+    {
+        // The resource emitted element / value / unit / method, which are
+        // silver.assays_v2's columns, not silver.geochemistry's — so all four
+        // were null on every row and the real results never reached the API.
+        $collar = Collar::factory()->create(['project_id' => $this->project->project_id]);
+        $geochemId = (string) Str::uuid();
+        DB::table('geochemistry')->insert([
+            'geochem_id' => $geochemId,
+            'collar_id' => $collar->collar_id,
+            'project_id' => $this->project->project_id,
+            'workspace_id' => $this->project->workspace_id,
+            'geom' => DB::raw('ST_SetSRID(ST_MakePoint(-105.5, 57.2), 4326)'),
+            'from_depth' => 10.0,
+            'to_depth' => 11.0,
+            'sample_id' => 'G-0001',
+            'sample_type' => 'drillhole_pulp',
+            'sio2_wt_pct' => 62.5,
+            'mgo_wt_pct' => 3.1,
+            'mg_number' => 0.55,
+            'assay_values_ppm' => json_encode(['Cu' => 1200.5, 'Au' => 0.4]),
+        ]);
+
+        $row = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}")
+            ->assertOk()
+            ->json('data.geochemistry.0');
+
+        $this->assertSame($geochemId, $row['geochem_id']);
+        $this->assertSame('G-0001', $row['sample_id']);
+        $this->assertSame('drillhole_pulp', $row['sample_type']);
+        $this->assertEquals(62.5, $row['sio2_wt_pct']);
+        $this->assertEquals(0.55, $row['mg_number']);
+        $this->assertEquals(['Cu' => 1200.5, 'Au' => 0.4], $row['assay_values_ppm']);
+        foreach (['element', 'value', 'unit', 'method'] as $notAColumn) {
+            $this->assertArrayNotHasKey($notAColumn, $row);
+        }
+    }
+
     public function test_show_returns_404_for_collar_in_wrong_project(): void
     {
         $other = Project::factory()->create();

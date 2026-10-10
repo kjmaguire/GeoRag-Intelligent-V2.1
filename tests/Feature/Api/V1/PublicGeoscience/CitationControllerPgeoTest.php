@@ -179,6 +179,50 @@ class CitationControllerPgeoTest extends TestCase
             ]);
     }
 
+    // ── pg_drillhole_collar resolver — no entity ──────────────────────────────
+
+    public function test_pg_drillhole_collar_resolver_survives_a_row_that_has_left_the_source(): void
+    {
+        // Public sources refresh, so a citation can outlive its row. The
+        // summary text read `$entity->total_length_m` straight off the null.
+        $this->mockPgeoResolverCall(
+            entityTable: 'public_geo.pg_drillhole_collar',
+            entityRow: [],
+            canonicalType: 'drillhole_collar',
+            entityExists: false,
+        );
+
+        $chunkId = 'pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id='.self::PG_ID;
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
+            ->assertOk()
+            ->assertJsonPath('canonical_type', 'drillhole_collar')
+            ->assertJsonPath('entity', null)
+            ->assertJsonPath('title', 'Drillhole Unknown drillhole')
+            ->assertJsonPath('text', 'Drillhole Unknown drillhole (type unknown) at unspecified project by unknown operator, drilled date unknown. Total depth: — m. Targets: not listed. Core: unknown.');
+    }
+
+    public function test_pg_drillhole_collar_resolver_survives_a_malformed_pg_id(): void
+    {
+        // The id is dropped before it can reach a uuid column (a Postgres
+        // 22P02 and a 500), which leaves the same null entity to render.
+        $this->mockPgeoResolverCall(
+            entityTable: 'public_geo.pg_drillhole_collar',
+            entityRow: [],
+            canonicalType: 'drillhole_collar',
+            entityExists: false,
+            expectEntityQuery: false,
+        );
+
+        $chunkId = 'pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id=not-a-uuid';
+
+        $this->actingAs($this->user)
+            ->getJson('/api/v1/citations/resolve?source_chunk_id='.urlencode($chunkId))
+            ->assertOk()
+            ->assertJsonPath('entity', null);
+    }
+
     // ── pg_resource_potential_zone resolver ───────────────────────────────────
 
     public function test_pg_resource_potential_zone_resolver_returns_pgeo_envelope(): void
@@ -464,6 +508,8 @@ class CitationControllerPgeoTest extends TestCase
         int $linkCount = 0,
         ?array $expectedProjectIds = null,
         bool $expectLinkQuery = true,
+        bool $entityExists = true,
+        bool $expectEntityQuery = true,
     ): void {
         $this->mockWorkspaceRlsPassthrough();
 
@@ -482,18 +528,25 @@ class CitationControllerPgeoTest extends TestCase
 
         $entityObj = (object) $entityRow;
 
-        // Mockery mock names must be valid PHP class-name strings (no dots/slashes).
-        $entityBuilder = \Mockery::mock('entity_query_builder');
-        $entityBuilder->shouldReceive('where')->withAnyArgs()->andReturn($entityBuilder);
-        $entityBuilder->shouldReceive('first')->once()->andReturn($entityObj);
-
         $sourceBuilder = \Mockery::mock('source_query_builder');
         $sourceBuilder->shouldReceive('join')->withAnyArgs()->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('where')->withAnyArgs()->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('select')->andReturn($sourceBuilder);
         $sourceBuilder->shouldReceive('first')->once()->andReturn($sourceObj);
 
-        DB::shouldReceive('table')->with($entityTable)->once()->andReturn($entityBuilder);
+        if ($expectEntityQuery) {
+            // Mockery mock names must be valid PHP class-name strings (no dots/slashes).
+            // `$entityExists = false` is a row that has left the source since the
+            // citation was minted: first() answers null.
+            $entityBuilder = \Mockery::mock('entity_query_builder');
+            $entityBuilder->shouldReceive('where')->withAnyArgs()->andReturn($entityBuilder);
+            $entityBuilder->shouldReceive('first')->once()->andReturn($entityExists ? $entityObj : null);
+
+            DB::shouldReceive('table')->with($entityTable)->once()->andReturn($entityBuilder);
+        } else {
+            // A malformed pg_id never reaches the uuid column.
+            DB::shouldReceive('table')->with($entityTable)->never();
+        }
         DB::shouldReceive('table')->with('public_geo.sources as s')->once()->andReturn($sourceBuilder);
 
         if (! $expectLinkQuery) {

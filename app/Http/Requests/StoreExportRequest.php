@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Enums\CollarStatus;
+use App\Enums\HoleType;
+use BackedEnum;
+use Closure;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Validator;
 
@@ -32,8 +36,14 @@ class StoreExportRequest extends FormRequest
             // validation isn't worth the form-request complexity.
             'filters' => ['nullable', 'array'],
             'filters.hole_id' => ['nullable', 'string', 'max:64'],
-            'filters.hole_type' => ['nullable', 'string', 'in:Diamond,RC,RAB,Rotary,Percussion'],
-            'filters.status' => ['nullable', 'string', 'in:Active,Completed,Abandoned'],
+            // The collar vocabularies, read off the enums so they cannot drift
+            // from them again. These two were hand-copied lists that had
+            // already lost Auger, exploration, unknown, "In Progress" and
+            // "Planned". Any case is accepted because the exporters compare
+            // case-insensitively (CollarExportQuery::applyFilters): the
+            // ingestion writes 'active' where the enum's first case is 'Active'.
+            'filters.hole_type' => ['nullable', 'string', self::inVocabulary(HoleType::class)],
+            'filters.status' => ['nullable', 'string', self::inVocabulary(CollarStatus::class)],
             'filters.drill_date_from' => ['nullable', 'date'],
             'filters.drill_date_to' => ['nullable', 'date'],
             'filters.min_depth' => ['nullable', 'numeric', 'min:0'],
@@ -66,6 +76,23 @@ class StoreExportRequest extends FormRequest
     }
 
     /**
+     * A rule that accepts any value of a backed enum, in any letter case.
+     *
+     * @param class-string<BackedEnum> $enum
+     */
+    private static function inVocabulary(string $enum): Closure
+    {
+        $values = array_map(static fn (BackedEnum $case): string => (string) $case->value, $enum::cases());
+        $allowed = array_map('mb_strtolower', $values);
+
+        return static function (string $attribute, mixed $value, Closure $fail) use ($values, $allowed): void {
+            if (! is_string($value) || ! in_array(mb_strtolower($value), $allowed, true)) {
+                $fail("The {$attribute} field must be one of: ".implode(', ', $values).' (any case).');
+            }
+        };
+    }
+
+    /**
      * Range checks that only apply when BOTH ends are supplied.
      *
      * LAR-9 (2026-09-29): these were `gt:filters.min_depth` /
@@ -74,7 +101,7 @@ class StoreExportRequest extends FormRequest
      * `{"filters": {"max_depth": 500}}` was rejected with "must be greater
      * than filters.min_depth". An open-ended range is a normal filter.
      *
-     * @return array<int, \Closure(Validator): void>
+     * @return array<int, Closure(Validator): void>
      */
     public function after(): array
     {

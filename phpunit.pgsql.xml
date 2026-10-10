@@ -130,6 +130,26 @@
             <file>tests/Feature/Api/V1/ChatConversationControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/CollarControllerIDORTest.php</file>
             <file>tests/Feature/Api/V1/ExportControllerIDORTest.php</file>
+            <!-- 2026-10-10: the export job stored a presigned URL in
+                 silver.exports.download_url varchar(1000); an ECS session-token
+                 URL overflowed it (22001). SQLite does not enforce varchar
+                 lengths, so the failure is only observable here. -->
+            <file>tests/Feature/Jobs/GenerateExportJobStoresNoUrlTest.php</file>
+            <!-- 2026-10-10: horizon_queue_depth against a REAL Redis. Not a
+                 Postgres test; it is listed here because this CI job has a
+                 Redis service (the SQLite job has none, and the test skips
+                 there), and the key prefix it pins is only observable on one. -->
+            <file>tests/Feature/MetricsEndpointRedisTest.php</file>
+            <!-- 2026-10-10: the collar exporters, run on persisted rows. They
+                 read silver.collars.geom_4326 through PostGIS (ST_Transform
+                 into the project's CRS or the collar's UTM zone), which SQLite
+                 does not have. -->
+            <file>tests/Feature/Services/Exports/CsvCollarExporterTest.php</file>
+            <file>tests/Feature/Services/Exports/CsaBundleExporterTest.php</file>
+            <file>tests/Feature/Services/Exports/DxfExporterTest.php</file>
+            <file>tests/Feature/Services/Exports/LasBundleExporterTest.php</file>
+            <!-- silver.geochemistry.geom is a PostGIS geometry NOT NULL. -->
+            <file>tests/Feature/Services/Exports/CsvGeochemistryExporterPagingTest.php</file>
             <!-- 2026-09-24: silver.answer_runs / silver.message_feedback are
                  raw-SQL Postgres-only migrations. -->
             <file>tests/Feature/Api/V1/AnswerRunFeedbackControllerTest.php</file>

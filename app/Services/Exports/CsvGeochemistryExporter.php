@@ -110,9 +110,16 @@ class CsvGeochemistryExporter
             // hole_id nor from_depth, so without it their order is whatever
             // the planner returns and two exports of the same data can
             // disagree — which looks like the data changed.
+            //
+            // sample_id is itself nullable (and unique only per project where
+            // set), so it is not a total order either. Offset chunk() pages
+            // only line up over one, and rows tied on all three keys could be
+            // repeated or dropped at a page boundary; the primary key is the
+            // final tiebreaker.
             $query->orderBy('c.hole_id')
                 ->orderBy('g.from_depth')
                 ->orderBy('g.sample_id')
+                ->orderBy('g.geochem_id')
                 ->chunk(2000, function ($rows) use ($handle, $includeRee) {
                     foreach ($rows as $row) {
                         $line = [
