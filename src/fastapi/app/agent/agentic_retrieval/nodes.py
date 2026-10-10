@@ -2153,6 +2153,7 @@ def _build_chat_card_payloads(
                     "status":      c.status,
                     "azimuth":     c.azimuth,
                     "dip":         c.dip,
+                    "orientation": c.orientation,
                     "trace_points": _round_trace_points_for_card(c.trace_points),
                 }
                 for c in result.collars

@@ -473,7 +473,12 @@ async def _promote_lithology_canonical(
 #: `_collar_local_utm`) and the surveys behind them had not changed, so a
 #: re-run recognised them as current and skipped all of them. Folding this
 #: constant into the digest makes a builder fix invalidate its own output.
-_TRACE_BUILDER_VERSION = 2
+#:
+#: v3 (GIS audit 2026-10): the line now starts AT THE COLLAR. v2 wrote one
+#: vertex per survey station, so a survey whose first reading is below the
+#: collar (30 m is ordinary) produced a line whose vertex 0 was measured
+#: depth 30 - see ``_with_collar_station``.
+_TRACE_BUILDER_VERSION = 3
 
 
 def _survey_hash(
@@ -622,6 +627,38 @@ def _clean_stations(
         depth = float(r["depth"])
         by_depth[depth] = (depth, float(az), float(dip))
     return [by_depth[d] for d in sorted(by_depth)]
+
+
+def _with_collar_station(
+    stations: list[tuple[float, float, float]],
+) -> list[tuple[float, float, float]]:
+    """Make sure the desurveyed line has a vertex AT THE COLLAR (md 0).
+
+    ``minimum_curvature`` returns exactly one point per station, and the
+    collar is a station only when the survey has a row at depth 0. A survey
+    whose first reading is deeper (30 m is ordinary; some start at 100 m)
+    therefore produced a line whose vertex 0 was the position at measured
+    depth 30 - not the collar. Every reader treats vertex 0 as md 0
+    (``query_drill_traces_3d`` / ``trace_points_with_depth`` derive depth
+    from cumulative length), so each interval was drawn that far uphole of
+    where it is, and a tail of the same length was invented at the toe to
+    reach total depth.
+
+    The interpolator already propagates collar -> first station straight
+    along the first station's attitude (its "tangent method" for the first
+    leg), so a station ``(0, az0, dip0)`` is not a new assumption: it makes
+    the interpolator emit the vertex it computed and threw away, and
+    changes no other vertex (zero dogleg between the two, so
+    ``dogleg_max_deg`` is unaffected).
+
+    Not done here, deliberately: extending the line below the LAST station
+    to total depth. That is a different assumption and needs its own
+    ``trace_quality`` value (the CHECK allows three) - a modelling decision.
+    """
+    if not stations or stations[0][0] <= 0:
+        return stations
+    _, azimuth, dip = stations[0]
+    return [(0.0, azimuth, dip), *stations]
 
 
 #: Collars desurveyed per survey read / upsert batch. Bounds memory (a hole
@@ -1122,6 +1159,10 @@ async def _promote_traces(
                     "promote.traces: azimuth reference not applied collar=%s (%s)",
                     c["collar_id"], "; ".join(unapplied),
                 )
+
+            # The line starts at the collar even when the first survey reading
+            # is below it (GIS audit 2026-10; see `_with_collar_station`).
+            stations = _with_collar_station(stations)
 
             # Hashed BEFORE the skip test, and over the collar origin as well as
             # the stations — a collar that moves must invalidate its own trace.

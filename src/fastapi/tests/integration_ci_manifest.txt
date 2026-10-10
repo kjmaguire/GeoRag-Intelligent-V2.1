@@ -116,3 +116,8 @@ tests/test_spatial_plans_prepare_integration.py
 # The unit tests drive it through a scripted connection, so only this file
 # executes the stale-clearing, unnest UPDATE and datum-withdrawal statements.
 tests/test_dem_elevation_pg.py
+
+# ── Drill traces (GIS audit 2026-10) ───────────────────────────────────
+# The stored trace must start at the collar; the ST_Translate/ST_Transform that
+# puts the metre offsets onto it only runs here.
+tests/test_promote_gis_pg.py

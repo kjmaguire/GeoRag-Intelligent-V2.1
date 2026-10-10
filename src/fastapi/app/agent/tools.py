@@ -4155,12 +4155,21 @@ class DrillTraceCollar:
     total_depth: float | None
     hole_type: str
     status: str
-    azimuth: float
-    dip: float
+    #: The collar row's own azimuth / dip, as stored - None when the row
+    #: records none. They were COALESCEd to 0 / -90 (due north, vertical)
+    #: in SQL until the GIS audit 2026-10, which made "not recorded" read as
+    #: a recorded vertical hole.
+    azimuth: float | None
+    dip: float | None
     # 2 points (collar + toe) for straight-line traces; N points along
     # the LINESTRINGZ for surveyed deviation. Each carries depth_m so
     # the React layer can interpolate interval colouring along the trace.
     trace_points: list[dict]
+    #: Where the drawn path's direction comes from: "surveyed" (the stored
+    #: desurveyed trace) or "unknown" (no stored trace - the path is a
+    #: vertical placeholder whose toe is flagged ``extrapolated`` + ``assumed``,
+    #: drawn from nothing but the collar position and total depth).
+    orientation: str = "unknown"
 
 
 @dataclass
@@ -4318,8 +4327,8 @@ async def query_drill_traces_3d(
             c.status                                            AS status,
             COALESCE({EFFECTIVE_ELEVATION_SQL}, 0.0)::float AS elevation,
             c.total_depth::float                                AS total_depth,
-            COALESCE(c.azimuth, 0.0)::float                     AS azimuth,
-            COALESCE(c.dip, -90.0)::float                       AS dip,
+            c.azimuth::float                                    AS azimuth,
+            c.dip::float                                        AS dip,
             ST_X(c.geom_4326)::float                            AS longitude,
             ST_Y(c.geom_4326)::float                            AS latitude,
             ST_AsText(t.geom)                                   AS trace_wkt
@@ -4376,9 +4385,9 @@ async def query_drill_traces_3d(
         if not cid:
             continue
         # GIS-8/GIS-21: position from geom_4326, and a collar without one is
-        # skipped — `or 0.0` drew it on Null Island. `is None`, not `or`,
-        # for the attitude too: `dip or -90.0` turned a horizontal hole
-        # (dip 0.0) into a vertical one.
+        # skipped — `or 0.0` drew it on Null Island. The attitude is kept as
+        # stored, `is None` and never `or`: `dip or -90.0` turned a horizontal
+        # hole (dip 0.0) into a vertical one.
         if r.get("longitude") is None or r.get("latitude") is None:
             continue
         lon = float(r["longitude"])
@@ -4388,8 +4397,10 @@ async def query_drill_traces_3d(
         # stored trace (if any) is drawn as-is, and the placeholder below
         # collapses to the collar point rather than inventing a length.
         td = float(r["total_depth"]) if r.get("total_depth") is not None else None
-        az = float(r["azimuth"]) if r.get("azimuth") is not None else 0.0
-        dip = float(r["dip"]) if r.get("dip") is not None else -90.0
+        # As stored: None means the collar row records no orientation. It is
+        # NOT 0 (due north) / -90 (vertical) - that was the old COALESCE.
+        az = float(r["azimuth"]) if r.get("azimuth") is not None else None
+        dip = float(r["dip"]) if r.get("dip") is not None else None
 
         wkt_points = _parse_linestring_z_points(r.get("trace_wkt") or "")
         if wkt_points:
@@ -4398,18 +4409,34 @@ async def query_drill_traces_3d(
             # INDEX, which misplaced every interval on unevenly spaced surveys.
             from app.agent.trace_depth import trace_points_with_depth  # noqa: PLC0415
 
+            # `collar=` is the backstop for traces built before the collar
+            # vertex was written: depth is measured from vertex 0, so vertex 0
+            # has to be the collar (GIS audit 2026-10).
             trace_points = trace_points_with_depth(
                 wkt_points, td, max_points=_DRILL_TRACE_MAX_POINTS_PER_TRACE,
+                collar=(lon, lat, elev),
             )
+            orientation = "surveyed"
         else:
             # Fallback when silver.drill_traces has no row for this
             # collar (e.g. unusable orientation). Emit a 2-point vertical
             # placeholder so the card still renders the hole position.
+            #
+            # The placeholder is NOT a measurement and must not read as one:
+            # nothing says the hole is vertical, or that it is placeholder_td
+            # long when td is None (it then collapses to the collar point).
+            # Its toe is flagged `extrapolated` - the card already draws
+            # those dashed - and `assumed`, and the collar says its
+            # orientation is "unknown" (GIS audit 2026-10).
             placeholder_td = td or 0.0
             trace_points = [
-                {"x": lon, "y": lat, "z": elev, "depth_m": 0.0},
-                {"x": lon, "y": lat, "z": elev - placeholder_td, "depth_m": placeholder_td},
+                {"x": lon, "y": lat, "z": elev, "depth_m": 0.0, "extrapolated": False},
+                {
+                    "x": lon, "y": lat, "z": elev - placeholder_td,
+                    "depth_m": placeholder_td, "extrapolated": True, "assumed": True,
+                },
             ]
+            orientation = "unknown"
 
         collars.append(DrillTraceCollar(
             hole_id=str(r.get("hole_id") or ""),
@@ -4423,6 +4450,7 @@ async def query_drill_traces_3d(
             azimuth=az,
             dip=dip,
             trace_points=trace_points,
+            orientation=orientation,
         ))
         collar_ids.append(cid)
 
