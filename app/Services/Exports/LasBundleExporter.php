@@ -7,7 +7,7 @@ namespace App\Services\Exports;
 use App\Models\Collar;
 use App\Models\WellLogCurve;
 use Illuminate\Support\Collection;
-use ZipArchive;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Exports well-log data as LAS 2.0 files bundled into a ZIP archive.
@@ -16,74 +16,160 @@ use ZipArchive;
  * Collars with no curves are silently skipped. If only one collar has curves,
  * the ZIP still wraps it for consistency.
  *
+ * Each file's ~WELL section names the collar's position in a stated CRS:
+ * `LOC` carries easting/northing and `HZCS` the EPSG code they are in (the
+ * project's projected CRS, else the collar's UTM zone), derived from
+ * silver.collars.geom_4326 rather than the stored easting/northing, which carry
+ * whatever CRS and unit the upload used; see CollarExportQuery.
+ *
+ * Collars are taken one at a time, and only those that have curves, so the
+ * worker holds one hole's depth and value arrays at a time however large the
+ * project is. File names inside the ZIP are made from the hole id with
+ * everything outside [A-Za-z0-9._-] replaced, because a real hole id
+ * ("LEB 23/001") is a path separator and a space away from a broken or
+ * traversing entry name.
+ *
  * LAS 2.0 format reference: https://www.cwls.org/products/#products-las
  *
  * Returns array{path: string, size: int}.
  */
 class LasBundleExporter
 {
+    /** Longest file stem taken from a hole id; the rest is dropped. */
+    private const MAX_STEM_LENGTH = 80;
+
     /**
+     * @param array<string, mixed> $filters
+     *
      * @return array{path: string, size: int}
      */
     public function export(string $projectId, array $filters = []): array
     {
-        $collars = $this->fetchCollars($projectId, $filters);
-        $collarIds = $collars->pluck('collar_id')->all();
-
-        // Eager-load all curves grouped by collar_id.
-        $curvesByCollar = WellLogCurve::whereIn('collar_id', $collarIds)
-            ->orderBy('collar_id')
-            ->orderBy('curve_name')
-            ->get()
-            ->groupBy('collar_id');
-
-        $tmpDir = sys_get_temp_dir();
-        $zipPath = $tmpDir.'/georag_las_bundle_'.uniqid().'.zip';
-
-        $zip = new ZipArchive;
-        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-            throw new \RuntimeException("Cannot create ZIP archive at: {$zipPath}");
-        }
-
-        $lasFiles = [];
-        $collarCount = 0;
+        $zipPath = sys_get_temp_dir().'/georag_las_bundle_'.uniqid().'.zip';
 
         try {
-            foreach ($collars as $collar) {
-                $curves = $curvesByCollar->get($collar->collar_id);
+            $unplaced = $this->writeBundle($projectId, $filters, $zipPath);
+        } catch (\Throwable $e) {
+            // The caller is never told the path of a bundle that failed.
+            @unlink($zipPath);
 
-                if (! $curves || $curves->isEmpty()) {
-                    continue;
-                }
+            throw $e;
+        }
 
-                $lasContent = $this->buildLas2($collar, $curves);
-                $lasPath = $tmpDir.'/georag_'.$collar->hole_id.'_'.uniqid().'.las';
-                file_put_contents($lasPath, $lasContent);
-
-                $lasFiles[] = $lasPath;
-                $zip->addFile($lasPath, $collar->hole_id.'.las');
-                $collarCount++;
-            }
-
-            // If no curves were found for any collar, add a notice file.
-            if ($collarCount === 0) {
-                $noticePath = $tmpDir.'/georag_las_no_curves_'.uniqid().'.txt';
-                file_put_contents($noticePath, $this->noCurvesNotice($projectId));
-                $lasFiles[] = $noticePath;
-                $zip->addFile($noticePath, 'README.txt');
-            }
-
-            $zip->close();
-        } finally {
-            foreach ($lasFiles as $f) {
-                @unlink($f);
-            }
+        if ($unplaced > 0) {
+            Log::warning('las_bundle export: collars with no geom_4326 were written with an unknown location', [
+                'project_id' => $projectId,
+                'collars' => $unplaced,
+            ]);
         }
 
         return [
             'path' => $zipPath,
             'size' => filesize($zipPath),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $filters
+     *
+     * @return int collars written without a location (no geom_4326)
+     */
+    private function writeBundle(string $projectId, array $filters, string $zipPath): int
+    {
+        $tmpDir = sys_get_temp_dir();
+
+        // zip entry name => temp file. ZipArchive reads each file when the
+        // archive is closed, so they live until ZipBundle::write returns.
+        $entries = [];
+        $entryNames = [];
+        $unplaced = 0;
+
+        try {
+            $collars = CollarExportQuery::forProject($projectId, $filters)
+                // Only collars that have a curve: a project is mostly holes
+                // with none, and each would cost a query to find that out.
+                ->whereExists(static function ($curves): void {
+                    $curves->selectRaw('1')
+                        ->from('silver.well_log_curves as w')
+                        ->whereColumn('w.collar_id', 'silver.collars.collar_id');
+                })
+                ->orderBy('hole_id')
+                ->orderBy('collar_id')
+                ->cursor();
+
+            foreach ($collars as $collar) {
+                $curves = WellLogCurve::where('collar_id', $collar->collar_id)
+                    ->orderBy('curve_name')
+                    ->get();
+
+                if ($curves->isEmpty()) {
+                    continue;
+                }
+
+                if ($collar->export_epsg === null) {
+                    $unplaced++;
+                }
+
+                $entries[$this->entryName((string) $collar->hole_id, $entryNames)] = $this->writeTempFile(
+                    $tmpDir,
+                    $this->buildLas2($collar, $curves),
+                );
+            }
+
+            // If no curves were found for any collar, add a notice file.
+            if ($entries === []) {
+                $entries['README.txt'] = $this->writeTempFile($tmpDir, $this->noCurvesNotice($projectId));
+            }
+
+            ZipBundle::write($zipPath, $entries);
+        } finally {
+            foreach ($entries as $path) {
+                @unlink($path);
+            }
+        }
+
+        return $unplaced;
+    }
+
+    private function writeTempFile(string $dir, string $contents): string
+    {
+        $path = tempnam($dir, 'georag_las_');
+        if ($path === false) {
+            throw new \RuntimeException("Cannot create a temp file in {$dir}");
+        }
+
+        file_put_contents($path, $contents);
+
+        return $path;
+    }
+
+    /**
+     * A name for the ZIP entry that is safe on every filesystem it may be
+     * extracted to, unique within the bundle.
+     *
+     * Hole ids are free text: "LEB 23/001" would otherwise become a directory,
+     * and "../x" an entry that escapes the extraction folder. Anything outside
+     * [A-Za-z0-9._-] becomes "_", leading and trailing separators go, and a
+     * clash (two ids that differ only in the characters replaced, or only in
+     * case, which Windows and macOS fold) is numbered rather than overwritten.
+     *
+     * @param array<string, true> $used lower-cased entry names handed out so far
+     */
+    private function entryName(string $holeId, array &$used): string
+    {
+        $stem = trim((string) preg_replace('/[^A-Za-z0-9._-]+/', '_', $holeId), '._-');
+        $stem = rtrim(substr($stem, 0, self::MAX_STEM_LENGTH), '._-');
+        if ($stem === '') {
+            $stem = 'hole';
+        }
+
+        $name = "{$stem}.las";
+        for ($n = 2; isset($used[strtolower($name)]); $n++) {
+            $name = "{$stem}-{$n}.las";
+        }
+        $used[strtolower($name)] = true;
+
+        return $name;
     }
 
     // -------------------------------------------------------------------------
@@ -120,7 +206,16 @@ class LasBundleExporter
         $lines[] = sprintf('COMP.                  GeoRAG : Company');
         $lines[] = sprintf('WELL.                  %s : Well name', $collar->hole_id);
         $lines[] = sprintf('FLD .                  %s : Field', $collar->project_id);
-        $lines[] = sprintf('LOC .                  E%.2f N%.2f : Location (Easting Northing)', $collar->easting, $collar->northing);
+        if ($collar->export_epsg !== null) {
+            $lines[] = sprintf(
+                'LOC .                  E%.2f N%.2f : Location (Easting Northing)',
+                $collar->export_easting,
+                $collar->export_northing,
+            );
+            $lines[] = sprintf('HZCS.                  EPSG:%d : Horizontal coordinate system', $collar->export_epsg);
+        } else {
+            $lines[] = 'LOC .                  UNKNOWN : Location (collar has no recorded position)';
+        }
         $lines[] = sprintf('ELEV.M                 %.2f : Elevation', $collar->elevation ?? 0.0);
         $lines[] = sprintf('DATE.                  %s : Export date', now()->format('Y-m-d'));
         $lines[] = '';
@@ -189,36 +284,6 @@ class LasBundleExporter
         }
 
         return array_map('floatval', explode(',', $trimmed));
-    }
-
-    // -------------------------------------------------------------------------
-    // Data fetchers
-    // -------------------------------------------------------------------------
-
-    private function fetchCollars(string $projectId, array $filters): Collection
-    {
-        $query = Collar::where('project_id', $projectId);
-
-        if (! empty($filters['hole_type'])) {
-            $query->where('hole_type', $filters['hole_type']);
-        }
-        if (! empty($filters['status'])) {
-            $query->where('status', $filters['status']);
-        }
-        if (! empty($filters['drill_date_from'])) {
-            $query->where('drill_date', '>=', $filters['drill_date_from']);
-        }
-        if (! empty($filters['drill_date_to'])) {
-            $query->where('drill_date', '<=', $filters['drill_date_to']);
-        }
-        if (isset($filters['min_depth'])) {
-            $query->where('total_depth', '>=', $filters['min_depth']);
-        }
-        if (isset($filters['max_depth'])) {
-            $query->where('total_depth', '<=', $filters['max_depth']);
-        }
-
-        return $query->orderBy('hole_id')->get();
     }
 
     private function noCurvesNotice(string $projectId): string

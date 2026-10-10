@@ -2,15 +2,19 @@
 
 namespace Tests\Feature\Api\V1;
 
+use App\Enums\HoleType;
+use App\Http\Requests\StoreExportRequest;
 use App\Jobs\GenerateExportJob;
 use App\Models\Export;
 use App\Models\Project;
 use App\Models\User;
 use Carbon\Carbon;
+use Closure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -135,6 +139,93 @@ class ExportControllerTest extends TestCase
         $this->assertNotNull($export);
         $this->assertSame('Diamond', $export->filters['hole_type']);
         $this->assertEquals(100.0, $export->filters['min_depth']);
+    }
+
+    // -------------------------------------------------------------------------
+    // store — collar vocabularies read off the enums
+    // -------------------------------------------------------------------------
+
+    /**
+     * hole_type / status filters were two hand-copied `in:` lists that had
+     * already drifted from HoleType / CollarStatus, and compared case-sensitively
+     * while the ingestion writes 'active'. They are read off the enums now and
+     * accept any case.
+     *
+     * @return iterable<string, array{string, string}>
+     */
+    public static function acceptedCollarFilters(): iterable
+    {
+        // Every value the old lists accepted still is.
+        foreach (['Diamond', 'RC', 'RAB', 'Rotary', 'Percussion'] as $value) {
+            yield "hole_type {$value}" => ['hole_type', $value];
+        }
+        foreach (['Active', 'Completed', 'Abandoned'] as $value) {
+            yield "status {$value}" => ['status', $value];
+        }
+
+        // Cases the enums have and the old lists did not.
+        yield 'hole_type Auger' => ['hole_type', 'Auger'];
+        yield 'hole_type exploration' => ['hole_type', 'exploration'];
+        yield 'hole_type unknown' => ['hole_type', 'unknown'];
+        yield 'status In Progress' => ['status', 'In Progress'];
+        yield 'status Planned' => ['status', 'Planned'];
+        yield 'status active' => ['status', 'active'];
+
+        // Any letter case.
+        yield 'hole_type diamond' => ['hole_type', 'diamond'];
+        yield 'hole_type RC lowercase' => ['hole_type', 'rc'];
+        yield 'status COMPLETED' => ['status', 'COMPLETED'];
+    }
+
+    #[DataProvider('acceptedCollarFilters')]
+    public function test_collar_filters_accept_every_enum_value_in_any_case(string $filter, string $value): void
+    {
+        Queue::fake();
+
+        $this->postJson(
+            "/api/v1/projects/{$this->project->project_id}/exports",
+            ['export_type' => 'csv_collars', 'filters' => [$filter => $value]],
+        )->assertStatus(202);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function rejectedCollarFilters(): iterable
+    {
+        yield 'hole_type not a method' => ['hole_type', 'Granite'];
+        yield 'hole_type typo' => ['hole_type', 'Diamnd'];
+        yield 'status a free word' => ['status', 'Closed'];
+    }
+
+    #[DataProvider('rejectedCollarFilters')]
+    public function test_collar_filters_reject_what_is_not_in_the_vocabulary(string $filter, string $value): void
+    {
+        Queue::fake();
+
+        $response = $this->postJson(
+            "/api/v1/projects/{$this->project->project_id}/exports",
+            ['export_type' => 'csv_collars', 'filters' => [$filter => $value]],
+        );
+
+        $response->assertUnprocessable()->assertJsonValidationErrors(["filters.{$filter}"]);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_the_filter_rules_follow_the_enums_rather_than_a_copy_of_them(): void
+    {
+        // A case added to an enum is accepted with no edit to the request.
+        $rules = (new StoreExportRequest)->rules();
+        $closure = collect($rules['filters.hole_type'])->first(fn ($rule) => $rule instanceof Closure);
+        $this->assertInstanceOf(Closure::class, $closure);
+
+        foreach (HoleType::cases() as $case) {
+            $failed = false;
+            $closure('filters.hole_type', $case->value, function () use (&$failed): void {
+                $failed = true;
+            });
+            $this->assertFalse($failed, "HoleType::{$case->name} must be accepted");
+        }
     }
 
     // -------------------------------------------------------------------------
