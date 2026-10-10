@@ -29,20 +29,31 @@
 #
 #   postgresql  shared_buffers=8GB  -> must lower POSTGRES_SHARED_BUFFERS
 #
-# So every size change below is paired with the config knob that drives it.
+# So every size change below is paired with the config knob that drives it —
+# and the knob is NOT in this file. docker-compose.yml interpolates
+# POSTGRES_SHARED_BUFFERS (and the three below it) into postgresql's
+# `command:`, and UVICORN_WORKERS into fastapi's, at parse time from the
+# project environment. A service's `environment:` block is never consulted for
+# that, so this overlay used to set them there and changed nothing: with a
+# .env copied from .env.example (8GB, 6 workers) the demo box started Postgres
+# at 8GB shared_buffers inside the 2G limit below. They live in
+# docker-compose.demo.env, which you pass as a second --env-file.
 #
 # 2026-07-28 (B5): neo4j and the dagster-daemon/dagster-webserver blocks were
 # removed from this overlay along with those services (B1, B2) — they no
 # longer exist in the base compose file. hatchet-worker-ai was renamed
 # hatchet-worker when the worker pools were merged (A5).
 #
-# USAGE (note the -p and --env-file: multi-clone safety, see RUNBOOK)
+# USAGE (note the -p and the two --env-file flags: multi-clone safety, see
+# RUNBOOK; the second one is not optional, and must come after .env)
 # -------------------------------------------------------------------
-#   docker compose -p <project-name> --env-file /abs/path/to/.env \
+#   docker compose -p <project-name> \
+#     --env-file /abs/path/to/.env --env-file /abs/path/to/docker-compose.demo.env \
 #     -f docker-compose.yml -f docker-compose.demo.yml \
-#     --profile dev-light --profile dev-data --profile gpu-llm up -d
+#     --profile dev-light --profile dev-data up -d
 #
-# Omit --profile gpu-llm if no LLM inference is needed for the smoke test.
+# Before the first `up`, confirm the knobs took (with the same flags):
+#   docker compose ... config | grep -E 'shared_buffers|--workers'
 # =============================================================================
 
 services:
@@ -51,14 +62,10 @@ services:
   # postgresql — the single biggest line item, and it runs in EVERY profile
   # (no `profiles:` key in the base file). shared_buffers is the driver.
   # 512 MB buffers + 32 MB work_mem is a normal small-instance config and is
-  # ample for a demo corpus.
+  # ample for a demo corpus. Those values are in docker-compose.demo.env (see
+  # the header: they cannot be set from here).
   # ---------------------------------------------------------------------------
   postgresql:
-    environment:
-      POSTGRES_SHARED_BUFFERS: ${POSTGRES_SHARED_BUFFERS:-512MB}
-      POSTGRES_EFFECTIVE_CACHE_SIZE: ${POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
-      POSTGRES_WORK_MEM: ${POSTGRES_WORK_MEM:-32MB}
-      POSTGRES_MAINTENANCE_WORK_MEM: ${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
     deploy:
       resources:
         limits:
@@ -69,13 +76,12 @@ services:
   # ---------------------------------------------------------------------------
   # fastapi — memory scales with UVICORN_WORKERS (each worker loads its own
   # model copies; that multiplication is what caused the 2026-06 OOM that
-  # raised the limit to 16g). Two workers is plenty for demo concurrency.
-  # Limit deliberately left at the base value: it is OOM insurance that costs
-  # nothing unless actually consumed.
+  # raised the limit to 16g). Two workers is plenty for demo concurrency —
+  # UVICORN_WORKERS=2 is in docker-compose.demo.env, for the same reason as
+  # the Postgres knobs above. Limit deliberately left at the base value: it is
+  # OOM insurance that costs nothing unless actually consumed.
   # ---------------------------------------------------------------------------
   fastapi:
-    environment:
-      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
     deploy:
       resources:
         reservations:
