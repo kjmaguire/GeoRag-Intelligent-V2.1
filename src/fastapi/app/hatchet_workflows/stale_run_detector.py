@@ -36,13 +36,28 @@ The conditional update inside ``mark_timed_out`` / ``mark_completed_by_run``
 silently no-ops if the row already transitioned (e.g. on_failure_task beat
 us to it). This is the durable backstop for Bug 1 (silent stalls).
 
+Time budget (2026-10-10). A row marked ``timed_out`` is never selected again,
+so the gap between "mark timed_out" and "dispatch the recovery" is the one place
+a kill loses a run for good. The sweep used to push each row's ``timed_out`` to
+Laravel between the two: a Laravel that is not up yet (the 08:30 start brings
+the worker and the engine first) costs ~11 s a row in retries, so a backlog from
+the night's stop outran the old 2 minute ``execution_timeout`` after about ten
+rows and the kill landed in that gap. Now (a) every row's database and engine
+work comes first and the Laravel pushes are held until the end, sent only while
+time remains (they are a latency optimisation; the row is already terminal and
+the UI polls), and (b) the loop stops STARTING rows after
+``_loop_budget_seconds()`` and leaves the rest, still ``started``, for the next
+tick, so it ends by itself well inside the 10 minute timeout.
+
 See [[ingestion-reliability-spec]] for the full state-machine contract.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from datetime import UTC, datetime
 
 from hatchet_sdk import Context
@@ -81,6 +96,32 @@ def _embed_stale_after_minutes() -> int:
         return v if v > 0 else 120
     except ValueError:
         return 120
+
+
+def _loop_budget_seconds() -> float:
+    """How long the sweep may keep STARTING rows, in seconds (default 7 minutes).
+
+    The task's ``execution_timeout`` is 10 minutes; what is left after this is
+    the finish of the row in hand (a few seconds, ~30 at the very worst), the
+    held Laravel pushes (``_BROADCAST_GRACE_SECONDS``) and the output. Rows not
+    reached stay ``started`` and are picked up by the next tick.
+    """
+    raw = os.environ.get("STALE_RUN_DETECTOR_BUDGET_SECONDS", "420")
+    try:
+        v = float(raw)
+        return v if v > 0 else 420.0
+    except ValueError:
+        return 420.0
+
+
+#: Extra time, after the sweep loop's budget, in which the held Laravel pushes
+#: are still sent. A push to an unreachable Laravel is three 3 s attempts plus
+#: backoff (~11 s), so this bounds how many are tried; the rest are dropped.
+_BROADCAST_GRACE_SECONDS = 90.0
+
+#: One Hatchet status lookup. The SDK call has no deadline of its own, and a
+#: hung engine API must read as "unknown" (heartbeat clock), not as a stuck sweep.
+_ENGINE_STATUS_TIMEOUT_SECONDS = 15.0
 
 
 def _recovery_max_attempts() -> int:
@@ -270,8 +311,14 @@ class StaleRunDetectorOutput(BaseModel):
     #: Rows old enough to sweep whose Hatchet run is still QUEUED/RUNNING —
     #: left alone this tick. See ``_workflow_run_is_alive``.
     runs_skipped_alive: int = 0
+    #: Candidates the loop's time budget did not reach. They are still
+    #: ``started``/``queued`` and the next tick (15 minutes on) picks them up.
+    runs_deferred: int = 0
     recovery_runs_dispatched: int = 0
     broadcasts_emitted: int
+    #: Laravel pushes held to the end of the tick that there was no time left to
+    #: send. Best effort by design: the rows are already terminal in Postgres.
+    broadcasts_dropped: int = 0
     sampled_at: datetime
 
 
@@ -297,8 +344,11 @@ async def _hatchet_run_status(workflow_run_id: str) -> str | None:
     it without a live engine.
     """
     try:
-        status = await hatchet.runs.aio_get_status(workflow_run_id)
-    except Exception as exc:  # noqa: BLE001 — any API failure means "unknown"
+        status = await asyncio.wait_for(
+            hatchet.runs.aio_get_status(workflow_run_id),
+            timeout=_ENGINE_STATUS_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — any API failure (or timeout) means "unknown"
         log.warning(
             "stale_run_detector: could not read Hatchet status for "
             "workflow_run_id=%s: %s", workflow_run_id, exc,
@@ -695,18 +745,32 @@ async def _dispatch_recovery_run(
         return None
 
 
-@stale_run_detector.task(execution_timeout="2m", schedule_timeout="1h", retries=1)
+# 10 minutes, not 2 (2026-10-10): see the module docstring. The loop stops
+# starting rows after `_loop_budget_seconds()` (7 min) and ends well inside this;
+# the next tick is 15 minutes away, and a second detector overlapping a retry is
+# safe (`mark_timed_out` is conditional, `start_run` derives the attempt number).
+@stale_run_detector.task(execution_timeout="10m", schedule_timeout="1h", retries=1)
 async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetectorOutput:
     stale_minutes = input.stale_minutes or _stale_after_minutes()
     embed_stale_minutes = max(_embed_stale_after_minutes(), stale_minutes)
     max_attempts = _recovery_max_attempts()
 
+    started = time.monotonic()
+    sweep_deadline = started + _loop_budget_seconds()
+    broadcast_deadline = sweep_deadline + _BROADCAST_GRACE_SECONDS
+
     pool = await ingest_progress.get_pool()
     runs_marked_completed = 0
     runs_marked_timed_out = 0
     runs_skipped_alive = 0
+    runs_deferred = 0
     recovery_runs_dispatched = 0
     broadcasts_emitted = 0
+    # Laravel pushes, held until every row's database and engine work is done.
+    # See the module docstring: a push to a Laravel that is down costs ~11 s, and
+    # sitting between "mark timed_out" and "dispatch the recovery" it is what a
+    # timeout used to kill.
+    pending_broadcasts: list[dict] = []
 
     # Select runs to sweep. Done outside the per-row UPDATE so we can
     # log + broadcast each one individually without holding a long lock.
@@ -771,7 +835,18 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
     except Exception:
         pass
 
-    for row in rows:
+    for index, row in enumerate(rows):
+        if time.monotonic() >= sweep_deadline:
+            # Stop STARTING rows; the ones not reached are still started/queued
+            # and the next tick selects them. Never abandon one half-done.
+            runs_deferred = len(rows) - index
+            log.warning(
+                "stale_run_detector: sweep budget spent after %d of %d candidate(s); "
+                "%d left for the next tick",
+                index, len(rows), runs_deferred,
+            )
+            break
+
         run_id = row["run_id"]
         current_step = row["current_step"] or "unknown"
 
@@ -818,17 +893,16 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                                 "Recovered by stale sweep — embeddings already complete."
                             ),
                         )
-                        await post_ingestion_progress(
-                            workspace_id=row["workspace_id"],
-                            project_id=row["project_id"],
-                            run_id=run_id,
-                            stage="embedding",
-                            status=_status,
-                            message=_message,
-                        )
-                        broadcasts_emitted += 1
+                        pending_broadcasts.append({
+                            "workspace_id": row["workspace_id"],
+                            "project_id": row["project_id"],
+                            "run_id": run_id,
+                            "stage": "embedding",
+                            "status": _status,
+                            "message": _message,
+                        })
                     except Exception as exc:
-                        log.warning("stale_run_detector: race-recovery broadcast failed run=%s: %s", run_id, exc)
+                        log.warning("stale_run_detector: race-recovery outcome read failed run=%s: %s", run_id, exc)
                 log.info(
                     "stale_run_detector: race-recovered run=%s (project already fully embedded)",
                     run_id,
@@ -869,19 +943,9 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                 block_reason,
             )
 
-        try:
-            await post_ingestion_progress(
-                workspace_id=row["workspace_id"],
-                project_id=row["project_id"],
-                run_id=run_id,
-                stage=row["current_stage"] or current_step,
-                status="timed_out",
-                message=f"No heartbeat for {stale_minutes}m; marked timed_out by sweep.",
-            )
-            broadcasts_emitted += 1
-        except Exception as e:
-            log.warning("stale_run_detector: broadcast failed run=%s: %s", run_id, e)
-
+        # Dispatch the recovery NOW, before anything that talks to Laravel: the
+        # row above is already terminal and will not be selected again, so a
+        # kill between here and the dispatch loses the run for good.
         if will_retry:
             recovery_run_id = await _dispatch_recovery_run(stale_row=dict(row))
             if recovery_run_id is not None:
@@ -895,12 +959,44 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                     extra={"run_id": run_id, "alert": True},
                 )
 
+        pending_broadcasts.append({
+            "workspace_id": row["workspace_id"],
+            "project_id": row["project_id"],
+            "run_id": run_id,
+            "stage": row["current_stage"] or current_step,
+            "status": "timed_out",
+            "message": f"No heartbeat for {stale_minutes}m; marked timed_out by sweep.",
+        })
+
+    # The Laravel pushes, last and only while time remains. The durable record is
+    # the progress row (terminal in Postgres by now); a push is the UI's shortcut
+    # past its next poll, so one that does not fit is dropped, not sent late.
+    broadcasts_dropped = 0
+    for sent, push in enumerate(pending_broadcasts):
+        if time.monotonic() >= broadcast_deadline:
+            broadcasts_dropped = len(pending_broadcasts) - sent
+            log.warning(
+                "stale_run_detector: no time left for %d of %d held Laravel push(es); "
+                "the Ingestion Runs page catches up on its next poll",
+                broadcasts_dropped, len(pending_broadcasts),
+            )
+            break
+        try:
+            await post_ingestion_progress(**push)
+            broadcasts_emitted += 1
+        except Exception as e:
+            log.warning(
+                "stale_run_detector: broadcast failed run=%s: %s", push["run_id"], e,
+            )
+
     return StaleRunDetectorOutput(
         runs_scanned=len(rows),
         runs_marked_completed=runs_marked_completed,
         runs_marked_timed_out=runs_marked_timed_out,
         runs_skipped_alive=runs_skipped_alive,
+        runs_deferred=runs_deferred,
         recovery_runs_dispatched=recovery_runs_dispatched,
         broadcasts_emitted=broadcasts_emitted,
+        broadcasts_dropped=broadcasts_dropped,
         sampled_at=datetime.now(UTC),
     )

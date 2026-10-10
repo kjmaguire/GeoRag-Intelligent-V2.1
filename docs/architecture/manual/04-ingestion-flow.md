@@ -136,7 +136,7 @@ Downstream of the parse:
 | `nl_summaries` | structured rows → natural-language passages (ADR-0012) |
 | `verbalize_page_images` | page-image descriptions; inert unless `IMAGE_VERBALIZATION_ENABLED` |
 | `promote_silver_to_gold` | silver → the gold visual tables the Workspace reads |
-| `stale_run_detector` | closes `silver.ingest_progress` rows with no heartbeat, but only after Hatchet confirms the run is no longer QUEUED/RUNNING, so a queued bulk upload is not timed out (2026-09-02) |
+| `stale_run_detector` | closes `silver.ingest_progress` rows with no heartbeat, but only after Hatchet confirms the run is no longer QUEUED/RUNNING, so a queued bulk upload is not timed out (2026-09-02). Per tick it marks the row, dispatches the recovery, and only then (after every row) pushes the `timed_out` events to Laravel, while time remains; it stops starting rows after 7 minutes (`STALE_RUN_DETECTOR_BUDGET_SECONDS`) and leaves the rest for the next tick, under a 10-minute `execution_timeout` (it was 2, and a Laravel that was down killed it between a row's `timed_out` mark and its dispatch, which loses that run for good) |
 | `nightly_ingestion_integrity` | cross-checks bronze against silver |
 
 **Not registered**, despite appearing in earlier versions of this chapter:
