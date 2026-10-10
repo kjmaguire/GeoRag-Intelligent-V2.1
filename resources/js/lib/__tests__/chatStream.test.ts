@@ -3,6 +3,7 @@ import {
     SSE_VOCABULARY,
     createDeltaBuffer,
     isHeartbeat,
+    isRetryableFailure,
     isUncitedAnswer,
     normaliseValidationState,
     readPromptParam,
@@ -124,5 +125,37 @@ describe('toPersistedMessage (CHAT-4 / CHAT-9)', () => {
             error: 'The query timed out.',
             error_code: 'TIMEOUT',
         });
+    });
+});
+
+describe('isRetryableFailure', () => {
+    it.each(['PROJECT_HIBERNATED', 'PROJECT_ARCHIVED', 'PROJECT_PAST_DUE'])(
+        'is false for the project-lifecycle refusal %s: asking again fails the same way',
+        (code) => {
+            expect(isRetryableFailure(code)).toBe(false);
+        },
+    );
+
+    it('compares case-insensitively and ignores surrounding whitespace', () => {
+        expect(isRetryableFailure('project_hibernated')).toBe(false);
+        expect(isRetryableFailure('Project_Archived')).toBe(false);
+        expect(isRetryableFailure('  PROJECT_PAST_DUE ')).toBe(false);
+    });
+
+    it.each(['TIMEOUT', 'LLM_UNAVAILABLE', 'QUOTA_EXCEEDED', 'ACCESS_CHECK_FAILED', 'SERVICE_UNAVAILABLE', ''])(
+        'stays true for %j: the question may succeed next time',
+        (code) => {
+            expect(isRetryableFailure(code)).toBe(true);
+        },
+    );
+
+    it('stays true when the failure carries no code (a dropped connection, a stalled stream)', () => {
+        expect(isRetryableFailure(null)).toBe(true);
+        expect(isRetryableFailure(undefined)).toBe(true);
+    });
+
+    it('does not match a code that merely contains a lifecycle name', () => {
+        expect(isRetryableFailure('PROJECT_HIBERNATED_SOON')).toBe(true);
+        expect(isRetryableFailure('NOT_PROJECT_ARCHIVED')).toBe(true);
     });
 });

@@ -81,6 +81,43 @@ function renderChat(projectProps: Partial<typeof project> & { commodity?: string
     );
 }
 
+const EARLIER_QUESTION = 'What is the TD of PLS-1?';
+
+/** A page opened on an existing thread with a finished exchange, and a second thread in the rail. */
+function renderOnThread() {
+    const props = {
+        project,
+        threads: [
+            { id: 'thread-a', title: 'Earlier thread', updated: '2026-09-28T00:00:00Z' },
+            { id: 'thread-b', title: 'Other thread', updated: '2026-09-27T00:00:00Z' },
+        ],
+        active_thread_id: 'thread-a',
+        active_thread: { id: 'thread-a', title: 'Earlier thread' },
+        messages: [
+            {
+                id: 'm1',
+                role: 'user',
+                content: EARLIER_QUESTION,
+                created_at: '2026-09-28T00:00:00Z',
+                citations: [],
+                confidence: null,
+                answer_run_id: null,
+            },
+            {
+                id: 'm2',
+                role: 'assistant',
+                content: 'PLS-1 is 412 m deep.',
+                created_at: '2026-09-28T00:00:05Z',
+                citations: [],
+                confidence: null,
+                answer_run_id: null,
+            },
+        ],
+        empty: false,
+    };
+    return { props, ...render(<FoundryChat {...props} />) };
+}
+
 async function ask(question: string) {
     fireEvent.change(screen.getByLabelText('Ask a question'), { target: { value: question } });
     await act(async () => {
@@ -733,6 +770,151 @@ describe('Foundry chat', () => {
             expect(chips[0]).toHaveAttribute('title', '[1] Report One');
             expect(chips[0].style.borderColor).toBe('var(--line-2)');
             expect(chips[1].style.borderColor).toBe('var(--line-2)');
+        });
+    });
+
+    describe('project lifecycle refusals (no Retry that cannot work)', () => {
+        it.each(['PROJECT_HIBERNATED', 'project_archived', 'Project_Past_Due'])(
+            'shows the %s refusal but offers no Retry: asking again fails the same way',
+            async (code) => {
+                renderChat();
+                await ask('How deep is PLS-22-08?');
+
+                await act(async () => {
+                    handler!({
+                        event: 'failed',
+                        code,
+                        error: 'This project is not accepting questions right now.',
+                        event_id: 'f1',
+                    });
+                });
+
+                const panel = screen.getByTestId('refusal-panel');
+                expect(panel).toHaveAttribute('data-variant', 'failed');
+                expect(panel).toHaveTextContent('This project is not accepting questions right now.');
+                expect(screen.queryByRole('button', { name: /Retry the question/ })).toBeNull();
+                // Nothing is wrong with the composer: the reader can still type a different question.
+                expect(screen.getByLabelText('Ask a question')).toBeEnabled();
+            },
+        );
+
+        it('still offers Retry for a code that can clear (TIMEOUT) and for a failure with no code', async () => {
+            renderChat();
+            await ask('How deep is PLS-22-08?');
+            await act(async () => {
+                handler!({ event: 'failed', code: 'TIMEOUT', error: 'Took too long.', event_id: 'f1' });
+            });
+            expect(screen.getByRole('button', { name: /Retry the question/ })).toBeEnabled();
+
+            cleanup();
+            handler = null;
+            renderChat();
+            await ask('How deep is PLS-22-08?');
+            await act(async () => {
+                handler!({ event: 'failed', error: 'Query failed', event_id: 'f2' });
+            });
+            expect(screen.getByRole('button', { name: /Retry the question/ })).toBeEnabled();
+        });
+    });
+
+    describe('"+ New" and thread selection (FE-5)', () => {
+        beforeEach(() => {
+            vi.mocked(router.get).mockClear();
+        });
+
+        it('shows the title and highlight of the thread on screen', () => {
+            renderOnThread();
+            expect(screen.getByTestId('thread-title')).toHaveTextContent('Earlier thread');
+            expect(screen.getByRole('button', { name: /Earlier thread/ })).toHaveAttribute('aria-current', 'true');
+            expect(screen.getByRole('button', { name: /Other thread/ })).not.toHaveAttribute('aria-current');
+        });
+
+        it('"+ New" drops the old thread\'s title and highlight along with its transcript', () => {
+            renderOnThread();
+
+            fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+
+            expect(screen.queryByText(EARLIER_QUESTION)).toBeNull();
+            expect(screen.getByTestId('thread-title')).toHaveTextContent('New thread');
+            expect(screen.getByRole('button', { name: /Earlier thread/ })).not.toHaveAttribute('aria-current');
+            expect(screen.getByRole('button', { name: /Other thread/ })).not.toHaveAttribute('aria-current');
+        });
+
+        it('clicking the thread that was open before "+ New" brings it back, though the server still calls it active', async () => {
+            renderOnThread();
+            fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+            expect(screen.queryByText(EARLIER_QUESTION)).toBeNull();
+
+            fireEvent.click(screen.getByRole('button', { name: /Earlier thread/ }));
+
+            expect(router.get).toHaveBeenCalledTimes(1);
+            const [url, data, options] = vi.mocked(router.get).mock.calls[0] as unknown as [
+                string,
+                Record<string, string>,
+                { preserveState: boolean; onSuccess: () => void },
+            ];
+            expect(url).toBe('/projects/shirley-basin/chat');
+            expect(data).toEqual({ thread: 'thread-a' });
+            expect(options.preserveState).toBe(true);
+
+            // The visit finishes with the SAME active_thread_id the page already had.
+            await act(async () => {
+                options.onSuccess();
+            });
+
+            expect(screen.getByText(EARLIER_QUESTION)).toBeInTheDocument();
+            expect(screen.getByTestId('thread-title')).toHaveTextContent('Earlier thread');
+            expect(screen.getByRole('button', { name: /Earlier thread/ })).toHaveAttribute('aria-current', 'true');
+        });
+
+        it('does not fetch the thread that is already on screen', () => {
+            renderOnThread();
+            fireEvent.click(screen.getByRole('button', { name: /Earlier thread/ }));
+            expect(router.get).not.toHaveBeenCalled();
+        });
+
+        it('highlights and names a thread that was started here, once the rail lists it', async () => {
+            const { rerender, props } = renderOnThread();
+            fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+            await ask('How deep is PLS-22-08?');
+            await act(async () => {
+                handler!({
+                    event: 'completed',
+                    text: 'It is 412 m deep [DATA-1].',
+                    citations: [{ citation_id: '[DATA-1]', source_chunk_id: 'c1', citation_type: 'DATA' }],
+                    confidence: 0.9,
+                    validation_state: 'clean',
+                });
+            });
+            await waitFor(() =>
+                expect(
+                    fetchCalls.some((c) => c.url.startsWith('/api/v1/conversations/') && c.init?.method === 'PUT'),
+                ).toBe(true),
+            );
+            const minted = fetchCalls
+                .find((c) => c.url.startsWith('/api/v1/conversations/') && c.init?.method === 'PUT')!
+                .url.split('/')
+                .pop()!;
+
+            // The server's refresh: the new thread is in the rail, but its active_thread_id
+            // still names the thread the page was opened on.
+            rerender(
+                <FoundryChat
+                    {...props}
+                    threads={[
+                        { id: minted, title: 'How deep is PLS-22-08?', updated: '2026-10-10T00:00:00Z' },
+                        ...props.threads,
+                    ]}
+                    active_thread={{ id: minted, title: 'How deep is PLS-22-08?' }}
+                />,
+            );
+
+            expect(screen.getByTestId('thread-title')).toHaveTextContent('How deep is PLS-22-08?');
+            expect(screen.getByRole('button', { name: /How deep is PLS-22-08\?/ })).toHaveAttribute(
+                'aria-current',
+                'true',
+            );
+            expect(screen.getByRole('button', { name: /Earlier thread/ })).not.toHaveAttribute('aria-current');
         });
     });
 });
