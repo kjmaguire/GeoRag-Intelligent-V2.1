@@ -1231,8 +1231,9 @@ _LABEL_PLURAL = (
     r"recommendations|priorities|tiers|categories|ranks|findings)"
 )
 # A label's number is short ("Zone 5", "Level 12", "Line 100E"): a plain
-# three-digit figure after one of these nouns ("area 450 ha") is a quantity.
-_LABEL_ID = r"(?:\d{1,2}[A-Za-z]?|\d{3}[A-Za-z])"
+# three-digit figure after one of these nouns ("area 450 ha") is a quantity,
+# and so is "zone 12m" -- a suffix letter is a capital ("Lens 2A").
+_LABEL_ID = r"(?:\d{1,2}(?-i:[A-Z])?|\d{3}(?-i:[A-Z]))"
 _LABEL_LIST = rf"{_LABEL_ID}(?:\s*(?:,|&|and|or|to|-|–)\s*{_LABEL_ID})"
 _LABEL_NUMBER_RE = re.compile(
     rf"\b(?:{_LABEL_SINGULAR}\s+({_LABEL_ID}(?:\s*(?:,|&|and|or|to|-|–)\s*{_LABEL_ID})*)"
@@ -1880,9 +1881,10 @@ def verify_numbers(
         route = _grounding_route(claim, evidence)
         if route == "derived":
             logger.debug(
-                "Layer 3 derivation: %s %s lies inside a structured series of "
-                "its dimension, likely a mean/median/percentile",
-                claim.value, claim.family,
+                "Layer 3 derivation: %s %s is worked out from the evidence "
+                "(a statistic or bound inside a series, a recount, or "
+                "arithmetic on its own sentence): %.80s",
+                claim.value, claim.family, claim.context,
             )
         if route is not None:
             continue

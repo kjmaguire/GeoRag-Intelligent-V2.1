@@ -207,10 +207,15 @@ class TestLabelsRanksAndListPositionsAreNotClaims:
             "The company targets 50 holes this year [DATA-1].",  # a count
             "Zone 5 is 90 m wide [DATA-1].",                    # label AND width
             "The licence covers an area 450 hectares in extent [DATA-1].",  # a quantity
+            "The zone 25m wide is open at depth [DATA-1].",  # a glued unit
         ],
     )
     def test_a_label_word_does_not_hide_a_real_number(self, answer: str) -> None:
         assert _flagged(answer, _assays())
+
+    @pytest.mark.parametrize("answer", ["Mineralisation is hosted in Lens 2A [DATA-1].", "Line 100E was flown [DATA-1]."])
+    def test_a_lettered_label_is_still_a_label(self, answer: str) -> None:
+        assert verify_numbers(answer, [_assays()]) == []
 
     def test_the_stripped_text_keeps_the_words(self) -> None:
         clean = _strip_non_claims("3. The 75th percentile of the top 5 intervals, Zone 5")
@@ -614,6 +619,44 @@ class TestOuncesPerTonOnlyConvertIntoOtherUnits:
         docs = _docs("Gold grade is 37.3 g/t.")
         assert verify_numbers("That is 1.09 oz/ton gold [NI43-1].", [docs]) == []  # short ton
         assert verify_numbers("That is 1.2 oz/t gold [NI43-1].", [docs]) == []  # metric tonne
+
+
+# ---------------------------------------------------------------------------
+# The lookups are bisects now; they must agree with the scan they replaced
+# ---------------------------------------------------------------------------
+
+
+class TestTheBisectLookupAgreesWithTheScan:
+    def test_near_any_equals_matches_grounded(self) -> None:
+        import random
+
+        from app.agent.hallucination.orchestrator_validators import _matches_grounded, _near_any
+
+        rng = random.Random(7)
+        magnitudes = sorted(abs(rng.uniform(0, 1000)) for _ in range(500))
+        for _ in range(3000):
+            value = rng.choice([-1, 1]) * rng.uniform(0, 1100)
+            tolerance = rng.choice([0.05, 0.5, 5.0, 25.0])
+            assert _near_any(value, tolerance, magnitudes) == _matches_grounded(
+                value, tolerance, magnitudes
+            )
+
+    def test_the_edges_of_the_window_hold(self) -> None:
+        from app.agent.hallucination.orchestrator_validators import _near_any
+
+        assert _near_any(12.0, 0.5, [12.5]) and _near_any(12.0, 0.5, [11.5])
+        assert not _near_any(12.0, 0.5, [12.51]) and not _near_any(12.0, 0.5, [11.49])
+        assert _near_any(-60.0, 0.5, [60.0])  # a dip is compared by magnitude
+        assert not _near_any(12.0, 0.5, [])
+
+    def test_a_long_answer_against_a_large_result_stays_fast(self) -> None:
+        import time
+
+        collars = _collars(tuple(100.0 + i for i in range(4000)))
+        answer = " ".join(f"{300 + i * 1.1:.1f} m" for i in range(300)) + " [DATA-1]."
+        start = time.perf_counter()
+        verify_numbers(answer, [collars])
+        assert time.perf_counter() - start < 3.0, "was ~4.5 s of event loop before the index"
 
 
 # ---------------------------------------------------------------------------
