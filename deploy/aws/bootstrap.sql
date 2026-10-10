@@ -137,8 +137,11 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 --   SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
 --   SELECT cron.schedule('partman-maintenance', '45 18 * * *',
 --                        $$CALL partman.run_maintenance_proc()$$);
+--   GRANT USAGE ON SCHEMA partman TO georag_app;
+--   GRANT SELECT ON partman.part_config TO georag_app;
 --
--- Check it with
+-- (The two GRANTs are the georag_app block further down; they are safe to
+-- repeat.) Check it with
 --
 --   SELECT jobid, schedule, active FROM cron.job WHERE jobname = 'partman-maintenance';
 --
@@ -208,6 +211,35 @@ ALTER ROLE georag_app LOGIN PASSWORD :'georag_app_password';
 -- georag_app in the first place, so there is nothing to repair it FROM.
 -- CREATE ROLE above already applied NOSUPERUSER NOBYPASSRLS at creation,
 -- which is the one path that does not require the caller to be a superuser.
+
+-- georag_app READS partman's configuration, and only reads it.
+--
+-- The Hatchet cron pg_partman_maintenance (src/fastapi/app/hatchet_workflows/
+-- pg_partman_maintenance.py, 19:15 UTC) connects as this role and runs
+-- `SELECT count(*) FROM partman.part_config`, then
+-- `CALL partman.run_maintenance_proc()`. The schema is created above with no
+-- grant to georag_app (database/raw/phase1/10-georag-app-role.sql, which did
+-- grant it, is not in database/raw/manifest.json and has never run), so both
+-- statements failed with "permission denied for schema partman" every night.
+-- Verified against PostgreSQL 16 with pg_partman 5.0.1, not inferred. These two
+-- grants are what that job needs while no parent is registered; in 5.0.1 the
+-- procedure reads nothing but part_config to find its parents. If another
+-- pg_partman version reads a second table, the error names it: grant SELECT on
+-- that table, not on the schema.
+--
+-- THIS DOES NOT MAKE THE HATCHET JOB A MAINTAINER, and must not be widened to.
+-- Once a parent IS registered (partman.create_parent(), database/raw/phase0/
+-- 20/30/60) the CALL has to create and drop partitions in schemas georag_app
+-- cannot even see ("permission denied for schema audit", same test), so it
+-- fails again. The pg_cron job above runs as the master user, which owns those
+-- tables, and is the one owner of partition maintenance. Retiring the Hatchet
+-- duplicate is for that workflow's owner to decide.
+--
+-- After the CREATE ROLE above, not beside the schema: on a fresh database the
+-- role does not exist earlier in this file, and ON_ERROR_STOP would end the
+-- run there.
+GRANT USAGE ON SCHEMA partman TO georag_app;
+GRANT SELECT ON partman.part_config TO georag_app;
 
 -- ---------------------------------------------------------------------------
 -- Grant-holder roles (docker/postgresql/init/init-roles.sql)
