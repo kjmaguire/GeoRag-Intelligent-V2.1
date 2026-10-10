@@ -30,7 +30,7 @@ from app.agent.agentic_retrieval.intent_classifier import classify_intent
 from app.agent.agentic_retrieval.preprocessor import preprocess_envelope
 from app.agent.agentic_retrieval.retrieval_profile import (
     RetrievalProfile,
-    profile_for_intent,
+    profile_for_query,
 )
 from app.agent.agentic_retrieval.state import AgenticRetrievalState
 from app.models.rag import GeoRAGResponse
@@ -202,7 +202,15 @@ async def route_node(state: AgenticRetrievalState) -> dict[str, Any]:
             decision.override_reason,
         )
 
-    profile = profile_for_intent(effective, regulatory_touch=regulatory)
+    # factual_lookup is documents-only by profile, but "what is the deepest
+    # hole?" and "show the gold assays for PLS-22-08" are answered from the
+    # project's tables; widen it by what the question is about (finding 22).
+    profile = profile_for_query(
+        effective,
+        state.query,
+        hole_ids=_hole_ids_from_query(state.query),
+        regulatory_touch=regulatory,
+    )
 
     # Phase 3 / Step 3.1 — pre-process envelope into retrieval filters.
     filters = preprocess_envelope(state.context_envelope)

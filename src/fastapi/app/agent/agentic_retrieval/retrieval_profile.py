@@ -30,6 +30,8 @@ into actual tool invocations; the profile itself contains no I/O.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -230,8 +232,113 @@ def profile_for_intent(
     return base
 
 
+# ---------------------------------------------------------------------------
+# factual_lookup that is really a question about the project's own tables
+# (audit 2026-10 finding 22)
+# ---------------------------------------------------------------------------
+#
+# The classifier files every "what is / what are / what does" question under
+# factual_lookup with confidence 1.0, and so any query that names a hole, and
+# factual_lookup's profile is documents only. So "What is the deepest hole in
+# the project?", "What are the top gold assays?" and "Show the gold assays for
+# PLS-22-08" never ran query_spatial_collars, query_assay_data or
+# query_downhole_logs: the model was asked for a number that lives in PostGIS
+# and was handed report text instead. (The hole-id pre-pass in execute_node
+# covers "tell me about hole X" with the collar record only.)
+#
+# The classifier's triggers are not narrowed; "what is the NI 43-101 definition
+# of an indicated resource?" must stay a documents question, and does. The
+# profile is widened where it is APPLIED, by what the question is about, and
+# only for factual_lookup (every other intent already lists these tools).
+
+_COLLAR_VOCAB = re.compile(
+    r"\b(?:holes?|collars?|drill(?:holes?|ed|ing|s)?|depths?|deep(?:est|er)?|"
+    r"shallow(?:est|er)?|azimuths?|elevations?)\b",
+    re.IGNORECASE,
+)
+_ASSAY_VOCAB = re.compile(
+    r"\b(?:assay(?:s|ed|ing)?|grades?|intercepts?|intersections?|g/t|gpt|ppm|ppb|oz/t)\b"
+    r"|(?<![\w.])\d+(?:\.\d+)?\s*%",
+    re.IGNORECASE,
+)
+_LOG_VOCAB = re.compile(
+    r"\b(?:lithology|lithologies|litholog\w*|intervals?|logs?|logged|rock\s+types?)\b",
+    re.IGNORECASE,
+)
+
+
+def structured_tools_for_factual_lookup(
+    query: str,
+    hole_ids: Sequence[str] = (),
+) -> list[str]:
+    """The structured tools a factual_lookup question also needs, in dispatch order.
+
+    Empty for a question that is only about documents. The vocabulary picks the
+    tool, not the other way round, so a depth question does not also drag in
+    project-wide assay statistics that the model would then quote:
+
+    * collar words (hole, collar, drill, depth, deepest, azimuth ...) ->
+      ``query_spatial_collars``, the project-level listing and its matching
+      total. Not when a hole is NAMED: ``query_collar_details`` already ran for
+      it and a 50-row project sample would only bury it;
+    * assay words (assay, grade, intercept, g/t, ppm ...) -> ``query_assay_data``,
+      whose hole filter and commodity are read off the query at dispatch;
+    * log words (lithology, interval, logged ...) -> ``query_downhole_logs``,
+      which needs a named hole and is skipped cleanly without one, so it is
+      only listed when one was detected.
+
+    A named hole with none of that vocabulary ("what is PLS-22-08?") gets the
+    assays and the lithology column for that hole.
+    """
+    named = bool(hole_ids)
+    wants_collars = bool(_COLLAR_VOCAB.search(query or ""))
+    wants_assays = bool(_ASSAY_VOCAB.search(query or ""))
+    wants_logs = bool(_LOG_VOCAB.search(query or ""))
+
+    if named and not (wants_collars or wants_assays or wants_logs):
+        wants_assays = wants_logs = True
+
+    tools: list[str] = []
+    if wants_collars and not named:
+        tools.append("query_spatial_collars")
+    if wants_assays:
+        tools.append("query_assay_data")
+    if wants_logs and named:
+        tools.append("query_downhole_logs")
+    return tools
+
+
+def profile_for_query(
+    intent: Intent,
+    query: str,
+    *,
+    hole_ids: Sequence[str] = (),
+    regulatory_touch: bool = False,
+) -> RetrievalProfile:
+    """``profile_for_intent`` plus the structured tools a factual_lookup needs.
+
+    Only factual_lookup is ever widened, and only by tools it does not already
+    list, appended after ``search_documents`` so the documents leg still runs
+    first. Any other intent, or a factual_lookup that is purely about documents,
+    gets exactly ``profile_for_intent``'s profile.
+    """
+    profile = profile_for_intent(intent, regulatory_touch=regulatory_touch)
+    if intent != "factual_lookup":
+        return profile
+    extra = [
+        tool
+        for tool in structured_tools_for_factual_lookup(query, hole_ids)
+        if tool not in profile.primary_tools
+    ]
+    if not extra:
+        return profile
+    return profile.model_copy(update={"primary_tools": [*profile.primary_tools, *extra]})
+
+
 __all__ = [
     "AnswerEmphasis",
     "RetrievalProfile",
     "profile_for_intent",
+    "profile_for_query",
+    "structured_tools_for_factual_lookup",
 ]
