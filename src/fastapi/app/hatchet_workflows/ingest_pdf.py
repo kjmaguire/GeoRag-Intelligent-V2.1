@@ -24,7 +24,9 @@ Pool: ``ingestion``. Action: ``ingest_pdf``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import gzip
 import hashlib
 import json
 import logging
@@ -768,6 +770,87 @@ class ParseOut(BaseModel):
     page_image_warnings: list[dict] = Field(default_factory=list)
     parse_duration_ms: int = 0
     is_scanned: bool = False
+    #: Set when the heavy fields above were too big to ship as task output and
+    #: were packed here (gzip + base64 of their JSON), leaving them empty. See
+    #: :func:`_pack_parse_output`; persist reads through
+    #: :func:`_unpack_parse_output`.
+    heavy_gz_b64: str | None = None
+
+
+#: The fields that carry a document's bulk. Everything else on ParseOut is a
+#: few bytes and always stays inline (``parser_used`` is read by embed_verify).
+_PARSE_HEAVY_FIELDS = frozenset({
+    "sections", "resource_tables", "figures", "page_image_manifest",
+    "warnings", "page_image_warnings", "page_languages",
+})
+
+#: A task's output travels to the engine, and on to every child task, as one
+#: gRPC message, and hatchet_sdk caps those at 4 MiB by default
+#: (config.grpc_max_send_message_length / _recv_). parse used to return the whole
+#: document as that output. A 500-page report with tables can exceed 4 MiB; the
+#: send then failed at the END of a 4-hour task that had already paid for every
+#: OCR page, and retries=1 re-ran the parse (and the OCR bill) for the same
+#: failure. Up to INLINE the output is returned exactly as before; above it the
+#: heavy fields are packed; if even packed the output would not fit, the parse
+#: fails once, with the reason, instead of failing opaquely and again.
+def _env_bytes(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name) or default))
+    except ValueError:
+        log.warning("ingest_pdf: %s=%r is not an integer; using %d", name, os.environ.get(name), default)
+        return default
+
+
+PARSE_OUTPUT_INLINE_MAX_BYTES = _env_bytes("PARSE_OUTPUT_INLINE_MAX_BYTES", 2 * 1024 * 1024)
+PARSE_OUTPUT_MAX_BYTES = _env_bytes("PARSE_OUTPUT_MAX_BYTES", 3 * 1024 * 1024)
+
+
+def _serialised_size(out: BaseModel) -> int:
+    return len(out.model_dump_json().encode("utf-8"))
+
+
+def _pack_parse_output(out: ParseOut) -> ParseOut:
+    """Make a ParseOut small enough to be a task output, losslessly.
+
+    Unchanged below ``PARSE_OUTPUT_INLINE_MAX_BYTES``. Above it the heavy fields
+    are gzipped into ``heavy_gz_b64`` (extracted text compresses five- to
+    tenfold) and emptied. If the packed result still exceeds
+    ``PARSE_OUTPUT_MAX_BYTES``, raises NonRetryableException: a retry would
+    re-OCR every page and fail the same way.
+    """
+    raw = _serialised_size(out)
+    if raw <= PARSE_OUTPUT_INLINE_MAX_BYTES:
+        return out
+    heavy = out.model_dump(mode="json", include=set(_PARSE_HEAVY_FIELDS))
+    blob = base64.b64encode(
+        gzip.compress(json.dumps(heavy, separators=(",", ":")).encode("utf-8"), compresslevel=6)
+    ).decode("ascii")
+    packed = out.model_copy(
+        update={**{field: [] for field in _PARSE_HEAVY_FIELDS}, "heavy_gz_b64": blob},
+    )
+    size = _serialised_size(packed)
+    if size > PARSE_OUTPUT_MAX_BYTES:
+        raise NonRetryableException(
+            f"parse output is {raw} bytes ({size} compressed), over the {PARSE_OUTPUT_MAX_BYTES}-byte "
+            "limit a task output can carry; not retried, a retry would re-OCR every page and fail "
+            "the same way. Raise PARSE_OUTPUT_MAX_BYTES together with the Hatchet client's "
+            "HATCHET_CLIENT_GRPC_MAX_SEND/RECV_MESSAGE_LENGTH if documents this large are expected."
+        )
+    log.warning(
+        "ingest_pdf.parse: output %d bytes exceeded the %d-byte inline limit; packed to %d bytes",
+        raw, PARSE_OUTPUT_INLINE_MAX_BYTES, size,
+    )
+    return packed
+
+
+def _unpack_parse_output(parsed: dict[str, Any]) -> dict[str, Any]:
+    """The inverse of :func:`_pack_parse_output`, on a ``model_dump()``. A no-op
+    for an output that was never packed."""
+    blob = parsed.get("heavy_gz_b64")
+    if not blob:
+        return parsed
+    heavy = json.loads(gzip.decompress(base64.b64decode(blob)))
+    return {**parsed, **heavy, "heavy_gz_b64": None}
 
 
 class IngestPdfFinalOut(BaseModel):
@@ -1295,7 +1378,7 @@ async def _parse_body(input: IngestPdfInput, pre: dict) -> ParseOut:
         # 1.5 GB atlases is a full disk.
         with contextlib.suppress(Exception):
             os.unlink(body_path)
-    return ParseOut(**result_dict)
+    return _pack_parse_output(ParseOut(**result_dict))
 
 
 # ---- Step 3: persist ---------------------------------------------------------
@@ -1940,6 +2023,8 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     pre = pre.model_dump() if hasattr(pre, "model_dump") else dict(pre)
     parsed = ctx.task_output(parse)
     parsed = parsed.model_dump() if hasattr(parsed, "model_dump") else dict(parsed)
+    # parse packs an output too big for a task output (see _pack_parse_output).
+    parsed = _unpack_parse_output(parsed)
 
     # Preflight rejection is its own phase and lives in its own function
     # (L1097). parse() short-circuits with parser_used="skipped" when

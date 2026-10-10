@@ -93,6 +93,16 @@ Decomposed into 5 steps + 1 on-failure task:
 | `p04p_dual_write` | `p04p_dual_write()` | When `P04P_DUAL_WRITE_ENABLED=true`, also runs the legacy parser and diffs (shadow A/B) | Writes to `silver.shadow_runs` |
 | `on_failure` | `on_failure_task` (line 1428) | Marks the run failed, broadcasts a failure Reverb event | Hatchet retries this task itself (retries=2) |
 
+Task-output size: `parse` returns the document (`ParseOut`: sections, resource
+tables, ...) as its Hatchet task output, which travels to the engine and on to
+`persist` as one gRPC message, and `hatchet_sdk` caps those at 4 MiB by default.
+Past `PARSE_OUTPUT_INLINE_MAX_BYTES` (2 MiB) `_pack_parse_output()` gzips the
+heavy fields into `ParseOut.heavy_gz_b64` and `persist` unpacks them
+(`_unpack_parse_output()`); if the packed output would still exceed
+`PARSE_OUTPUT_MAX_BYTES` (3 MiB) the parse fails once with `NonRetryableException`
+rather than re-OCRing every page for the same failure. Raise it together with the
+Hatchet client's `HATCHET_CLIENT_GRPC_MAX_SEND/RECV_MESSAGE_LENGTH`.
+
 Memory protection:
 - `_compute_parse_max_workers()` returns `min(os.cpu_count(), 4)` when
   `PARSE_SUBPROCESS_MAX_WORKERS` is empty.
