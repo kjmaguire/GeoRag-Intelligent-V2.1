@@ -381,6 +381,22 @@ grep -q 'concurrency:' <<<"$PLAN_BLOCK" && fail_case "a read-only plan must not 
 grep -Eq '^  cancel-in-progress: false$' "$CD" || fail_case "cd.yml must never cancel a running deploy"
 done_case "$f"
 
+# A workflow that asks for a longer session than the deploy role allows does
+# not get a clamped one: AssumeRole is refused and the workflow never starts.
+begin workflow_session_requests_fit_the_deploy_role; f=$FAIL
+ceiling=$(awk '/resource "aws_iam_role" "github_deploy"/{r=1} r && /max_session_duration/{print $3; exit}' "$CI_TF")
+ceiling=${ceiling:-3600}
+for wf in "${ROOT}"/.github/workflows/*.yml; do
+  grep -q 'secrets.AWS_DEPLOY_ROLE_ARN' "$wf" || continue
+  for secs in $(grep -oE 'role-duration-seconds: *[0-9]+' "$wf" | grep -oE '[0-9]+$'); do
+    [ "$secs" -le "$ceiling" ] || fail_case "$(basename "$wf") asks for ${secs}s but the deploy role (ci.tf) allows ${ceiling}s"
+  done
+done
+# The long poll is the reason the ceiling exists: it must actually ask.
+grep -Eq 'role-duration-seconds: *[0-9]{4,}' "${ROOT}/.github/workflows/embed5-cutover.yml" \
+  || fail_case "embed5-cutover.yml polls for 80 minutes and must ask for a session longer than the one-hour default"
+done_case "$f"
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

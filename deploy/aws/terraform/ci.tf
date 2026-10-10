@@ -109,6 +109,15 @@ data "aws_iam_policy_document" "github_actions_assume" {
 resource "aws_iam_role" "github_deploy" {
   name               = "${local.name}-github-deploy"
   assume_role_policy = data.aws_iam_policy_document.github_actions_assume.json
+
+  # IAM's default ceiling is one hour. embed5-cutover.yml polls a task for up
+  # to 80 minutes and reads its log afterwards, so it asks for 5400 seconds,
+  # and a request above the role's maximum is refused outright, not clamped.
+  # Raising the ceiling grants nothing by itself: a session lasts as long as
+  # the workflow that assumes the role asks for, and every other caller asks
+  # for the default. Until this is applied, embed5-cutover.yml fails at
+  # AssumeRole, so apply it before dispatching that workflow.
+  max_session_duration = 7200
 }
 
 data "aws_iam_policy_document" "github_deploy" {
