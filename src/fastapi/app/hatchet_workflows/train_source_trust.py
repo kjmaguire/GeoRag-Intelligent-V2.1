@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -100,11 +100,18 @@ _DOCTYPE_PRIOR: dict[str, float] = {
 }
 
 
-def _recency_factor(filing_date: datetime | None) -> float:
+def _recency_factor(filing_date: date | datetime | None) -> float:
     """Exponential decay over years. 1.0 at 0y, 0.5 at ~5y."""
     if filing_date is None:
         return 0.5
     now = datetime.now(tz=UTC)
+    if not isinstance(filing_date, datetime):
+        # silver.reports.filing_date is a DATE, which asyncpg returns as a
+        # datetime.date: no .tzinfo and not subtractable from a datetime. Nothing
+        # reached this with a real value while the citation join never matched.
+        filing_date = datetime(
+            filing_date.year, filing_date.month, filing_date.day, tzinfo=UTC,
+        )
     if filing_date.tzinfo is None:
         filing_date = filing_date.replace(tzinfo=UTC)
     age_years = max(0.0, (now - filing_date).days / 365.25)
@@ -116,7 +123,7 @@ def _compute_trust(
     *,
     citations_total: int,
     citations_validated: int,
-    filing_date: datetime | None,
+    filing_date: date | datetime | None,
     doctype: str,
 ) -> tuple[float, dict[str, float]]:
     """Blend the 3 signals into a [0, 1] trust score."""
@@ -164,24 +171,40 @@ async def execute(
             is_local=False,
         )
 
-        # Aggregate per source_document_id from
-        # silver.answer_citation_items joined to silver.reports.
-        # citations_validated counts items with rejection_reason IS NULL.
+        # Aggregate per source_document_id: the citations that point into each
+        # report. A citation names a passage (the only writer fills
+        # answer_citation_items.passage_id; evidence_id is the dual-support
+        # column nothing populates yet), a passage names its document, and for a
+        # report the document id IS silver.reports.report_id (FK
+        # document_passages.document_id -> reports). citations_validated counts
+        # items with rejection_reason IS NULL.
+        #
+        # This used to join `ci.evidence_id::text = r.report_id::text`, comparing
+        # an evidence_items id with a report id: it never matched, so every
+        # source had zero citations and was skipped as "low signal" (or, with
+        # min_citations_per_source=0, scored on a neutral 0.5 citation rate).
         rows = await conn.fetch(
             """
+            WITH cited AS (
+                SELECT dp.document_id,
+                       count(*) AS citations_total,
+                       count(*) FILTER (WHERE ci.rejection_reason IS NULL)
+                         AS citations_validated
+                  FROM silver.answer_citation_items ci
+                  JOIN silver.document_passages dp
+                    ON dp.passage_id = ci.passage_id
+                   AND dp.workspace_id = $1::uuid
+                 WHERE ci.workspace_id = $1::uuid
+                 GROUP BY dp.document_id
+            )
             SELECT r.report_id::text  AS source_document_id,
                    r.filing_date,
                    COALESCE(r.parser_used, 'unknown') AS doctype_hint,
-                   count(ci.answer_citation_item_id) AS citations_total,
-                   count(ci.answer_citation_item_id)
-                     FILTER (WHERE ci.rejection_reason IS NULL)
-                     AS citations_validated
+                   COALESCE(c.citations_total, 0)     AS citations_total,
+                   COALESCE(c.citations_validated, 0) AS citations_validated
               FROM silver.reports r
-              LEFT JOIN silver.answer_citation_items ci
-                ON ci.evidence_id::text = r.report_id::text
-               AND ci.workspace_id = $1::uuid
+              LEFT JOIN cited c ON c.document_id = r.report_id
              WHERE r.workspace_id = $1::uuid
-             GROUP BY r.report_id, r.filing_date, r.parser_used
             """,
             ws,
         )
