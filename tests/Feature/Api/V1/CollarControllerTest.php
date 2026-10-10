@@ -44,7 +44,8 @@ class CollarControllerTest extends TestCase
         Survey::getModel()->setTable('surveys');
 
         $this->user = User::factory()->create();
-        $this->project = Project::factory()->create();
+        // A stated coordinate system: store() refuses a collar it cannot place.
+        $this->project = Project::factory()->create(['crs_epsg' => 32613]);
 
         // Attach the user to the project so the hasProjectAccess gate (A2-02 fix)
         // passes for all tests that operate against $this->project.
@@ -394,6 +395,71 @@ class CollarControllerTest extends TestCase
         );
 
         $response->assertUnprocessable()->assertJsonValidationErrors(['total_depth']);
+    }
+
+    public function test_store_places_the_collar_in_its_workspace(): void
+    {
+        // geom_4326 is the only thing that puts a collar on the map, in the
+        // traces and in the agent's spatial tools, and no trigger derives it.
+        // workspace_id is NOT NULL once the raw RLS block has run.
+        $response = $this->postJson("/api/v1/projects/{$this->project->project_id}/collars", [
+            'hole_id' => 'GEO-01',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'Diamond',
+        ])->assertCreated();
+
+        $row = DB::selectOne(
+            'SELECT workspace_id::text AS workspace_id, georef_method, status,
+                    ST_X(geom_4326) AS lon, ST_Y(geom_4326) AS lat
+               FROM silver.collars WHERE collar_id = ?::uuid',
+            [$response->json('data.collar_id')],
+        );
+
+        $this->assertSame((string) $this->project->workspace_id, $row->workspace_id);
+        $this->assertSame('manual', $row->georef_method);
+        $this->assertSame('unknown', $row->status);
+        $this->assertEqualsWithDelta(-106.397176, (float) $row->lon, 1e-5);
+        $this->assertEqualsWithDelta(61.237111, (float) $row->lat, 1e-5);
+    }
+
+    public function test_store_refuses_a_collar_with_no_coordinate_system(): void
+    {
+        $project = Project::factory()->create(['crs_epsg' => null]);
+        $this->user->projects()->attach($project->project_id, ['role' => 'owner']);
+
+        $this->postJson("/api/v1/projects/{$project->project_id}/collars", [
+            'hole_id' => 'NOCRS-01',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'Diamond',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['crs_epsg']);
+
+        $this->postJson("/api/v1/projects/{$project->project_id}/collars", [
+            'hole_id' => 'NOCRS-01',
+            'easting' => 425000.5,
+            'northing' => 6790000.0,
+            'hole_type' => 'Diamond',
+            'crs_epsg' => 32613,
+        ])->assertCreated();
+    }
+
+    public function test_store_answers_a_non_member_404_before_checking_the_hole_id(): void
+    {
+        // Validation used to run first: "This hole ID already exists" (422)
+        // for another tenant's hole and 404 otherwise told a non-member
+        // which hole ids a project they could name had drilled.
+        $other = Project::factory()->create(['crs_epsg' => 32613]);
+        Collar::factory()->create(['project_id' => $other->project_id, 'hole_id' => 'SECRET-01']);
+
+        foreach (['SECRET-01', 'NOPE-01'] as $holeId) {
+            $this->postJson("/api/v1/projects/{$other->project_id}/collars", [
+                'hole_id' => $holeId,
+                'easting' => 425000.5,
+                'northing' => 6790000.0,
+                'hole_type' => 'Diamond',
+            ])->assertNotFound()->assertExactJson(['message' => 'Project not found.']);
+        }
     }
 
     // -------------------------------------------------------------------------

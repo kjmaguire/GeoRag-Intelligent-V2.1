@@ -72,15 +72,23 @@ class QueryControllerTest extends TestCase
             ->assertJsonValidationErrors(['query']);
     }
 
-    public function test_store_returns_422_when_project_id_does_not_exist(): void
+    public function test_a_missing_project_answers_like_one_the_caller_cannot_access(): void
     {
-        $response = $this->postJson('/api/v1/queries', [
+        // 422 "does not exist" for a missing project beside 403 for someone
+        // else's was an existence oracle over project ids.
+        $missing = $this->postJson('/api/v1/queries', [
             'query' => 'What is the average gold grade?',
             'project_id' => '00000000-0000-0000-0000-000000000000',
         ]);
 
-        $response->assertUnprocessable()
-            ->assertJsonValidationErrors(['project_id']);
+        $foreign = $this->postJson('/api/v1/queries', [
+            'query' => 'What is the average gold grade?',
+            'project_id' => Project::factory()->create()->project_id,
+        ]);
+
+        $missing->assertForbidden();
+        $foreign->assertForbidden();
+        $this->assertSame($foreign->json(), $missing->json());
     }
 
     public function test_store_returns_422_when_project_id_is_not_a_uuid(): void

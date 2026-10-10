@@ -6,15 +6,45 @@ namespace App\Http\Requests;
 
 use App\Enums\CollarStatus;
 use App\Enums\HoleType;
+use App\Support\AuthorizationAuditLogger;
 use App\Support\HoleId;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Validation\Rule;
 
 class StoreCollarRequest extends FormRequest
 {
+    /**
+     * Membership of the parent project, decided BEFORE rules() run.
+     *
+     * rules() looks the hole id up in silver.collars. When authorisation
+     * came after validation (the controller's own gate), a non-member got
+     * 422 "This hole ID already exists" for a hole another tenant drilled
+     * and 404 otherwise: an existence oracle for any project id they knew.
+     */
     public function authorize(): bool
     {
-        return true;
+        $user = $this->user();
+
+        return $user !== null && $user->hasProjectAccess((string) $this->route('project'));
+    }
+
+    /**
+     * The same 404 the controller gives a non-member, so a missing project
+     * and somebody else's read alike.
+     */
+    protected function failedAuthorization(): void
+    {
+        if ($this->user() !== null) {
+            AuthorizationAuditLogger::deny(
+                actor: $this->user(),
+                targetResource: 'project:'.(string) $this->route('project'),
+                reason: 'no_pivot_row',
+                context: ['action' => 'store', 'path' => $this->path()],
+            );
+        }
+
+        throw new HttpResponseException(response()->json(['message' => 'Project not found.'], 404));
     }
 
     public function rules(): array
@@ -64,6 +94,12 @@ class StoreCollarRequest extends FormRequest
             'dip' => ['nullable', 'numeric', 'between:-90,90'],
             'drill_date' => ['nullable', 'date'],
             'status' => ['nullable', Rule::enum(CollarStatus::class)],
+            // The coordinate system easting/northing are in, as an EPSG code.
+            // Falls back to the project's crs_epsg; the controller refuses
+            // the collar when neither is known, because nothing else can
+            // place it (geom_4326). Same 1024-32767 bound as
+            // StoreProjectRequest's crs_epsg.
+            'crs_epsg' => ['nullable', 'integer', 'min:1024', 'max:32767'],
         ];
     }
 

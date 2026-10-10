@@ -24,6 +24,12 @@ class StoreProjectRequest extends FormRequest
      * derives it — the project_user pivot. A fresh account has none, so it
      * cannot create anything. An admin can, which is how the first project
      * in a new deployment gets made.
+     *
+     * Not just any membership: a viewer's does not count. The creator
+     * becomes the new project's owner, and owning a project in a workspace
+     * is what PublicApiController treats as administering it (the audit
+     * ledger, the usage rollups). A read-only viewer could otherwise
+     * promote themselves to that with one POST.
      */
     public function authorize(): bool
     {
@@ -37,8 +43,15 @@ class StoreProjectRequest extends FormRequest
             return true;
         }
 
-        return $user->projects()->exists();
+        return $user->projects()->wherePivotIn('role', self::CREATOR_ROLES)->exists();
     }
+
+    /**
+     * Project roles that may create a project in their workspace.
+     *
+     * @var list<string>
+     */
+    public const CREATOR_ROLES = ['owner', 'member'];
 
     public function rules(): array
     {

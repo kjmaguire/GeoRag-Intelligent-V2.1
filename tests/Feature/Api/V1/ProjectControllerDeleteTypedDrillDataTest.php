@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Api\V1;
 
+use App\Http\Controllers\Api\V1\ProjectController;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -57,6 +58,30 @@ final class ProjectControllerDeleteTypedDrillDataTest extends TestCase
         );
 
         $this->assertSame([], array_map(fn (object $r): string => "{$r->tbl}.{$r->conname}", $rows));
+    }
+
+    public function test_destroy_clears_every_table_whose_project_fk_does_not_cascade(): void
+    {
+        // A SET NULL relation left out of the list keeps the deleted
+        // project's rows under a NULL project (silver.geochronology_samples
+        // did); a RESTRICT / NO ACTION one blocks the delete outright.
+        $rows = DB::select(
+            "SELECT DISTINCT n.nspname || '.' || c.relname AS tbl
+               FROM pg_constraint con
+               JOIN pg_class c ON c.oid = con.conrelid
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE con.contype = 'f'
+                AND con.confrelid = 'silver.projects'::regclass
+                AND con.confdeltype <> 'c'
+              ORDER BY 1",
+        );
+
+        $missing = array_values(array_diff(
+            array_map(fn (object $r): string => $r->tbl, $rows),
+            ProjectController::DESTROY_CLEANUP_TABLES,
+        ));
+
+        $this->assertSame([], $missing);
     }
 
     public function test_destroying_a_project_removes_its_typed_drill_rows(): void

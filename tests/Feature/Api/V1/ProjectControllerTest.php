@@ -113,6 +113,59 @@ class ProjectControllerTest extends TestCase
         $this->assertDatabaseMissing('projects', ['project_name' => 'Stranger Danger']);
     }
 
+    public function test_store_is_forbidden_for_a_read_only_viewer(): void
+    {
+        // The creator becomes the new project's owner, and project ownership
+        // is what the audit-ledger and usage endpoints treat as workspace
+        // administration. A viewer must not be able to promote themselves.
+        $existing = Project::factory()->create([
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $this->user->projects()->attach($existing->project_id, ['role' => 'viewer']);
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Viewer Promotion',
+            'orientation_reference' => 'BOH',
+        ])->assertForbidden();
+
+        $this->assertDatabaseMissing('projects', ['project_name' => 'Viewer Promotion']);
+    }
+
+    public function test_an_admin_who_belongs_to_a_workspace_cannot_create_in_another_tenant(): void
+    {
+        $admin = $this->actingAsAdmin();
+        $mine = Project::factory()->create([
+            'workspace_id' => 'b0000000-0000-0000-0000-0000000000ff',
+        ]);
+        $admin->projects()->attach($mine->project_id, ['role' => 'owner']);
+
+        // Creating a project would make the admin a member of the named
+        // tenant, which a global admin flag must not reach on its own.
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'Admin Tenant Hop',
+            'orientation_reference' => 'BOH',
+            'workspace_id' => 'c0000000-0000-0000-0000-0000000000ff',
+        ])->assertUnprocessable();
+
+        $this->assertDatabaseMissing('projects', ['project_name' => 'Admin Tenant Hop']);
+    }
+
+    public function test_an_admin_with_no_workspace_may_bootstrap_a_named_one(): void
+    {
+        $this->actingAsAdmin();
+
+        $this->postJson('/api/v1/projects', [
+            'project_name' => 'First Project',
+            'orientation_reference' => 'BOH',
+            'workspace_id' => 'c0000000-0000-0000-0000-0000000000ff',
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('projects', [
+            'project_name' => 'First Project',
+            'workspace_id' => 'c0000000-0000-0000-0000-0000000000ff',
+        ]);
+    }
+
     public function test_store_uses_the_creators_own_workspace(): void
     {
         $existing = Project::factory()->create([

@@ -17,18 +17,12 @@ class StoreQueryRequest extends FormRequest
     {
         return [
             'query' => ['required', 'string', 'max:2000'],
-            'project_id' => [
-                'required',
-                'uuid',
-                function ($attribute, $value, $fail) {
-                    $exists = \DB::table('silver.projects')
-                        ->where('project_id', $value)
-                        ->exists();
-                    if (! $exists) {
-                        $fail('The specified project does not exist.');
-                    }
-                },
-            ],
+            // Shape only. Whether the project exists is not checked here:
+            // a 422 "does not exist" beside QueryController's 403 for a
+            // project the caller cannot access told anyone which project ids
+            // are real. A project that does not exist has no membership, so
+            // it gets the same 403.
+            'project_id' => ['required', 'uuid'],
 
             // Phase 3 / Step 3.2 + 3.3 — optional context envelope from the
             // query-builder UI. All 12 fields are optional; the FastAPI side
