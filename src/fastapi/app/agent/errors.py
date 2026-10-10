@@ -56,6 +56,12 @@ class ErrorCode(StrEnum):
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     RETRIEVAL_UNAVAILABLE = "RETRIEVAL_UNAVAILABLE"
     QUERY_NOT_SEARCHABLE = "QUERY_NOT_SEARCHABLE"
+    # The external-LLM egress gate refused (LLM_BACKEND=anthropic and the
+    # workspace has not opted in). A configured policy stop, like QUOTA_EXCEEDED:
+    # it used to fall through classify_error as INTERNAL_ERROR, "an unexpected
+    # error occurred, the team has been notified", for something nobody needs
+    # to be notified about and only an administrator can change.
+    EGRESS_BLOCKED = "EGRESS_BLOCKED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -103,6 +109,12 @@ USER_MESSAGES: dict[ErrorCode, str] = {
         "This question has no searchable words in it, so the documents "
         "could not be searched. Please rephrase it in plain words, for "
         "example with a hole ID, a commodity or a place name."
+    ),
+    # Same wording as lang/en/guard_errors.php's EGRESS_BLOCKED and
+    # egress_gate.ExternalLlmEgressBlocked.user_message (a test pins all three).
+    ErrorCode.EGRESS_BLOCKED: (
+        "External LLM access is disabled for this workspace. "
+        "Contact your admin to enable."
     ),
     ErrorCode.INTERNAL_ERROR: (
         "An unexpected error occurred. The team has been notified. "
@@ -181,6 +193,24 @@ def classify_error(exc: Exception) -> tuple[ErrorCode, str]:
         logger.debug(
             "classify_error: app.agent.llm_calls unavailable, so the "
             "WorkspaceQuotaExceeded branch was skipped for %s",
+            type(exc).__name__,
+            exc_info=True,
+        )
+
+    # A deliberate, administrator-controlled refusal, so it must not read as a
+    # fault. Lazy import for the same reason as the quota branch above.
+    try:
+        from app.agent.egress_gate import ExternalLlmEgressBlocked  # noqa: PLC0415
+
+        if isinstance(exc, ExternalLlmEgressBlocked):
+            return (
+                ErrorCode.EGRESS_BLOCKED,
+                getattr(exc, "user_message", "") or USER_MESSAGES[ErrorCode.EGRESS_BLOCKED],
+            )
+    except ImportError:  # pragma: no cover - egress_gate always importable in app
+        logger.debug(
+            "classify_error: app.agent.egress_gate unavailable, so the "
+            "ExternalLlmEgressBlocked branch was skipped for %s",
             type(exc).__name__,
             exc_info=True,
         )
