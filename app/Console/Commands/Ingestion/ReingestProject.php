@@ -146,19 +146,21 @@ class ReingestProject extends Command
             return self::SUCCESS;
         }
 
-        if (! $missingOnly) {
-            $this->info('Deleting Qdrant points...');
-            $deleted = $this->deleteQdrantPoints($qdrantHost, $qdrantPort, $collection, $projectId);
-            $this->line("  Qdrant: {$deleted}");
-
-            $this->info('Deleting silver.reports (cascades to document_passages, ingest_extractions, etc.)...');
-            $cnt = DB::table('silver.reports')->where('project_id', $projectId)->delete();
-            $this->line("  silver.reports: {$cnt} row(s) removed");
-        }
-
+        // Everything the TRIGGER phase needs is checked before anything is
+        // deleted. This used to delete the Qdrant points and the project's
+        // reports first and look for FASTAPI_SERVICE_KEY afterwards, so a
+        // missing (or, for the JWT minter, too short) key left the project
+        // with no corpus and nothing re-ingesting it.
         $serviceKey = config('services.fastapi.service_key');
-        if (! $serviceKey) {
-            $this->error('FASTAPI_SERVICE_KEY not configured.');
+        if (! is_string($serviceKey) || $serviceKey === '') {
+            $this->error('FASTAPI_SERVICE_KEY not configured. Nothing was deleted.');
+
+            return self::FAILURE;
+        }
+        try {
+            $jwtMinter->mint(userId: $actorId, projectId: $projectId, roles: ['shadow:trigger']);
+        } catch (\Throwable $e) {
+            $this->error('Cannot mint the FastAPI service token: '.$e->getMessage().' Nothing was deleted.');
 
             return self::FAILURE;
         }
@@ -167,11 +169,26 @@ class ReingestProject extends Command
         $triggerUrl = rtrim((string) config('services.fastapi.internal_url'), '/')
             .'/internal/v1/shadow/ingest_pdf/trigger';
 
-        $jwt = $jwtMinter->mint(
-            userId: $actorId,
-            projectId: $projectId,
-            roles: ['shadow:trigger'],
-        );
+        if (! $missingOnly) {
+            $this->info('Deleting Qdrant points...');
+            try {
+                $deleted = $this->deleteQdrantPoints($qdrantHost, $qdrantPort, $collection, $projectId);
+            } catch (\Throwable $e) {
+                // Stop here. With the points still in Qdrant and the rows still
+                // in Postgres the project is intact and the command can simply
+                // be run again; carrying on would delete the rows and leave
+                // vectors in the index that point at nothing.
+                $this->error('Qdrant delete failed: '.$e->getMessage());
+                $this->error('Stopping before silver.reports is touched; nothing was deleted from Postgres.');
+
+                return self::FAILURE;
+            }
+            $this->line("  Qdrant: {$deleted}");
+
+            $this->info('Deleting silver.reports (cascades to document_passages, ingest_extractions, etc.)...');
+            $cnt = DB::table('silver.reports')->where('project_id', $projectId)->delete();
+            $this->line("  silver.reports: {$cnt} row(s) removed");
+        }
 
         $triggered = 0;
         $failed = 0;
@@ -179,6 +196,15 @@ class ReingestProject extends Command
             $fileSize = $disk->size($key);
             $correlationToken = (string) Str::uuid();
             try {
+                // A token per trigger. It lives 60 seconds, and a run that
+                // deletes first and then throttles between hundreds of
+                // triggers outlives one minted up front -- the tail of the
+                // batch would be refused as expired.
+                $jwt = $jwtMinter->mint(
+                    userId: $actorId,
+                    projectId: $projectId,
+                    roles: ['shadow:trigger'],
+                );
                 $resp = Http::withHeaders([
                     'Authorization' => "Bearer {$jwt}",
                     'X-Service-Key' => $serviceKey,
@@ -301,6 +327,9 @@ class ReingestProject extends Command
 
     /**
      * Delete every Qdrant point for the project. Returns a human-readable status.
+     *
+     * @throws RuntimeException when Qdrant answers with an error; an unreachable
+     *                          Qdrant raises the HTTP client's ConnectionException
      */
     private function deleteQdrantPoints(string $host, int $port, string $collection, string $projectId): string
     {
@@ -313,7 +342,9 @@ class ReingestProject extends Command
             ],
         ]);
         if (! $resp->successful()) {
-            return 'delete failed HTTP '.$resp->status().' '.substr($resp->body(), 0, 200);
+            // Thrown, not returned as text: the caller used to print the string
+            // and delete the Postgres rows regardless.
+            throw new RuntimeException('HTTP '.$resp->status().' '.substr($resp->body(), 0, 200));
         }
 
         return $resp->json('status', 'ok').' (operation_id='.$resp->json('result.operation_id', '?').')';
