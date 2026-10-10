@@ -629,8 +629,8 @@ resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
   #     services-stable (README: ~15 min), then two healthy ALB checks and a
   #     clean 5-minute HealthyHostCount period. With 60 s the composite
   #     emailed at about 08:32 every day. 45 min covers a slow start with
-  #     margin; a platform still dead 45 min after the suppressor lets go is
-  #     a real page (when that is, see the DST hour below).
+  #     margin; a platform still dead 45 min after the suppressor lets go
+  #     (about 09:25) is a real page.
   #   wait_period 900 s (15 min) — the EVENING end. The shutdown sweep now
   #     drains tier by tier (AWS-8), so "shutdown sweep complete" lands
   #     several minutes after Octane stopped; dead air can reach ALARM before
@@ -638,13 +638,14 @@ resource "aws_cloudwatch_composite_alarm" "octane_dead_air_outside_window" {
   #     Cost: a genuine daytime outage emails up to 15 min later than before
   #     (on top of the 10 min the dead-air alarm itself needs).
   #
-  # The suppressor's own period carries an hour of DST slack since 2026-10-10
-  # (local.maintenance_suppressor_minutes; scheduler.tf has the arithmetic).
-  # The fall-back night is an hour longer than the schedule says, and without
-  # the hour this paged about five minutes before the startup sweep fired on
-  # 2026-11-01. The price is on every other morning: the suppressor lets go at
-  # about 09:40 rather than 08:40, so the page for a platform that never came
-  # up arrives at about 10:25 rather than 09:25.
+  # The suppressor's own period is the window plus local.dst_slack_minutes
+  # (local.maintenance_suppressor_minutes; scheduler.tf has the arithmetic),
+  # and the slack is 0: America/Vancouver has not changed its clocks since
+  # 2026-03-08, so no night is longer than the schedule says. A zone that
+  # still falls back needs 60 there, or this pages about five minutes before
+  # the startup sweep fires on that night; the price of the 60 is paid every
+  # morning, when the page for a platform that never came up arrives at about
+  # 10:25 rather than 09:25.
   actions_suppressor {
     alarm            = aws_cloudwatch_metric_alarm.maintenance_window[0].alarm_name
     wait_period      = local.dead_air_wait_period
@@ -736,9 +737,9 @@ resource "aws_cloudwatch_metric_alarm" "maintenance_window" {
     own length", which is true from the moment the platform goes down until
     the moment it comes back up and false the rest of the day. The period is
     DERIVED, not written out again: the two cron expressions
-    (local.maintenance_window_minutes) plus an hour of DST slack
-    (local.dst_slack_minutes), because the night the clocks fall back is an
-    hour longer than the schedule says.
+    (local.maintenance_window_minutes) plus local.dst_slack_minutes, which
+    is 0 while maintenance_timezone does not change its clocks
+    (scheduler.tf says when it must be 60).
 
     The period must cover the WHOLE window, not most of it. Any shortfall
     lands at the end, where the marker ages out while the platform is still

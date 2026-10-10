@@ -1193,15 +1193,20 @@ whose sweeps do not both fire on the hour, and the shortfall lands where the
 platform is still down). `maintenance_window_hours` surfaces it as a
 Terraform output, fractional, so it can be checked.
 
-The suppressor's period is that window **plus an hour of DST slack**
-(`local.dst_slack_minutes`, `local.maintenance_suppressor_minutes`). The night
-the clocks fall back is 16h30m, not 15h30m, and a period sized for the
-schedule let the suppressor go before the startup sweep fired, so
-`octane-dead-air` paged about five minutes before the platform was asked to
-start. The cost is on every other morning: a platform that never comes up is
-paged at about 10:25 rather than 09:25. `sweep-failed` and `sweep-missing`
-read the sweep's own verdict and are not delayed. Set the slack to 0 for a
-timezone with no DST.
+The suppressor's period is that window **plus a DST slack**
+(`local.dst_slack_minutes`, `local.maintenance_suppressor_minutes`), and the
+slack is **0**. In a zone that changes its clocks, the night they fall back is
+an hour longer than the schedule says, and a period sized for the schedule
+lets the suppressor go before the startup sweep fires, so `octane-dead-air`
+pages about five minutes before the platform has been asked to start.
+America/Vancouver no longer has that night: British Columbia's 2026-03-08
+spring forward was its last clock change (tz database 2026b), so every night
+is the schedule's 15h30m. Set the slack to 60 for a `maintenance_timezone`
+that still observes DST. The cost is then on every morning: a platform that
+never comes up is paged at about 10:25 rather than 09:25. `sweep-failed` and
+`sweep-missing` read the sweep's own verdict and are not delayed either way.
+`test_crons_avoid_the_shutdown_window.py` measures the nights from the tz
+database and fails if the slack is short of the longest one, or longer.
 
 ## What changed, on purpose
 

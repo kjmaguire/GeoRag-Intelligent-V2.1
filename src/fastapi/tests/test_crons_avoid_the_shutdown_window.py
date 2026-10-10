@@ -617,16 +617,28 @@ def test_an_unreadable_pg_cron_hour_fails_instead_of_being_skipped() -> None:
 # The dead-air suppressor against the longest night (AW-11, 2026-10-10)
 # ---------------------------------------------------------------------------
 # alerts.tf suppresses octane-dead-air for `period` after the shutdown sweep's
-# completion marker. The schedule says the night is 15h30m; the clock says
-# otherwise on the night it falls back (16h30m) and on the night it springs
-# forward (14h30m). A fixed period sized for the schedule let go before the
-# startup sweep fired on 2026-11-01 and paged about five minutes before the
-# platform was asked to start. The zone's real rules are used here, not a
-# hardcoded "+60", so the test notices if the zone, the crons or the slack
-# change.
+# completion marker. The schedule says the night is 15h30m. In a zone that
+# changes its clocks the clock disagrees twice a year, 16h30m the night it
+# falls back and 14h30m the night it springs forward, and a period sized for
+# the schedule lets go before the startup sweep fires on the long night and
+# pages about five minutes before the platform has been asked to start.
+#
+# America/Vancouver no longer has that night: British Columbia's 2026-03-08
+# spring forward was its last clock change (tz database 2026b), so every night
+# since is the schedule's length and scheduler.tf's slack is 0. The zone's
+# real rules are used here, not a hardcoded figure, so the test notices if the
+# zone, the crons, the slack or the rules change. That makes it only as good
+# as the host's tz data, which _current_zone() checks before using it.
 
 SCHEDULER_TF = REPO / "deploy" / "aws" / "terraform" / "scheduler.tf"
 ALERTS_TF = REPO / "deploy" / "aws" / "terraform" / "alerts.tf"
+
+#: The years whose nights the suppressor has to cover.
+FUTURE_YEARS = range(2026, 2036)
+
+#: Years in which America/Vancouver still changed its clocks twice: settled
+#: history in every tz database release, so the reader is checked against them.
+DST_YEARS = range(2020, 2026)
 
 
 def _maintenance_timezone() -> str:
@@ -638,7 +650,30 @@ def _maintenance_timezone() -> str:
     return match.group(1)
 
 
-def night_lengths(tz_name: str, years: range) -> list[int]:
+def _current_zone(tz_name: str) -> ZoneInfo:
+    """The zone, from tz data new enough to know 2026's rules, or a failure.
+
+    zoneinfo reads the host's tz database before the tzdata package, and a
+    host's copy can be years old. One that predates 2026b still has
+    America/Vancouver falling back on 2026-11-01, so it measures a 16h30m
+    night that no longer happens and sends whoever reads the failure off to
+    add an hour to every morning's page. January 2027 is -08 there in every
+    release before 2026b and -07 in every release since.
+    """
+    offset = datetime(2027, 1, 15, 12, tzinfo=ZoneInfo("America/Vancouver")).utcoffset()
+    hours = (offset or timedelta()).total_seconds() / 3600
+    assert offset == timedelta(hours=-7), (
+        f"this host's tz database predates 2026b: it has America/Vancouver at "
+        f"UTC{hours:+g} in January 2027, where British Columbia has stayed at "
+        "UTC-7 since its 2026-03-08 spring forward, so the night lengths it "
+        "gives are wrong. Update the host's tzdata, or run with "
+        "`PYTHONTZPATH= uv run --with tzdata pytest ...` to read the tzdata "
+        "package instead."
+    )
+    return ZoneInfo(tz_name)
+
+
+def night_lengths(tz: ZoneInfo, years: range) -> list[int]:
     """Elapsed minutes from each day's shutdown fire to the next startup fire.
 
     Both are local-time schedules (EventBridge Scheduler takes a timezone), so
@@ -646,7 +681,6 @@ def night_lengths(tz_name: str, years: range) -> list[int]:
     two aware datetimes sharing a tzinfo subtract as wall-clock time, which
     would report every night as 15h30m and hide exactly what this measures.
     """
-    tz = ZoneInfo(tz_name)
     stop_h, stop_m = divmod(_local_minutes("shutdown_cron"), 60)
     start_h, start_m = divmod(_local_minutes("startup_cron"), 60)
     same_day = (start_h, start_m) > (stop_h, stop_m)
@@ -706,56 +740,58 @@ def suppressor_minutes() -> int:
 
 
 def test_the_longest_night_is_what_the_clock_says_not_what_the_schedule_says() -> None:
-    """Guards the guard, and states the premise: with real zone rules the night
-    is not one length. If this stops being true, the zone has no DST and the
-    slack in scheduler.tf can go to 0."""
-    nights = night_lengths(_maintenance_timezone(), range(2026, 2036))
+    """Guards the guard, on years whose answer is settled: Vancouver still
+    changed its clocks in 2020-2025, so six nights an hour long and six an
+    hour short. A reader that subtracted wall-clock times would see the
+    schedule's length every night, and would pass a suppressor sized for the
+    schedule in a zone that still falls back."""
+    nights = night_lengths(ZoneInfo("America/Vancouver"), DST_YEARS)
     nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
 
-    assert max(nights) > nominal > min(nights), (
-        f"nights run {min(nights)}-{max(nights)} min against a scheduled {nominal}; "
-        "the premise of the slack in scheduler.tf (a night longer than the "
-        "schedule says) no longer holds for this zone, or the tz data is missing "
-        "a transition"
+    assert sorted(set(nights)) == [nominal - 60, nominal, nominal + 60], (
+        f"nights in 2020-2025 ran {sorted(set(nights))} min against a scheduled "
+        f"{nominal}; the reader no longer sees the clock changes"
     )
-    # Exactly the two nights a year the clocks move, an hour each way.
-    assert sorted(set(nights)) == [nominal - 60, nominal, nominal + 60]
-    assert nights.count(nominal + 60) == 10 and nights.count(nominal - 60) == 10
+    assert nights.count(nominal + 60) == 6 and nights.count(nominal - 60) == 6
 
 
 def test_the_suppressor_covers_the_longest_night_of_the_year() -> None:
-    longest = max(night_lengths(_maintenance_timezone(), range(2026, 2036)))
+    longest = max(night_lengths(_current_zone(_maintenance_timezone()), FUTURE_YEARS))
     period = suppressor_minutes()
 
     assert period >= longest, (
         f"the maintenance_window alarm suppresses for {period} min after the "
-        f"shutdown-complete marker, but the night the clocks fall back runs "
-        f"{longest} min from the shutdown fire to the startup fire. The "
-        "suppressor lets go before the startup sweep has fired, and "
-        "octane-dead-air emails about five minutes before the platform is "
-        "asked to start. Raise local.dst_slack_minutes in scheduler.tf; the "
-        "extension_period in alerts.tf covers the sweep's own runtime and is "
-        "not where this hour belongs."
+        f"shutdown-complete marker, but the longest night runs {longest} min "
+        "from the shutdown fire to the startup fire. The suppressor lets go "
+        "before the startup sweep has fired, and octane-dead-air emails about "
+        "five minutes before the platform is asked to start. Raise "
+        "local.dst_slack_minutes in scheduler.tf; the extension_period in "
+        "alerts.tf covers the sweep's own runtime and is not where this belongs."
     )
 
 
-def test_a_period_equal_to_the_schedule_would_not_cover_it() -> None:
-    """The regression: the suppressor was the schedule's length, 930 minutes."""
+def test_a_period_equal_to_the_schedule_would_not_cover_a_night_the_clocks_fall_back() -> None:
+    """The regression the suppressor test exists for, shown on a zone that
+    still had the night: Vancouver before 2026, whose night of 2025-11-01 was
+    an hour longer than the schedule. It is also where scheduler.tf's "set 60
+    for a zone that still observes DST" comes from."""
     nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
-    longest = max(night_lengths(_maintenance_timezone(), range(2026, 2036)))
-    assert nominal < longest, "a period of exactly the schedule must be caught"
+    longest = max(night_lengths(ZoneInfo("America/Vancouver"), DST_YEARS))
+    assert longest - nominal == 60
 
 
 def test_the_slack_is_only_the_clock_change_and_not_more() -> None:
     """The price of the slack is paid every morning (the page for a platform
-    that never came up is late by exactly the slack), so it should be the hour
-    the clocks move and not a generous round number."""
+    that never came up is late by exactly the slack), so it is what the
+    zone's clock changes add to the longest night, and 0 in a zone that has
+    none left."""
     nominal = (_local_minutes("startup_cron") - _local_minutes("shutdown_cron")) % 1440
-    longest = max(night_lengths(_maintenance_timezone(), range(2026, 2036)))
+    longest = max(night_lengths(_current_zone(_maintenance_timezone()), FUTURE_YEARS))
     assert suppressor_minutes() <= longest, (
         f"the suppressor is {suppressor_minutes()} min against a longest night "
         f"of {longest} (schedule {nominal}). Every minute above the longest "
-        "night delays the morning page for a platform that did not come up."
+        "night delays the morning page for a platform that did not come up; "
+        "lower local.dst_slack_minutes in scheduler.tf."
     )
 
 

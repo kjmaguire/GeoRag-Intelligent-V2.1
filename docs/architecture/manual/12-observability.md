@@ -436,7 +436,7 @@ Everything below is in
 | `georag-octane-dead-air-alerting` | composite | 1 | the alarm that actually pages: dead-air AND not inside the maintenance window |
 | `georag-reverb-dead-air` | metric, 2×5 m | 1 | `HealthyHostCount` < 1 on the Reverb target group: the platform answers and the browser shows nothing |
 | `georag-reverb-dead-air-alerting` | composite | 1 | the same, outside the maintenance window, with the same suppressor timings as Octane's (one shared local in `alerts.tf`) |
-| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to both composites above. Its period is the schedule's window plus an hour of DST slack (`scheduler.tf`) |
+| `georag-maintenance-window` | log filter | — | not an alert. It goes ALARM when the shutdown sweep completes, and is the suppressor input to both composites above. Its period is the schedule's window plus `local.dst_slack_minutes` (`scheduler.tf`), which is 0 because America/Vancouver has not changed its clocks since 2026-03-08 and 60 in a zone that still falls back |
 | `georag-bedrock-client-errors` | metric, 15 m | 2 | `InvocationClientErrors` > 50 |
 | `georag-bedrock-server-errors` | metric, 15 m | 2 | `InvocationServerErrors` > 5 |
 | `georag-bedrock-throttles` | metric, 2×15 m | 2 | `InvocationThrottles` > 100 |

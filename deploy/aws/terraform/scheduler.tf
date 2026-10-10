@@ -203,26 +203,25 @@ locals {
 
   # The dead-air suppressor (alerts.tf) is sized from this, not from the window
   # above. The window is the gap between two local-time fires; the NIGHT is that
-  # gap in elapsed time, and twice a year the clocks change under it. 17:00 PDT
-  # on 2026-10-31 to 08:30 PST the next morning is 16h30m, not 15h30m (the
-  # 01:00-02:00 hour happens twice). The suppressor counts from the shutdown
-  # sweep's completion marker over a fixed period, so one sized for 15h30m let
-  # go about 50 minutes before the startup sweep fired, and with its 45 minute
-  # extension octane-dead-air emailed "no healthy Octane task" about five
-  # minutes BEFORE the platform had been asked to start. (Spring forward is the
-  # mirror image: a 14h30m night, so the suppressor outlasts the start by an
-  # hour and a real outage in that stretch is held back. Once a year, and the
-  # quieter failure.)
+  # gap in elapsed time, and in a zone that changes its clocks the two differ
+  # twice a year. The night the clocks fall back runs an hour longer than the
+  # schedule says (the 01:00-02:00 hour happens twice). The suppressor counts a
+  # fixed period from the shutdown sweep's completion marker, so one sized for
+  # the schedule lets go about 50 minutes before the startup sweep fires that
+  # night, and with its 45 minute extension octane-dead-air emails "no healthy
+  # Octane task" about five minutes BEFORE the platform has been asked to start.
   #
-  # A fixed period cannot be right on 364 nights and on that one, so it is
-  # sized for the longest, and the price is paid every morning: a platform that
-  # fails to come up at 08:30 is paged an hour later than it would otherwise
-  # be. The sweep's own verdict (sweep-failed, sweep-missing) is not delayed.
-  # An hour is the most any clock change moves a night in the zones this is
-  # likely to be set to; use 0 for a maintenance_timezone that does not observe
-  # DST. test_crons_avoid_the_shutdown_window.py checks it against the real
-  # tz database, so it cannot silently stop covering the longest night.
-  dst_slack_minutes = 60
+  # America/Vancouver, the default, no longer has that night. British
+  # Columbia's 2026-03-08 spring forward was its last clock change: it stays at
+  # -07 from then on (tz database 2026b, 2026-04-23), so every night is the
+  # schedule's length and the slack is 0. Set 60 for a maintenance_timezone that
+  # still observes DST, and pay for it every morning: a platform that fails to
+  # come up is paged an hour later than it would otherwise be. The sweep's own
+  # verdict (sweep-failed, sweep-missing) is not delayed either way.
+  # test_crons_avoid_the_shutdown_window.py measures ten years of nights in
+  # maintenance_timezone's default from the tz database, and fails if the
+  # period is shorter than the longest of them, or longer.
+  dst_slack_minutes = 0
 
   maintenance_suppressor_minutes = local.maintenance_window_minutes + local.dst_slack_minutes
 }
