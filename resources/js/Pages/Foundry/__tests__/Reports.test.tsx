@@ -10,6 +10,8 @@ import type { ReactNode } from 'react';
 const inertia = vi.hoisted(() => ({
     get: vi.fn(),
     reload: vi.fn(),
+    // The Inertia page url (path + query) the page is currently on.
+    url: '/projects/red-star/reports',
 }));
 
 vi.mock('@inertiajs/react', () => ({
@@ -35,6 +37,7 @@ vi.mock('@inertiajs/react', () => ({
         </a>
     ),
     router: { get: inertia.get, reload: inertia.reload, visit: vi.fn() },
+    usePage: () => ({ url: inertia.url }),
 }));
 vi.mock('@/Hooks/useWorkspaceDataUpdated', () => ({ useWorkspaceDataUpdated: () => {} }));
 vi.mock('@/Components/Foundry/ReportsViewBar', () => ({ default: () => null }));
@@ -86,6 +89,7 @@ function props(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
     inertia.get.mockClear();
+    inertia.url = '/projects/red-star/reports';
 });
 afterEach(() => {
     cleanup();
@@ -184,5 +188,111 @@ describe('Foundry/Reports pager', () => {
             render(<FoundryReports {...props()} />);
             expect(inertia.get).not.toHaveBeenCalled();
         });
+    });
+});
+
+describe('Foundry/Reports ?section= deep link (FE-9)', () => {
+    // jsdom has no scrollIntoView; the highlighted section scrolls itself into view.
+    const scrollIntoView = vi.fn();
+    beforeEach(() => {
+        scrollIntoView.mockClear();
+        Element.prototype.scrollIntoView = scrollIntoView;
+    });
+    afterEach(() => {
+        window.history.replaceState({}, '', '/');
+    });
+
+    /** An Inertia visit: the page url and the browser's address bar move together. */
+    function visit(url: string) {
+        inertia.url = url;
+        window.history.replaceState({}, '', url);
+    }
+
+    function detail(id: string) {
+        return {
+            report_id: id,
+            title: `Report ${id}`,
+            company: 'Acme',
+            filing_date: '2024-01-01',
+            commodity: 'U',
+            version: 1,
+            region: 'WY',
+            project_name: 'Red Star',
+            parse_quality_pct: 0.9,
+            text_page_coverage_pct: 1,
+            is_scanned: false,
+            page_count: 10,
+            parser_used: 'fitz',
+            parser_label: null,
+            created_at: '2024-01-01',
+            updated_at: '2024-01-01',
+            has_source: false,
+        };
+    }
+    const sections = ['1', '2', '3'].map((heading, index) => ({
+        heading,
+        body: `body ${heading}`,
+        kind: 'para',
+        index,
+    }));
+
+    /** Props for report `id` open in the reader, with sections "1", "2" and "3". */
+    function open(id: string) {
+        return props({
+            selected_id: id,
+            report: detail(id),
+            sections,
+            reports_pagination: { total: 2, page: 1, per_page: 50, last_page: 1 },
+        });
+    }
+    const outlined = (container: HTMLElement) =>
+        Array.from(container.querySelectorAll<HTMLElement>('[style*="outline"]')).map((el) => el.textContent ?? '');
+
+    it('outlines the section a citation deep-links to, and scrolls to it', () => {
+        visit('/projects/red-star/reports/r-1?section=2');
+        const { container } = render(<FoundryReports {...open('r-1')} />);
+
+        const hits = outlined(container);
+        expect(hits).toHaveLength(1);
+        expect(hits[0]).toContain('SECTION 2');
+        expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not carry the outline over to the next report the reader picks', () => {
+        visit('/projects/red-star/reports/r-1?section=2');
+        const { container, rerender } = render(<FoundryReports {...open('r-1')} />);
+        expect(outlined(container)).toHaveLength(1);
+
+        // Picking another document in the list is an Inertia visit to its own url:
+        // same component instance, no ?section=.
+        visit('/projects/red-star/reports/r-2?page=1&per_page=50');
+        rerender(<FoundryReports {...open('r-2')} />);
+
+        expect(outlined(container)).toEqual([]);
+    });
+
+    it('follows the url to another section when it changes under the same page', () => {
+        visit('/projects/red-star/reports/r-1?section=2');
+        const { container, rerender } = render(<FoundryReports {...open('r-1')} />);
+
+        visit('/projects/red-star/reports/r-2?section=3');
+        rerender(<FoundryReports {...open('r-2')} />);
+
+        const hits = outlined(container);
+        expect(hits).toHaveLength(1);
+        expect(hits[0]).toContain('SECTION 3');
+        // ...and scrolls to the new target.
+        expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    });
+
+    it('outlines nothing for a plain link or an empty ?section=', () => {
+        visit('/projects/red-star/reports/r-1');
+        const { container, rerender } = render(<FoundryReports {...open('r-1')} />);
+        expect(outlined(container)).toEqual([]);
+
+        visit('/projects/red-star/reports/r-1?section=');
+        rerender(<FoundryReports {...open('r-1')} />);
+        expect(outlined(container)).toEqual([]);
+        expect(scrollIntoView).not.toHaveBeenCalled();
     });
 });
