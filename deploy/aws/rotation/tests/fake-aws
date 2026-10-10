@@ -25,6 +25,18 @@
 #   FAKE_AWS_TASK_EXIT         container exit code, 1st run-task         (0)
 #   FAKE_AWS_VERIFY_EXIT       container exit code, 2nd run-task         (0)
 #   FAKE_AWS_PUT_SECRET_RC     exit code for `put-secret-value`          (0)
+#   FAKE_AWS_TASK_NEVER_STARTED  1st task: CannotPullContainerError -- no
+#                              startedAt, stopCode TaskFailedToStart, no exit
+#                              code. Any other no-exit-code task is one that
+#                              STARTED and was killed.                   ("")
+#   FAKE_AWS_NO_LIVE_IMAGE     the live service reports no task definition ("")
+#   FAKE_AWS_REGISTER_RC       exit code for `register-task-definition`    (0)
+#   FAKE_AWS_PUT_FAIL_AFTER    N: the first N `put-secret-value` calls succeed
+#                              and every later one fails -- so a case can fail
+#                              exactly the success marker (N=1) or exactly
+#                              the promotion (N=2)                          ("")
+#   FAKE_AWS_LIVE_IMAGE        the image laravel-octane is running now
+#   FAKE_AWS_PINNED_IMAGE      the image the rotation family still pins (expired)
 set -uo pipefail
 
 printf '%s\n' "$*" >> "${FAKE_AWS_LOG:?FAKE_AWS_LOG must be set}"
@@ -78,6 +90,39 @@ case "$1 ${2:-}" in
 
   "ecs describe-task-definition")
     [ -n "${FAKE_AWS_NO_TASKDEF:-}" ] && exit 254
+    case "$QUERY" in
+      *containerDefinitions*image*)
+        # What the live service is running.
+        printf '%s\n' "${FAKE_AWS_LIVE_IMAGE:-000000000000.dkr.ecr.us-east-1.amazonaws.com/georag/laravel:livetag}"
+        ;;
+      taskDefinition)
+        # The rotation family as Terraform registered it: pinned to a tag the
+        # ECR lifecycle policy has since expired, and carrying the read-only
+        # fields describe-task-definition adds and register-task-definition
+        # rejects.
+        jq -n --arg img "${FAKE_AWS_PINNED_IMAGE:-000000000000.dkr.ecr.us-east-1.amazonaws.com/georag/laravel:expired}" '{
+          taskDefinitionArn: "arn:aws:ecs:us-east-1:000000000000:task-definition/georag-app-key-rotation:1",
+          family: "georag-app-key-rotation", revision: 1, status: "ACTIVE",
+          requiresAttributes: [], compatibilities: ["EC2", "FARGATE"],
+          registeredAt: "2026-09-08T00:00:00Z", registeredBy: "arn:aws:iam::000000000000:user/tf",
+          cpu: "2048", memory: "4096", networkMode: "awsvpc",
+          containerDefinitions: [{name: "app-key-rotation", image: $img, essential: true,
+            secrets: [{name: "APP_KEY_NEXT", valueFrom: "arn:aws:secretsmanager:us-east-1:000000000000:secret:georag/app:APP_KEY_NEXT::"}]}]
+        }'
+        ;;
+    esac
+    exit 0
+    ;;
+
+  "ecs register-task-definition")
+    rc="${FAKE_AWS_REGISTER_RC:-0}"
+    [ "$rc" != 0 ] && exit "$rc"
+    n=$(( $(cat "${STATE}/register.count" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$n" > "${STATE}/register.count"
+    # Kept so a case can assert WHICH image the registered revision carries,
+    # and that the read-only fields were stripped before registering.
+    arg_after --cli-input-json "$@" > "${STATE}/registered.${n}"
+    printf 'arn:aws:ecs:us-east-1:000000000000:task-definition/georag-app-key-rotation:%s\n' "$((100 + n))"
     exit 0
     ;;
 
@@ -90,6 +135,10 @@ case "$1 ${2:-}" in
     case "$QUERY" in
       *serviceName*) printf '%s\n' "$svc" ;;
       *desiredCount*) printf '%s\n' "$(cat "${STATE}/desired.${svc}" 2>/dev/null || echo 1)" ;;
+      *taskDefinition*)
+        if [ -n "${FAKE_AWS_NO_LIVE_IMAGE:-}" ]; then printf 'None\n'
+        else printf 'arn:aws:ecs:us-east-1:000000000000:task-definition/georag-%s:7\n' "$svc"; fi
+        ;;
       *runningCount*)
         if in_list "$svc" "${FAKE_AWS_STUCK_RUNNING:-}"; then
           # Never comes down, whatever the desired count says. This is the
@@ -136,6 +185,7 @@ case "$1 ${2:-}" in
     # The override carries the base64'd script. Kept so a case can assert
     # WHICH script ran without decoding it in the assertion itself.
     arg_after --overrides "$@" | head -c 4000 >> "${STATE}/overrides.${n}"
+    arg_after --task-definition "$@" > "${STATE}/taskdef.${n}"
     # What APP_KEY the secret held AT THE MOMENT this task started. The
     # ordering that matters most in the whole rotation is that the answer
     # is still the OLD key for the re-encryption task: promoting before the
@@ -148,12 +198,25 @@ case "$1 ${2:-}" in
 
   "ecs describe-tasks")
     n="$(cat "${STATE}/runtask.count" 2>/dev/null || echo 1)"
+    never=""
+    [ "$n" = 1 ] && [ -n "${FAKE_AWS_TASK_NEVER_STARTED:-}" ] && never=1
     case "$QUERY" in
       *exitCode*)
-        if [ "$n" = 1 ]; then printf '%s\n' "${FAKE_AWS_TASK_EXIT:-0}";
+        if [ -n "$never" ]; then printf 'None\n'
+        elif [ "$n" = 1 ]; then printf '%s\n' "${FAKE_AWS_TASK_EXIT:-0}"
         else printf '%s\n' "${FAKE_AWS_VERIFY_EXIT:-0}"; fi
         ;;
-      *stoppedReason*) printf 'Essential container in task exited\n' ;;
+      *stoppedReason*)
+        if [ -n "$never" ]; then
+          printf 'CannotPullContainerError: pull image manifest has been retried 5 time(s): failed to resolve ref\n'
+        else printf 'Essential container in task exited\n'; fi
+        ;;
+      *startedAt*)
+        if [ -n "$never" ]; then printf 'None\n'; else printf '2026-10-10T12:00:00+00:00\n'; fi
+        ;;
+      *stopCode*)
+        if [ -n "$never" ]; then printf 'TaskFailedToStart\n'; else printf 'EssentialContainerExited\n'; fi
+        ;;
       *) printf '\n' ;;
     esac
     exit 0
@@ -167,12 +230,20 @@ case "$1 ${2:-}" in
   "secretsmanager put-secret-value")
     rc="${FAKE_AWS_PUT_SECRET_RC:-0}"
     [ "$rc" != 0 ] && exit "$rc"
+    puts=$(( $(cat "${STATE}/put.count" 2>/dev/null || echo 0) + 1 ))
+    printf '%s' "$puts" > "${STATE}/put.count"
+    if [ -n "${FAKE_AWS_PUT_FAIL_AFTER:-}" ] && [ "$puts" -gt "$FAKE_AWS_PUT_FAIL_AFTER" ]; then exit 254; fi
     src="$(arg_after --secret-string "$@")"
     # The real CLI takes file://PATH; the rotation uses that form for every
     # write precisely so the document never becomes an argv. Honour only
     # that form, so a change that starts passing it inline fails here.
     case "$src" in
-      file://*) cat "${src#file://}" > "${STATE}/secret.json" ;;
+      file://*)
+        cat "${src#file://}" > "${STATE}/secret.json"
+        # One compact line per write, in order: the marker must be written
+        # while APP_KEY is still the old key, and only then promoted.
+        jq -c . < "${STATE}/secret.json" >> "${STATE}/secret.history"
+        ;;
       *) printf 'fake-aws: put-secret-value was given a non-file secret-string\n' >&2; exit 253 ;;
     esac
     exit 0

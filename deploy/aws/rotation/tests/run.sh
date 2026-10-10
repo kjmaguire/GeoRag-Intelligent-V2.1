@@ -27,6 +27,15 @@
 #              run before the writers are at zero, no promotion before the
 #              task exits 0, no traffic after a restore failure.
 #
+#              Two more are pinned here because each is silent until the
+#              worst moment. The task must run the image that is IN SERVICE
+#              (the one rotation.tf pins is expired out of ECR eventually),
+#              and a task that never started must be reversed, not mistaken
+#              for a half-re-encrypted ledger and left down behind a snapshot
+#              restore. And --finish promotes only a key whose task is
+#              recorded as having succeeded: APP_KEY_NEXT alone is there after
+#              a failed task and a dead terminal too.
+#
 # Usage: bash deploy/aws/rotation/tests/run.sh
 set -uo pipefail
 
@@ -107,9 +116,44 @@ assert_appkey_at_runtask() {
   [ "$got" = "$2" ] || fail_case "APP_KEY at run-task #${1} was '${got}', expected '${2}'"
 }
 
+# What a rotation task is registered on: the image laravel-octane is running
+# (fake-aws serves it), never the expired one the family still pins.
+LIVE_IMAGE="000000000000.dkr.ecr.us-east-1.amazonaws.com/georag/laravel:livetag"
+PINNED_IMAGE="000000000000.dkr.ecr.us-east-1.amazonaws.com/georag/laravel:expired"
+
+# The image in register-task-definition call number $1, and that the
+# read-only fields describe-task-definition adds were stripped from it.
+assert_registered_image() {
+  local got; got="$(jq -r '.containerDefinitions[0].image // "missing"' < "${STATE}/registered.$1" 2>/dev/null || echo missing)"
+  [ "$got" = "$2" ] || fail_case "registered revision #${1} runs '${got}', expected '${2}'"
+}
+assert_registered_clean() {
+  jq -e '[has("taskDefinitionArn"), has("revision"), has("status"), has("registeredAt"),
+          has("registeredBy"), has("compatibilities"), has("requiresAttributes")] | any | not' \
+     < "${STATE}/registered.$1" >/dev/null 2>&1 \
+    || fail_case "registered revision #${1} still carries read-only fields register-task-definition rejects"
+}
+
+# What run-task number $1 was started from.
+assert_taskdef_at_runtask() {
+  local got; got="$(cat "${STATE}/taskdef.$1" 2>/dev/null || echo missing)"
+  grep -qE -- "$2" <<< "$got" || fail_case "run-task #${1} started from '${got}', expected /${2}/"
+}
+
+# The success marker must reach the secret while APP_KEY is still the OLD key,
+# and the promotion must come after it. secret.history is one line per write.
+assert_marker_precedes_promotion() {
+  jq -s -e --arg old "$OLD_KEY" '
+      (map(has("APP_KEY_ROTATION_REENCRYPTED")) | index(true)) as $m
+      | $m != null and .[$m].APP_KEY == $old
+        and ([.[($m + 1):][] | select(.APP_KEY != $old)] | length > 0)' \
+    "${STATE}/secret.history" >/dev/null 2>&1 \
+    || fail_case "the success marker was not written before APP_KEY was promoted"
+}
+
 OLD_KEY="base64:b2xkb2xkb2xkb2xkb2xkb2xkb2xkb2xkb2xkb2xkb28="
 
-# fresh_state [extra jq filter applied to the secret]
+# fresh_state -- SECRET_EXTRA, if set, is a jq filter applied to the secret
 fresh_state() {
   STATE="$(mktemp -d "${WORK}/state.XXXXXX")"
   : > "${STATE}/aws.log"
@@ -118,7 +162,8 @@ fresh_state() {
     APP_KEY: $k, FASTAPI_SERVICE_KEY: "svc", QDRANT_API_KEY: "qd",
     HATCHET_CLIENT_TOKEN: "hc", REDIS_PASSWORD: "rp",
     FLOW_JWT_SECRET: "fj", REVERB_APP_SECRET: "rs"
-  }' > "${STATE}/secret.json"
+  }' | jq "${SECRET_EXTRA:-.}" > "${STATE}/secret.json"
+  : > "${STATE}/secret.history"
   # The counts the rotation must discover and put back. Octane at 3, not 2,
   # on purpose: a script that restores a hardcoded count passes at 2.
   printf '3' > "${STATE}/desired.laravel-octane";  printf '3' > "${STATE}/initial.laravel-octane"
@@ -241,7 +286,9 @@ assert_aws_not_called "create-db-snapshot"
 assert_aws_not_called "put-secret-value"
 assert_aws_not_called "update-service"
 assert_aws_not_called "run-task"
+assert_aws_not_called "register-task-definition"
 assert_says "dry run"
+assert_says "$LIVE_IMAGE"
 done_case
 
 run_outer outer_refuses_a_stopped_database FAKE_AWS_DB_STATE=stopped -- --apply
@@ -255,6 +302,42 @@ run_outer outer_refuses_a_missing_task_definition FAKE_AWS_NO_TASKDEF=1 -- --app
 assert_rc 1
 assert_aws_not_called "create-db-snapshot"
 assert_says "rotation.tf"
+done_case
+
+# rotation.tf pins var.image_tag from the last apply, CD never re-registers
+# that family, and the ECR lifecycle policy keeps 30 images. Left alone, the
+# task is eventually asked to pull a tag that no longer exists -- after both
+# writers are at zero. So it runs a fresh revision on the image that is IN
+# SERVICE, registered before the snapshot, the staging and the scale-down.
+run_outer outer_runs_the_image_in_service_not_the_expired_pin -- --apply
+assert_rc 0
+assert_aws_order "register-task-definition" "create-db-snapshot"
+assert_aws_order "register-task-definition" "update-service .*--desired-count 0"
+assert_registered_image 1 "$LIVE_IMAGE"
+assert_registered_clean 1
+# The re-encryption task AND the verification task, by revision ARN rather
+# than by family: a family name would resolve to whatever is latest.
+assert_taskdef_at_runtask 1 "task-definition/georag-app-key-rotation:101$"
+assert_taskdef_at_runtask 2 "task-definition/georag-app-key-rotation:101$"
+done_case
+
+run_outer outer_refuses_when_the_image_in_service_cannot_be_read FAKE_AWS_NO_LIVE_IMAGE=1 -- --apply
+assert_rc 1
+assert_aws_not_called "register-task-definition"
+assert_aws_not_called "create-db-snapshot"
+assert_aws_not_called "put-secret-value"
+assert_aws_not_called "update-service"
+assert_aws_not_called "run-task"
+assert_says "cannot read the image"
+done_case
+
+run_outer outer_a_failed_registration_changes_nothing FAKE_AWS_REGISTER_RC=1 -- --apply
+assert_rc 1
+assert_aws_not_called "create-db-snapshot"
+assert_aws_not_called "put-secret-value"
+assert_aws_not_called "update-service"
+assert_aws_not_called "run-task"
+assert_says "could not register"
 done_case
 
 # The snapshot IS the recovery path for a half-re-encrypted ledger. Nothing
@@ -327,6 +410,7 @@ assert_rc 1
 assert_secret_eq APP_KEY "$OLD_KEY"
 assert_secret_lacks APP_KEY_NEXT
 assert_secret_lacks APP_KEY_ROTATION_RESTORE
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
 assert_desired laravel-octane 3
 assert_desired laravel-horizon 1
 assert_says ABANDONED
@@ -340,18 +424,45 @@ assert_rc 1
 assert_desired laravel-octane 0
 assert_desired laravel-horizon 0
 assert_secret_has APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
 assert_secret_eq APP_KEY "$OLD_KEY"
 assert_says "must not serve traffic"
 assert_says "-preappkey-"
 done_case
 
-# A task killed outright reports no exit code at all. That is not success,
-# and it is not distinguishable from a kill mid-restore.
-run_outer outer_a_task_with_no_exit_code_is_treated_as_a_restore_failure \
+# A task that STARTED and was then killed outright reports no exit code at
+# all. That is not success, and it is not distinguishable from a kill
+# mid-restore: it stays the stuck case.
+run_outer outer_a_task_killed_after_it_started_is_treated_as_a_restore_failure \
   FAKE_AWS_TASK_EXIT=None -- --apply
 assert_rc 1
 assert_desired laravel-octane 0
+assert_desired laravel-horizon 0
 assert_secret_eq APP_KEY "$OLD_KEY"
+assert_secret_has APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
+assert_says "DO NOT scale"
+assert_says "-preappkey-"
+done_case
+
+# ...but a task that NEVER started also has no exit code, and it touched
+# nothing. This is what an expired image tag looks like (stopCode
+# TaskFailedToStart, no startedAt). Reading it as a half-re-encrypted ledger
+# printed "restore the snapshot" over a database nothing had written to, and
+# left the platform down while the operator did it.
+run_outer outer_a_task_that_never_started_is_reversed_like_a_dump_failure \
+  FAKE_AWS_TASK_NEVER_STARTED=1 -- --apply
+assert_rc 1
+assert_secret_eq APP_KEY "$OLD_KEY"
+assert_secret_lacks APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_RESTORE
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
+assert_desired laravel-octane 3
+assert_desired laravel-horizon 1
+assert_says ABANDONED
+assert_says CannotPullContainerError
+assert_silent_about "HALF re-encrypted"
+assert_silent_about "DO NOT scale"
 done_case
 
 run_outer outer_a_task_that_never_starts_changes_nothing FAKE_AWS_RUNTASK_NOARN=1 -- --apply
@@ -384,6 +495,7 @@ assert_rc 0
 assert_secret_is_a_fresh_key
 assert_secret_lacks APP_KEY_NEXT
 assert_secret_lacks APP_KEY_ROTATION_RESTORE
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
 done_case
 
 # One service failing must not strand the others: a service left on the old
@@ -394,8 +506,10 @@ assert_rc 1
 assert_aws_called "update-service .*laravel-reverb .*--force-new-deployment"
 assert_says INCOMPLETE
 assert_says "--finish"
-# The staging keys survive an incomplete run, because --finish needs them.
+# The staging keys survive an incomplete run, because --finish needs them --
+# and --finish needs the record of success above all.
 assert_secret_has APP_KEY_NEXT
+assert_secret_has APP_KEY_ROTATION_REENCRYPTED
 done_case
 
 # The verification is a gate: if it cannot run, the rotation is not
@@ -437,6 +551,7 @@ done_case
 CURRENT=outer_finish_needs_nothing_but_the_secret
 fresh_state
 jq --arg k "$NEW_KEY" '.APP_KEY_NEXT = $k
+   | .APP_KEY_ROTATION_REENCRYPTED = "arn:aws:ecs:us-east-1:000000000000:task/georag/earlier"
    | .APP_KEY_ROTATION_RESTORE = "laravel-octane:3 laravel-horizon:1"' \
    < "${STATE}/secret.json" > "${STATE}/s2" && mv "${STATE}/s2" "${STATE}/secret.json"
 printf '0' > "${STATE}/desired.laravel-octane"
@@ -448,8 +563,113 @@ assert_rc 0
 assert_aws_not_called "create-db-snapshot"   # the data is already rotated
 assert_secret_eq APP_KEY "$NEW_KEY"
 assert_secret_lacks APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
 assert_desired laravel-octane 3
 assert_desired laravel-horizon 1
+# The verification task is the only one --finish runs, and it needs the same
+# live image: a pinned tag that has expired would fail it too.
+assert_registered_image 1 "$LIVE_IMAGE"
+assert_taskdef_at_runtask 1 "task-definition/georag-app-key-rotation:101$"
+done_case
+
+# APP_KEY_NEXT is written BEFORE the task runs, so it is in the secret after a
+# task that failed, a task that never ran and a terminal that died mid-run.
+# Promoting it then points every service at a key no audit row was
+# re-encrypted to. --finish takes the key only with the record that the task
+# succeeded, and otherwise changes nothing at all.
+CURRENT=outer_finish_refuses_a_staged_key_that_nothing_vouches_for
+fresh_state
+jq --arg k "$NEW_KEY" '.APP_KEY_NEXT = $k
+   | .APP_KEY_ROTATION_RESTORE = "laravel-octane:3 laravel-horizon:1"' \
+   < "${STATE}/secret.json" > "${STATE}/s2" && mv "${STATE}/s2" "${STATE}/secret.json"
+printf '0' > "${STATE}/desired.laravel-octane"
+printf '0' > "${STATE}/desired.laravel-horizon"
+OUT="$(env PATH="${WORK}/bin:${PATH}" FAKE_AWS_LOG="${STATE}/aws.log" FAKE_AWS_STATE="${STATE}" \
+      ROTATE_SUBNETS=subnet-a ROTATE_SECURITY_GROUP=sg-a ROTATE_WAIT_TRIES=2 ROTATE_WAIT_INTERVAL=0 \
+      bash "$OUTER" --finish 2>&1)"; RC=$?
+assert_rc 1
+assert_aws_not_called "put-secret-value"
+assert_aws_not_called "update-service"
+assert_aws_not_called "run-task"
+assert_aws_not_called "register-task-definition"
+assert_secret_eq APP_KEY "$OLD_KEY"
+assert_secret_has APP_KEY_NEXT
+assert_desired laravel-octane 0
+assert_desired laravel-horizon 0
+assert_says "does not record that the rotation task"
+assert_says "HALF re-encrypted"
+done_case
+
+# An empty marker vouches for nothing either.
+CURRENT=outer_finish_does_not_accept_an_empty_marker
+fresh_state
+jq --arg k "$NEW_KEY" '.APP_KEY_NEXT = $k | .APP_KEY_ROTATION_REENCRYPTED = ""' \
+   < "${STATE}/secret.json" > "${STATE}/s2" && mv "${STATE}/s2" "${STATE}/secret.json"
+OUT="$(env PATH="${WORK}/bin:${PATH}" FAKE_AWS_LOG="${STATE}/aws.log" FAKE_AWS_STATE="${STATE}" \
+      ROTATE_SUBNETS=subnet-a ROTATE_SECURITY_GROUP=sg-a ROTATE_WAIT_TRIES=2 ROTATE_WAIT_INTERVAL=0 \
+      bash "$OUTER" --finish 2>&1)"; RC=$?
+assert_rc 1
+assert_aws_not_called "put-secret-value"
+assert_secret_eq APP_KEY "$OLD_KEY"
+done_case
+
+# The record is written the moment the task exits 0 -- while APP_KEY is still
+# the OLD key -- and only then promoted, so a promotion that fails or a
+# terminal that dies leaves --finish something to trust.
+run_outer outer_records_the_success_before_promoting -- --apply
+assert_rc 0
+assert_marker_precedes_promotion
+done_case
+
+# Exit 30 is "re-encrypted, but the dump could not be shredded". The ledger IS
+# rotated, so it is recorded like exit 0; a --finish that refused it would
+# strand a rotated ledger behind an unpromoted key.
+run_outer outer_a_shred_failure_still_records_the_rotation FAKE_AWS_TASK_EXIT=30 -- --apply
+assert_rc 0
+assert_says "could not shred"
+assert_marker_precedes_promotion
+assert_secret_is_a_fresh_key
+done_case
+
+# If the record itself cannot be written, nothing is promoted and nothing is
+# scaled up: the ledger is rotated, APP_KEY is still the old key, and the
+# operator is told exactly which key to add.
+run_outer outer_a_record_that_cannot_be_written_stops_before_promoting FAKE_AWS_PUT_FAIL_AFTER=1 -- --apply
+assert_rc 1
+assert_secret_eq APP_KEY "$OLD_KEY"
+assert_secret_has APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
+assert_desired laravel-octane 0
+assert_aws_not_called "force-new-deployment"
+assert_says "APP_KEY_ROTATION_REENCRYPTED"
+done_case
+
+# A promotion that fails AFTER the record was written is exactly what --finish
+# exists for. Run it against the state that failure leaves behind.
+run_outer outer_a_failed_promotion_is_finished_by_finish FAKE_AWS_PUT_FAIL_AFTER=2 -- --apply
+assert_rc 1
+assert_secret_eq APP_KEY "$OLD_KEY"
+assert_secret_has APP_KEY_ROTATION_REENCRYPTED
+assert_says "--finish"
+OUT="$(env PATH="${WORK}/bin:${PATH}" FAKE_AWS_LOG="${STATE}/aws.log" FAKE_AWS_STATE="${STATE}" \
+      ROTATE_SUBNETS=subnet-a ROTATE_SECURITY_GROUP=sg-a ROTATE_WAIT_TRIES=2 ROTATE_WAIT_INTERVAL=0 \
+      bash "$OUTER" --finish 2>&1)"; RC=$?
+assert_rc 0
+assert_secret_is_a_fresh_key
+assert_secret_lacks APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
+assert_desired laravel-octane 3
+assert_desired laravel-horizon 1
+done_case
+
+# A marker left behind by some EARLIER rotation must not vouch for this one's
+# key: staging clears it. Exit 20 never writes one, so it must be gone.
+SECRET_EXTRA='.APP_KEY_ROTATION_REENCRYPTED = "stale-from-an-earlier-rotation"'
+run_outer outer_staging_clears_a_stale_marker FAKE_AWS_TASK_EXIT=20 -- --apply
+unset SECRET_EXTRA
+assert_rc 1
+assert_secret_has APP_KEY_NEXT
+assert_secret_lacks APP_KEY_ROTATION_REENCRYPTED
 done_case
 
 # Every recovery instruction the script prints names the task to go and

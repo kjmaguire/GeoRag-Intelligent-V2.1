@@ -7,7 +7,8 @@
 #   bash deploy/aws/rotation/rotate-app-key.sh --finish  # promote + roll only, after a run
 #                                                        # whose rotation task succeeded but
 #                                                        # which failed before every service
-#                                                        # had the new key
+#                                                        # had the new key; refuses unless the
+#                                                        # secret records that the task did
 #
 # APP_KEY encrypts query_audit_log.query_text / response_text and keys
 # query_text_hash (docs/RUNBOOK.md § "APP_KEY rotation checklist").
@@ -29,6 +30,13 @@
 #     rollback of the secret;
 #   - one service failing to roll does not stop the others, for the same
 #     reason the nightly sweeps are not `set -e`;
+#   - a task that never started (an image that cannot be pulled, a secret
+#     that cannot be injected) touched nothing and is reversed like a dump
+#     failure; one that started and then reports no exit code is not;
+#   - --finish promotes only a key whose task is recorded as having
+#     succeeded: APP_KEY_ROTATION_REENCRYPTED is written when the task exits
+#     0 (or 30), before the promotion, and removed with the other staging
+#     keys. A staged key alone proves nothing about the ledger;
 #   - the key never reaches the terminal, a log, or an API parameter.
 #
 # ---------------------------------------------------------------------
@@ -75,6 +83,16 @@
 #    everything it needs from Secrets Manager, so a dropped SSH session
 #    costs nothing — where Azure's needed ROTATE_NEWKEY exported from a file.
 #
+# 5. THE TASK RUNS THE IMAGE THAT IS IN SERVICE, NOT THE ONE rotation.tf
+#    PINNED. That definition carries whatever var.image_tag was at the last
+#    `terraform apply`; CD never re-registers it, and the ECR lifecycle
+#    policy (main.tf) keeps only the newest 30 images. Deploy often enough
+#    and the pinned tag is expired, the task stops with CannotPullContainerError
+#    — after the writers are already at zero — and, before this script told
+#    "never started" from "started and died", that read as a half-re-encrypted
+#    ledger. So a fresh revision is registered on the image laravel-octane
+#    runs now (what cd.yml does for georag-migrate) before anything is touched.
+#
 # ---------------------------------------------------------------------
 # THE ONE THING THIS DESIGN MAKES WORSE, STATED
 # ---------------------------------------------------------------------
@@ -103,6 +121,12 @@ SECURITY_GROUP="${ROTATE_SECURITY_GROUP:-}"  # terraform output task_security_gr
 # would drop every open WebSocket for no benefit.
 QUIESCE="${ROTATE_QUIESCE:-laravel-octane laravel-horizon}"
 ROLL="${ROTATE_ROLL:-laravel-octane laravel-horizon laravel-reverb}"
+
+# The service whose image the rotation task runs (item 5 above), and the
+# definition it is started from: the family until a fresh revision is
+# registered on that image, then that revision's ARN.
+IMAGE_FROM="${ROTATE_IMAGE_FROM:-laravel-octane}"
+ROTATION_TASKDEF="$TASK_FAMILY"
 
 WAIT_TRIES="${ROTATE_WAIT_TRIES:-60}"
 WAIT_INTERVAL="${ROTATE_WAIT_INTERVAL:-10}"
@@ -220,6 +244,36 @@ restore_counts() {
   return $rc
 }
 
+# The image $IMAGE_FROM is running right now. Read from the live service
+# rather than from ECR or rotation.tf: it is the one image that is certain to
+# exist, to be recent, and to carry the audit:* commands.
+live_image() {
+  local td
+  td="$(aws ecs describe-services --cluster "$CLUSTER" --services "$IMAGE_FROM" \
+        --query 'services[0].taskDefinition' --output text 2>/dev/null)" || return 1
+  case "$td" in ''|None) return 1 ;; esac
+  aws ecs describe-task-definition --task-definition "$td" \
+      --query 'taskDefinition.containerDefinitions[0].image' --output text 2>/dev/null
+}
+
+# Registers a fresh revision of $TASK_FAMILY on image $1 and leaves its ARN in
+# ROTATION_TASKDEF. A global, not stdout, for the reason run_rotation_task
+# gives. Same shape as the migrate registration in cd.yml. The revision it
+# leaves behind is harmless: the task cannot start without APP_KEY_NEXT.
+register_rotation_revision() {
+  local image="$1" def new arn
+  def="$(aws ecs describe-task-definition --task-definition "$TASK_FAMILY" \
+         --query taskDefinition --output json 2>/dev/null)" || return 1
+  new="$(jq -c --arg IMAGE "$image" '
+    .containerDefinitions[0].image = $IMAGE
+    | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+          .compatibilities, .registeredAt, .registeredBy)' <<< "$def")" || return 1
+  arn="$(aws ecs register-task-definition --cli-input-json "$new" \
+         --query 'taskDefinition.taskDefinitionArn' --output text 2>/dev/null)" || return 1
+  case "$arn" in ''|None) return 1 ;; esac
+  ROTATION_TASKDEF="$arn"
+}
+
 # Runs a shell script inside a one-off rotation task. The script is base64'd
 # into a command override; it carries no secrets — both keys arrive through
 # the task definition — so it is safe in the CloudTrail record of the
@@ -235,18 +289,27 @@ restore_counts() {
 # Returns: 0 the task ran and stopped (LAST_TASK_EXIT holds its exit code)
 #          1 the task could not be started at all
 #          2 it started but did not stop within the waiter's budget
+#
+# Besides the exit code, a stopped task is described by the two facts that say
+# whether its container ever ran: LAST_TASK_STARTED (startedAt, "None" when the
+# task never reached RUNNING) and LAST_TASK_STOPCODE (TaskFailedToStart when
+# ECS could not pull the image or inject a secret). A value that is EMPTY
+# rather than "None" is a describe-tasks call that failed, which proves nothing.
 LAST_TASK_ARN=""
 LAST_TASK_REASON=""
 LAST_TASK_EXIT=""
+LAST_TASK_STARTED=""
+LAST_TASK_STOPCODE=""
 run_rotation_task() {
   local script_file="$1" b64 overrides arn
   LAST_TASK_ARN=""; LAST_TASK_REASON=""; LAST_TASK_EXIT=""
+  LAST_TASK_STARTED=""; LAST_TASK_STOPCODE=""
 
   b64="$(base64 -w0 < "$script_file" 2>/dev/null || base64 < "$script_file" | tr -d '\n')"
   overrides="$(jq -nc --arg b64 "$b64" \
     '{containerOverrides: [{name: "app-key-rotation", command: ["echo \($b64) | base64 -d | bash"]}]}')"
 
-  arn="$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$TASK_FAMILY" \
+  arn="$(aws ecs run-task --cluster "$CLUSTER" --task-definition "$ROTATION_TASKDEF" \
       --launch-type FARGATE \
       --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SECURITY_GROUP}],assignPublicIp=DISABLED}" \
       --overrides "$overrides" \
@@ -260,6 +323,10 @@ run_rotation_task() {
         --query 'tasks[0].containers[0].exitCode' --output text 2>/dev/null)"
   LAST_TASK_REASON="$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$arn" \
         --query 'tasks[0].stoppedReason' --output text 2>/dev/null)"
+  LAST_TASK_STARTED="$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$arn" \
+        --query 'tasks[0].startedAt' --output text 2>/dev/null)"
+  LAST_TASK_STOPCODE="$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$arn" \
+        --query 'tasks[0].stopCode' --output text 2>/dev/null)"
   return 0
 }
 
@@ -292,6 +359,14 @@ done
 
 [ -n "$SUBNETS" ]        || die "set ROTATE_SUBNETS (terraform output private_subnet_ids)."
 [ -n "$SECURITY_GROUP" ] || die "set ROTATE_SECURITY_GROUP (terraform output task_security_group_id)."
+
+# Item 5 of the header. Resolved here so even a dry run says which image the
+# task will use, and so a service with nothing to read stops the rotation
+# before anything is touched.
+LIVE_IMAGE="$(live_image)"
+case "$LIVE_IMAGE" in
+  ''|None) die "cannot read the image ${IMAGE_FROM} is running, so the rotation task has no safe image to start. Nothing was changed." ;;
+esac
 
 read_secret_to_file || die "cannot read ${SECRET_ID}, or it is not JSON."
 SECRET_FILE="$TMPFILE"
@@ -329,12 +404,36 @@ fi
 if [ "$MODE" = apply ] && [ "$STAGED" = yes ]; then
   echo "ABORT: ${SECRET_ID} already carries APP_KEY_NEXT, so a rotation is already in flight." >&2
   echo "If its rotation task succeeded, finish it:  $0 --finish" >&2
-  echo "If it failed at the dump (nothing changed), delete the APP_KEY_NEXT key and start over." >&2
+  echo "If it failed at the dump (nothing changed), delete APP_KEY_NEXT and APP_KEY_ROTATION_RESTORE and start over." >&2
   echo "If it failed at the restore, DO NOT start over — restore the pre-rotation snapshot." >&2
   exit 1
 fi
 if [ "$MODE" = finish ]; then
   [ "$STAGED" = yes ] || die "--finish needs APP_KEY_NEXT in ${SECRET_ID}; there is nothing staged to promote."
+  # A staged key is not a rotated ledger. APP_KEY_NEXT is written BEFORE the
+  # task runs, so it is there after a task that failed, one that never ran and
+  # a terminal that died mid-run — and promoting it then points every service
+  # at a key no audit row has been re-encrypted to.
+  jq -e '(.APP_KEY_ROTATION_REENCRYPTED // "") != ""' < "$SECRET_FILE" >/dev/null 2>&1 || {
+    cat >&2 <<UNPROVEN
+ABORT: ${SECRET_ID} stages APP_KEY_NEXT but does not record that the rotation task
+succeeded (no APP_KEY_ROTATION_REENCRYPTED). Promoting it could leave every service
+on a key that no audit row was re-encrypted to, and nothing could then read the ledger.
+
+Find out what the task did first:
+  aws ecs list-tasks --cluster ${CLUSTER} --family ${TASK_FAMILY} --desired-status STOPPED
+  aws ecs describe-tasks --cluster ${CLUSTER} --tasks <arn>    # exitCode, stopCode, startedAt
+
+  exit 0 or 30                   every row is under APP_KEY_NEXT. Add
+                                 APP_KEY_ROTATION_REENCRYPTED (any non-empty value) to
+                                 ${SECRET_ID}, then re-run:  $0 --finish
+  exit 10 or 64, or it never     nothing changed. Put the services back to the counts in
+  started (no startedAt)         APP_KEY_ROTATION_RESTORE, delete the staging keys, start over.
+  exit 20, or it started and     the ledger may be HALF re-encrypted. Restore the
+  reported no exit code          pre-rotation snapshot (ops/runbooks/secret-rotation.md §2).
+UNPROVEN
+    exit 1
+  }
   [ -n "$ORIGINAL" ] || say "WARNING: no APP_KEY_ROTATION_RESTORE in the secret. Services already at desired 0 will be rolled but NOT scaled back — check their counts against main.tf afterwards."
 fi
 
@@ -344,6 +443,10 @@ if [ "$MODE" = dry ]; then
 #
 # Preflight passed: ${DB_INSTANCE} available, cluster ${CLUSTER} reachable,
 # ${TASK_FAMILY} registered, ${SECRET_ID} holds APP_KEY, APP_KEY_NEXT staged: ${STAGED}.
+#
+# The task will run ${LIVE_IMAGE},
+# the image ${IMAGE_FROM} is serving now, on a fresh revision of ${TASK_FAMILY}
+# registered before anything is touched.
 #
 # Stopped for the re-encryption, and restored to exactly these counts afterwards:
 PLAN
@@ -357,7 +460,8 @@ PLAN
 #   2. mint a key locally and write it to ${SECRET_ID} as APP_KEY_NEXT
 #   3. scale the writers to 0 and wait for runningCount 0
 #   4. run ${TASK_FAMILY}: dump under APP_KEY, restore under APP_KEY_NEXT, shred
-#   5. promote APP_KEY := APP_KEY_NEXT (APP_KEY_NEXT kept, for --finish and for step 7)
+#   5. record that the task succeeded, then promote APP_KEY := APP_KEY_NEXT
+#      (both kept: --finish requires the record, and step 7 the key)
 #   6. roll every Laravel service, restore the counts, wait for stable
 #   7. verify a row decrypts under the promoted key, then drop the staging keys
 #
@@ -368,6 +472,15 @@ PLAN
 PLAN
   exit 0
 fi
+
+# ------------------------------------------- 0. the image the task will run ---
+# Before the snapshot, the staging and the quiesce: a rotation that cannot
+# start its task has to find that out while nothing is down. Both --apply and
+# --finish need it, because --finish runs the verification task.
+say "registering a fresh revision of ${TASK_FAMILY} on ${LIVE_IMAGE}..."
+register_rotation_revision "$LIVE_IMAGE" \
+  || die "could not register a revision of ${TASK_FAMILY} on ${LIVE_IMAGE}. Nothing was changed."
+say "the task will start from ${ROTATION_TASKDEF##*/}."
 
 # --------------------------------------------------- 1. the recovery asset ---
 if [ "$MODE" = apply ]; then
@@ -393,8 +506,11 @@ if [ "$MODE" = apply ]; then
   # so that the key is passed as data rather than interpolated into a filter.
   mktemp_secret || die "cannot create a temp file for the staged secret."
   STAGE_FILE="$TMPFILE"
+  # The del() is for a marker left by some earlier rotation: --finish trusts
+  # APP_KEY_ROTATION_REENCRYPTED, so a stale one would vouch for this key.
   jq --arg k "$NEWKEY" --arg r "${ORIGINAL# }" \
-     '.APP_KEY_NEXT = $k | .APP_KEY_ROTATION_RESTORE = $r' < "$SECRET_FILE" > "$STAGE_FILE" \
+     '.APP_KEY_NEXT = $k | .APP_KEY_ROTATION_RESTORE = $r | del(.APP_KEY_ROTATION_REENCRYPTED)' \
+     < "$SECRET_FILE" > "$STAGE_FILE" \
     || die "could not build the staged secret."
   unset NEWKEY
   write_secret_from_file "$STAGE_FILE" || die "could not write APP_KEY_NEXT to ${SECRET_ID}."
@@ -406,7 +522,7 @@ if [ "$MODE" = apply ]; then
   abandon() {
     say "$1 Rolling back."
     restore_counts "$ORIGINAL"
-    mktemp_secret && jq 'del(.APP_KEY_NEXT, .APP_KEY_ROTATION_RESTORE)' < "$STAGE_FILE" > "$TMPFILE" \
+    mktemp_secret && jq 'del(.APP_KEY_NEXT, .APP_KEY_ROTATION_RESTORE, .APP_KEY_ROTATION_REENCRYPTED)' < "$STAGE_FILE" > "$TMPFILE" \
       && write_secret_from_file "$TMPFILE" \
       && say "staging keys removed; the secret is exactly as it was."
     echo "APP_KEY rotation ABANDONED. Nothing was re-encrypted." >&2
@@ -450,6 +566,24 @@ PENDING
   fi
   say "rotation task ${LAST_TASK_ARN} exit ${EXIT_CODE} (${LAST_TASK_REASON})"
 
+  # No exit code is two different facts, and which one it is decides whether a
+  # snapshot restore is needed:
+  #   - the task never started (an image ECS cannot pull, a secret key it
+  #     cannot inject, no capacity): stopCode TaskFailedToStart and no
+  #     startedAt. The container never ran, so nothing was touched. Reading
+  #     that as the stuck case below sends the operator to restore a snapshot
+  #     over a database nothing wrote to, with the platform down meanwhile.
+  #   - the task started and was killed before it reported (stopped, host
+  #     failure): it may have been mid-restore, and that IS the stuck case.
+  # Only an answer of "None" counts as never started. An empty value is a
+  # describe-tasks call that failed, which proves nothing either way. And a
+  # recorded exit code always wins: a container that exits in the first
+  # second can stop without the task ever reaching RUNNING.
+  if [ "$EXIT_CODE" = None ] \
+     && { [ "$LAST_TASK_STOPCODE" = TaskFailedToStart ] || [ "$LAST_TASK_STARTED" = None ]; }; then
+    abandon "the rotation task never started (${LAST_TASK_REASON:-no reason given})."
+  fi
+
   case "$EXIT_CODE" in
     0) ;;
     30)
@@ -486,7 +620,27 @@ STUCK
       exit 1
       ;;
   esac
-  SECRET_FILE="$STAGE_FILE"
+
+  # Only exit 0 and exit 30 get here, and both mean every row is under
+  # APP_KEY_NEXT. Say so in the secret BEFORE promoting, so a promotion that
+  # fails or a terminal that dies still leaves --finish something to trust.
+  mktemp_secret || die "cannot create a temp file for the success marker."
+  MARK_FILE="$TMPFILE"
+  jq --arg t "$LAST_TASK_ARN" '.APP_KEY_ROTATION_REENCRYPTED = $t' < "$STAGE_FILE" > "$MARK_FILE" \
+    || die "could not build the marked secret."
+  write_secret_from_file "$MARK_FILE" || {
+    cat >&2 <<NOMARK
+ABORT: the ledger IS re-encrypted under APP_KEY_NEXT (task ${LAST_TASK_ARN}
+exited ${EXIT_CODE}), but the record of that could not be written to ${SECRET_ID}.
+--finish refuses to promote without it. Promote nothing and scale nothing up.
+
+Add APP_KEY_ROTATION_REENCRYPTED (any non-empty value) to ${SECRET_ID}, then:
+  $0 --finish
+Do NOT put the old key back, and do not delete APP_KEY_NEXT.
+NOMARK
+    exit 1
+  }
+  SECRET_FILE="$MARK_FILE"
 fi
 
 # ------------------------------------------------------------ 5. promote ---
@@ -564,7 +718,7 @@ fi
 
 # ------------------------------------------------------------ 8. clean up ---
 if [ "$FAILURES" -eq 0 ]; then
-  if rewrite_secret 'del(.APP_KEY_NEXT, .APP_KEY_ROTATION_RESTORE)' "$PROMOTE_FILE"; then
+  if rewrite_secret 'del(.APP_KEY_NEXT, .APP_KEY_ROTATION_RESTORE, .APP_KEY_ROTATION_REENCRYPTED)' "$PROMOTE_FILE"; then
     say "staging keys removed. ${TASK_FAMILY} is unstartable again until the next rotation."
   else
     say "WARNING: the staging keys could not be removed from ${SECRET_ID}. Harmless — nothing injects APP_KEY_ROTATION_RESTORE and nothing reads APP_KEY_NEXT — but remove them before the next rotation, which refuses to start while APP_KEY_NEXT is there."
