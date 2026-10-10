@@ -475,18 +475,24 @@ ON CONFLICT (id) DO UPDATE SET
 #: coordinates: the column is geometry(Point,4326) and every map layer reads
 #: it as such. A UTM easting written straight in would place the sample at
 #: longitude 394,240.
+#:
+#: $10..$12 are the row's lineage (source_file, source_file_sha256, row_index;
+#: migration 2026_10_10_110000) - appended so the nine placeholders before them
+#: keep their numbers.
 _GEOCHEM_SQL = """
 INSERT INTO silver.geochemistry (
     geochem_id, workspace_id, project_id,
     sample_id, sample_type, geom,
     assay_element_codes, assay_values_ppm,
-    created_at, updated_at
+    created_at, updated_at,
+    source_file, source_file_sha256, row_index
 ) VALUES (
     gen_random_uuid(), $1::uuid, $2::uuid,
     $3, $4,
     ST_Transform(ST_SetSRID(ST_MakePoint($5::double precision, $6::double precision), $7::int), 4326),
     $8::text[], $9::jsonb,
-    NOW(), NOW()
+    NOW(), NOW(),
+    $10, $11, $12
 )
 -- The WHERE is REQUIRED, not decoration. uq_geochemistry_project_sample is a
 -- PARTIAL index (WHERE sample_id IS NOT NULL), and Postgres will not infer a
@@ -500,6 +506,11 @@ DO UPDATE SET
     geom                = EXCLUDED.geom,
     assay_element_codes = EXCLUDED.assay_element_codes,
     assay_values_ppm    = EXCLUDED.assay_values_ppm,
+    -- Last writer owns the row. A sample number reused by a DIFFERENT file
+    -- replaces the earlier row, and _write_surface_geochem says so first.
+    source_file         = EXCLUDED.source_file,
+    source_file_sha256  = EXCLUDED.source_file_sha256,
+    row_index           = EXCLUDED.row_index,
     updated_at          = NOW()
 """
 
@@ -1181,9 +1192,44 @@ def _normalize_trace_dips(
     ]
 
 
+def _geochem_replaced_warning(
+    replaced: list[tuple[str, str]], unknown_source: int, *, source_file: str,
+) -> dict[str, Any]:
+    """The warning for samples this file's upsert took over from ANOTHER file."""
+    shown = ", ".join(
+        f"{sample!r} (from {earlier!r})" for sample, earlier in replaced[:5]
+    )
+    more = len(replaced) - min(len(replaced), 5)
+    detail = (
+        f"{len(replaced)} sample number(s) in {source_file} were already stored "
+        f"from a DIFFERENT file, and one project holds one row per sample "
+        f"number, so this file's rows replaced them: {shown}"
+        + (f" and {more} more" if more else "")
+        + ". If the two files describe different samples that happen to share "
+        "numbers, rename one set and upload it again; if this file is the "
+        "newer version, nothing more is needed."
+    )
+    if unknown_source:
+        detail += (
+            f" {unknown_source} further replaced row(s) were written before the "
+            f"source file was recorded, so they may have come from this same file."
+        )
+    return {
+        "code": "geochemistry_sample_replaced_from_other_file",
+        "message": (
+            f"{len(replaced)} geochemistry sample(s) stored from another file "
+            f"were replaced by {source_file}"
+        ),
+        "detail": detail[:900],
+        "samples": [sample for sample, _earlier in replaced[:20]],
+    }
+
+
 async def _write_surface_geochem(
     conn: asyncpg.Connection, *, workspace_id: str, project_id: str,
     shape: dict[str, Any], rows: list[dict[str, Any]], source_epsg: int,
+    source_file: str | None = None, source_file_sha256: str | None = None,
+    warnings_out: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Land surface samples in silver.geochemistry.
 
@@ -1196,13 +1242,22 @@ async def _write_surface_geochem(
     coordinate pair — a survey file routinely carries a trailing blank row or
     a legend line, and refusing the other 853 samples over it would be
     absurd. The count comes back so the caller can report it.
+
+    Every row records where it came from (``source_file`` - the LOGICAL name,
+    no upload timestamp - ``source_file_sha256`` and ``row_index``, the same
+    index as the attribute_tables copy). The table is unique on
+    ``(project_id, sample_id)``, so a sample number reused by a different file
+    replaces the earlier row; that is reported in ``warnings_out`` as
+    ``geochemistry_sample_replaced_from_other_file`` instead of happening in
+    silence (audit finding 21). A row whose earlier source was never recorded
+    is counted separately: it may be this same file's earlier upload.
     """
     located = shape["located"]
     assays: dict[str, str] = shape["assays"]
 
     params = []
     skipped = 0
-    for row in rows:
+    for row_index, row in enumerate(rows):
         sample_id = str(row.get(located["sample_id"], "") or "").strip()
         easting = _num(row.get(located["easting"]))
         northing = _num(row.get(located["northing"]))
@@ -1228,7 +1283,25 @@ async def _write_surface_geochem(
             workspace_id, project_id, sample_id, sample_type,
             easting, northing, source_epsg,
             sorted(values), json.dumps(values),
+            source_file, source_file_sha256, row_index,
         ))
+
+    if source_file is not None and params and warnings_out is not None:
+        earlier_rows = await conn.fetch(
+            "SELECT sample_id, source_file FROM silver.geochemistry "
+            "WHERE project_id = $1::uuid AND sample_id = ANY($2::text[])",
+            project_id, sorted({p[2] for p in params}),
+        )
+        replaced = sorted(
+            (r["sample_id"], r["source_file"]) for r in earlier_rows
+            if r["source_file"] is not None
+            and r["source_file"].lower() != source_file.lower()
+        )
+        unknown_source = sum(1 for r in earlier_rows if r["source_file"] is None)
+        if replaced:
+            warnings_out.append(
+                _geochem_replaced_warning(replaced, unknown_source, source_file=source_file)
+            )
 
     written = 0
     for start in range(0, len(params), _INSERT_BATCH):
@@ -4293,6 +4366,9 @@ async def run_ingest_tabular(
                                 shape=geochem_shape,
                                 rows=attribute_rows,
                                 source_epsg=geo_decision.epsg,
+                                source_file=source_name,
+                                source_file_sha256=source_sha,
+                                warnings_out=warnings,
                             )
                         sheets.append({
                             "sheet": filename,

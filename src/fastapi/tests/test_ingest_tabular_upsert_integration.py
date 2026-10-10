@@ -15,6 +15,9 @@ WHY THIS FILE EXISTS
       * Findings 1 and 12: an assay row with no sample id reaches
         ``silver.assays_v2`` under a derived id, and ``qaqc_flag`` is written
         explicitly (NULL or a control marker), never the column default.
+      * Finding 21: ``silver.geochemistry`` rows record the file, hash and row
+        position that wrote them, and a sample number taken over from another
+        file is reported.
 
     Needs the migrated ``silver`` schema; skipped without POSTGRES_USER, like
     its sibling test_ingest_constraint_rows_integration.py.
@@ -165,3 +168,55 @@ async def test_assays_without_a_sample_id_land_and_qaqc_is_not_pass(project: _Fi
         ("DH-1 10-20 m (no sample id)", "control_blank"),
     ]
     assert len(issues.derived_sample_ids) == 2
+
+
+async def test_geochemistry_records_its_source_and_reports_a_takeover(project: _Fixture) -> None:
+    """Audit finding 21 against the real table and its partial unique index."""
+    from app.hatchet_workflows.ingest_tabular import _write_surface_geochem
+
+    shape = {
+        "located": {"sample_id": "Sample", "easting": "X", "northing": "Y"},
+        "assays": {"au_ppm": "Au_ppm", "cu_ppm": "Cu_ppm", "as_ppm": "As_ppm"},
+    }
+
+    def rows(*samples: str) -> list[dict[str, Any]]:
+        return [
+            {"Sample": s, "X": -105.5 + i * 0.001, "Y": 52.1, "Au_ppm": 0.1, "Cu_ppm": 20.0,
+             "As_ppm": 5.0}
+            for i, s in enumerate(samples)
+        ]
+
+    async def write(source: str, sha: str, *samples: str) -> list[dict[str, Any]]:
+        warnings: list[dict[str, Any]] = []
+        await _write_surface_geochem(
+            project.conn, workspace_id=project.workspace_id, project_id=project.project_id,
+            shape=shape, rows=rows(*samples), source_epsg=4326,
+            source_file=source, source_file_sha256=sha, warnings_out=warnings,
+        )
+        return warnings
+
+    try:
+        assert await write("north.dbf", "a" * 64, "S1", "S2") == []
+        assert await write("north.dbf", "a" * 64, "S1", "S2") == []     # the same file again
+
+        takeover = await write("south.dbf", "b" * 64, "S2", "S3")        # S2 is north.dbf's
+
+        (note,) = takeover
+        assert note["code"] == "geochemistry_sample_replaced_from_other_file"
+        assert note["samples"] == ["S2"] and "'north.dbf'" in note["detail"]
+        stored = {
+            r["sample_id"]: (r["source_file"], r["source_file_sha256"], r["row_index"])
+            for r in await project.conn.fetch(
+                "SELECT sample_id, source_file, source_file_sha256, row_index "
+                "FROM silver.geochemistry WHERE project_id = $1::uuid", project.project_id,
+            )
+        }
+        assert stored == {
+            "S1": ("north.dbf", "a" * 64, 0),
+            "S2": ("south.dbf", "b" * 64, 0),       # last writer owns it, and it says who
+            "S3": ("south.dbf", "b" * 64, 1),
+        }
+    finally:
+        await project.conn.execute(
+            "DELETE FROM silver.geochemistry WHERE project_id = $1::uuid", project.project_id,
+        )
