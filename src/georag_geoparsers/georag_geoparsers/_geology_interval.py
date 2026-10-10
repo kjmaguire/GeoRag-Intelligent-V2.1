@@ -779,6 +779,8 @@ def parse_family(
             # reported; saying it twice would double the count on the run.
             warnings.extend(ragged.warnings())
         df, transformed = transform_decimal_comma(df)
+        if not companion:
+            warnings.extend(transformed.ambiguity_warnings())
         if transformed:
             warnings.append({
                 "row": None, "code": _CODE_DECIMAL_COMMA,

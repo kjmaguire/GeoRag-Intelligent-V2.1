@@ -543,16 +543,35 @@ def read_csv_checked(
 
 # Matches a number written with comma as decimal separator and NO period.
 # Examples: "1,5", "-2,33", "1234,567"
-# Does NOT match US thousand-separators like "1,234" (because we also require
-# a fractional part of at least 1 digit after the comma in a way that's
-# distinct from grouping). To distinguish: if the only commas in the column
-# are followed by exactly 3 digits AND there's a period elsewhere, it's
-# thousand-separator; we skip transformation. The pattern below admits any
-# digit count after the comma, but the per-column gate (all values match
-# the strict pattern) rules out the thousand-separator case naturally
-# because a value like "1,234.56" would NOT match (contains a period).
+# A value like "1,234.56" does NOT match (it contains a period), which is how
+# a US thousands-separated column is told apart from a decimal-comma one. A
+# column whose every comma group is exactly three digits ("1,250", "12,500")
+# is the case that cannot be told apart by shape: see _THOUSANDS_SHAPED_RE.
 _DECIMAL_COMMA_RE: re.Pattern = re.compile(r"^-?\d+,\d+$")
 _PLAIN_INT_RE: re.Pattern = re.compile(r"^-?\d+$")
+
+# A censored lab result: "<0,005", "> 10", "<5". The number inside is judged
+# like any other cell of the column. One "<0,005" among a column of decimal
+# commas used to disqualify the whole column, so every "0,52" in it stayed text
+# and no value of the column was read (audit finding 10).
+_CENSORED_RE: re.Pattern = re.compile(r"^[<>]\s*(-?\d+(?:,\d+)?)$")
+
+# Non-numeric lab results that sit among numbers in an assay column and say
+# nothing about its number format: below detection, not detected, not sampled,
+# no result, insufficient sample.
+_RESULT_TOKENS: frozenset[str] = frozenset({
+    "bdl", "lod", "<lod", "<dl", "nd", "n.d.", "ns", "nr", "is",
+})
+
+# What a US thousands group looks like: one to three digits, no leading zero,
+# then exactly three. "1,250" is 1250 there and 1.25 in a decimal-comma file;
+# "0,750" and "12,5" cannot be thousands, so any such cell is decimal evidence.
+_THOUSANDS_SHAPED_RE: re.Pattern = re.compile(r"^-?[1-9]\d{0,2},\d{3}$")
+
+# The rewrite, applied per CELL: a decimal-comma number (optionally censored)
+# gets its comma turned into a point and every other cell of the column - a
+# later "n/a, see note" the sample never reached - is left exactly as written.
+_REWRITE_RE: str = r"^(\s*[<>]?\s*-?\d+),(\d+)\s*$"
 
 # Sample size — checking every cell is wasteful on big files. 500 rows is
 # enough to be confident about whether the column uses decimal-comma
@@ -561,33 +580,87 @@ _PLAIN_INT_RE: re.Pattern = re.compile(r"^-?\d+$")
 _DECIMAL_COMMA_SAMPLE_SIZE: int = 500
 
 
+class DecimalCommaColumns(list):
+    """The columns :func:`transform_decimal_comma` rewrote.
+
+    A plain ``list`` of column names to every existing caller, which unpack
+    ``df, transformed = transform_decimal_comma(df)``. ``ambiguous`` carries
+    the columns it declined to guess about (``{column: example cells}``), and
+    :meth:`ambiguity_warnings` turns them into the run's warning.
+    """
+
+    def __init__(self, columns=(), ambiguous: dict[str, list[str]] | None = None):
+        super().__init__(columns)
+        self.ambiguous: dict[str, list[str]] = dict(ambiguous or {})
+
+    def ambiguity_warnings(self) -> list[dict[str, Any]]:
+        """``decimal_comma_ambiguous`` for the columns left as written."""
+        if not self.ambiguous:
+            return []
+        columns = list(self.ambiguous)
+        shown = "; ".join(
+            f"{col!r}: {', '.join(repr(c) for c in cells)}"
+            for col, cells in list(self.ambiguous.items())[:6]
+        )
+        return [{
+            "row": None,
+            "code": "decimal_comma_ambiguous",
+            "message": (
+                f"{len(columns)} column(s) hold values like '1,250' that could "
+                f"be decimals or thousands, and were left as written"
+            ),
+            "detail": (
+                f"Every value with a comma in {', '.join(repr(c) for c in columns[:6])} "
+                f"has exactly three digits after it, so it is 1.25 in a "
+                f"decimal-comma file and 1250 in a thousands-separated one "
+                f"(a thousand-fold difference). Nothing was converted; "
+                f"numeric values in these columns will be rejected as "
+                f"unreadable. Examples: {shown}. Re-export the column without "
+                f"the comma grouping (or with a point decimal) and upload "
+                f"the file again."
+            )[:900],
+            "context": {"columns": columns, "examples": self.ambiguous},
+        }]
+
+
 def transform_decimal_comma(
     df: pl.DataFrame,
     *,
     sample_size: int = _DECIMAL_COMMA_SAMPLE_SIZE,
-) -> tuple[pl.DataFrame, list[str]]:
+) -> tuple[pl.DataFrame, DecimalCommaColumns]:
     """For each Utf8 column in ``df``, if every non-null value in the
-    first ``sample_size`` rows matches the decimal-comma pattern, replace
-    the comma with a period in-place. Returns ``(transformed_df,
-    list_of_columns_transformed)``.
+    first ``sample_size`` rows is a decimal-comma number (or a plain integer,
+    or a censored/non-result lab entry), replace the comma with a period in
+    the cells that are decimal-comma numbers. Returns ``(transformed_df,
+    columns_transformed)``.
 
     Rules:
       * Column must be string-typed (Utf8). Already-numeric columns are
         left alone.
       * Column must have at least one non-null value.
-      * Every sampled value must match either ``-?\\d+,\\d+`` (decimal
-        comma) OR ``-?\\d+`` (plain integer — leaves room for mixed
-        integer/decimal columns).
+      * Every sampled value must match one of ``-?\\d+,\\d+`` (decimal
+        comma), ``-?\\d+`` (plain integer - leaves room for mixed
+        integer/decimal columns), a censored result ``<0,005`` / ``> 10``
+        whose number is one of those two (audit finding 10: one "<0,005" used
+        to disqualify the whole column), or a non-numeric lab result token
+        (``BDL``, ``<DL``, ``NS``, ...).
       * At least one sampled value must contain a comma (else there's
         nothing to transform).
       * A period anywhere in the sample disqualifies the column. This
         is the rule that distinguishes EU decimal-comma from US
         thousand-separator (``1,234.56``).
+      * AMBIGUOUS columns are not converted (audit finding 17): when every
+        comma group is exactly three digits with no leading zero (``1,250``,
+        ``12,500``) the column reads equally as 1.25 / 12.5 or 1250 / 12500.
+        It is left as written and reported in ``.ambiguous``; one cell that
+        cannot be a thousands group (``0,750``, ``12,5``) settles it as
+        decimal.
 
-    Side effects: only the matching columns are rewritten. Other columns
-    (text, IDs, dates) pass through untouched.
+    Side effects: only the matching columns are rewritten, and within them
+    only the cells that are decimal-comma numbers. Other columns (text, IDs,
+    dates) pass through untouched.
     """
-    transformed: list[str] = []
+    transformed = DecimalCommaColumns()
     for col in df.columns:
         if df.schema[col] != pl.Utf8:
             continue
@@ -600,6 +673,8 @@ def transform_decimal_comma(
 
         # Disqualifiers
         has_comma_decimal = False
+        decimal_evidence = False
+        thousands_cells: list[str] = []
         all_match = True
         for v in sample:
             s = str(v).strip()
@@ -609,20 +684,30 @@ def transform_decimal_comma(
             if "." in s:
                 all_match = False
                 break
-            if _DECIMAL_COMMA_RE.match(s):
+            censored = _CENSORED_RE.match(s)
+            body = censored.group(1) if censored else s
+            if _DECIMAL_COMMA_RE.match(body):
                 has_comma_decimal = True
+                if _THOUSANDS_SHAPED_RE.match(body):
+                    thousands_cells.append(s)
+                else:
+                    decimal_evidence = True
                 continue
-            if _PLAIN_INT_RE.match(s):
+            if _PLAIN_INT_RE.match(body) or s.lower() in _RESULT_TOKENS:
                 continue
             # Anything else (text, mixed punctuation, units): not a
             # decimal-comma numeric column.
             all_match = False
             break
 
-        if all_match and has_comma_decimal:
-            df = df.with_columns(
-                pl.col(col).str.replace(",", ".", literal=True).alias(col)
-            )
-            transformed.append(col)
+        if not (all_match and has_comma_decimal):
+            continue
+        if not decimal_evidence:
+            transformed.ambiguous[col] = list(dict.fromkeys(thousands_cells))[:3]
+            continue
+        df = df.with_columns(
+            pl.col(col).str.replace(_REWRITE_RE, "${1}.${2}").alias(col)
+        )
+        transformed.append(col)
 
     return df, transformed

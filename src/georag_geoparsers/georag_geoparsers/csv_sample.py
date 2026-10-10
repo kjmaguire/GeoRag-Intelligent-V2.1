@@ -1062,12 +1062,16 @@ def parse_csv_samples(
         global_warnings.extend(ragged.warnings())
 
         # 2026-05-23 — column-aware decimal-comma transform (CSV audit gap #2).
-        # Note: for sample CSVs, columns with mixed BDL tokens ("<0.01",
-        # "BDL", etc.) will fail the all-match gate and NOT be transformed.
-        # That's intentional v1 behaviour: depth columns (from/to) get
-        # transformed cleanly; assay columns with BDL keep their raw
-        # strings for downstream _parse_assay_value to handle.
+        # An assay column in decimal commas that also holds censored cells
+        # ("<0,005", "> 10,5", "BDL", "NS") IS transformed, cell by cell
+        # (audit finding 10): this used to disqualify the column, leaving every
+        # "0,52" as text that _parse_assay_value cannot read. A column that
+        # mixes a point and a comma (a "<0.01" beside a "0,52") still fails
+        # the gate and keeps its raw strings, and one whose every comma group
+        # is three digits ("1,250") is left alone and warned about
+        # (decimal_comma_ambiguous).
         df, transformed_cols = transform_decimal_comma(df)
+        global_warnings.extend(transformed_cols.ambiguity_warnings())
         if transformed_cols:
             global_warnings.append({
                 "row": None,

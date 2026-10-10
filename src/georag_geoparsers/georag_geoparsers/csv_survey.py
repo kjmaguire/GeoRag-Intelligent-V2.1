@@ -315,6 +315,7 @@ def parse_csv_surveys(
 
         # 2026-05-23 — column-aware decimal-comma transform (CSV audit gap #2).
         df, transformed_cols = transform_decimal_comma(df)
+        global_warnings.extend(transformed_cols.ambiguity_warnings())
         if transformed_cols:
             global_warnings.append({
                 "row": None,

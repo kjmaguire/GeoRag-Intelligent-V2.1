@@ -585,6 +585,7 @@ def parse_csv_geochronology(
     )
     global_warnings.extend(ragged.warnings())
     df, transformed_cols = transform_decimal_comma(df)
+    global_warnings.extend(transformed_cols.ambiguity_warnings())
     if transformed_cols:
         global_warnings.append({
             "row": None,
