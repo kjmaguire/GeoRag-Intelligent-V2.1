@@ -2619,6 +2619,7 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
     shouldn't make a query unanswerable — it only ensures the answer is
     never silently presented as fully checked when it wasn't.
     """
+    from app.agent.guards import VALIDATION_RAISED_WARNING  # noqa: PLC0415
     from app.agent.hallucination.layer2_typed_output import (  # noqa: PLC0415
         enforce_claim_citations,
         validate_and_repair,
@@ -2713,12 +2714,9 @@ async def validate_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "floored, warning banner applied) instead of shipping it as "
             "cleanly validated"
         )
-        _unverified_warning = (
-            "Layer 3/4/6: post-assembly validation raised an exception "
-            "before numeric grounding, entity resolution, and constraint "
-            "checks could complete — this answer is UNVERIFIED, not "
-            "confirmed clean."
-        )
+        # The text is shared with persist_node (app.agent.guards), which reads
+        # it back to record that the chain did not run.
+        _unverified_warning = VALIDATION_RAISED_WARNING
         response = _floor_confidence_with_warning_banner(
             response,
             "automated fact-checking could not complete due to an "
@@ -3739,19 +3737,35 @@ def _classify_persist_guards(
         return []
 
 
-def _build_guard_results(guard_failure_codes: list[str]) -> dict[str, Any]:
+def _build_guard_results(
+    guard_failure_codes: list[str], *, validation_incomplete: bool = False,
+) -> dict[str, Any]:
     """Envelope for ``silver.answer_runs.hallucination_guard_results``.
 
     Shape per migration 2026_05_20_020000: ``schema_version`` / ``guards``
     / ``captured_at``. ``guards`` is keyed by :class:`GuardErrorCode`
     value; an empty object means the chain ran and nothing fired. NULL
     (never written here) means the chain did not run.
+
+    ``validation_incomplete`` is the one entry that is not a GuardErrorCode:
+    validate_node's Layer 3/4/6 pass raised, the answer shipped floored and
+    bannered as unverified, and no guard produced a verdict. Without this key
+    that run was written as ``{"guards": {}}``, the column's own spelling of
+    "the chain ran clean". Its status is "fail" so a reader that only checks
+    for failures cannot read it as a pass.
     """
     from datetime import UTC, datetime  # noqa: PLC0415
+
+    from app.agent.guards import VALIDATION_UNVERIFIED_KEY  # noqa: PLC0415
 
     guards: dict[str, dict[str, str]] = {}
     for code in guard_failure_codes:
         guards[code] = {"status": "notice" if code == "CONFLICTING_SOURCES" else "fail"}
+    if validation_incomplete:
+        guards[VALIDATION_UNVERIFIED_KEY] = {
+            "status": "fail",
+            "reason": "post_assembly_validation_raised",
+        }
     return {
         "schema_version": 1,
         "guards": guards,
@@ -4079,7 +4093,14 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
     # above). Computed once here; the trace below reuses the codes.
     _guard_codes: list[Any] = _classify_persist_guards(state, citation_state)
     _guard_failure_codes: list[str] = [c.value for c in _guard_codes]
-    _guard_results_json = _json.dumps(_build_guard_results(_guard_failure_codes))
+    from app.agent.guards import validation_did_not_complete  # noqa: PLC0415
+
+    _guard_results_json = _json.dumps(
+        _build_guard_results(
+            _guard_failure_codes,
+            validation_incomplete=validation_did_not_complete(state.validation_warnings),
+        )
+    )
     _rejection_reason = _build_rejection_reason(
         state, citation_state, _guard_failure_codes,
     )
@@ -4557,6 +4578,12 @@ async def _enqueue_persist_trace(
                     exc_info=True,
                 )
 
+        # Layer 3/4/6 raised: nothing established that the numbers or the
+        # entities are grounded, so the trace must not say they passed.
+        from app.agent.guards import validation_did_not_complete  # noqa: PLC0415
+
+        _checks_ran = not validation_did_not_complete(state.validation_warnings)
+
         trace = RetrievalTrace(
             workspace_id=workspace_id,
             project_id=project_id,
@@ -4587,8 +4614,12 @@ async def _enqueue_persist_trace(
             selected_context_groups=selected_groups or None,
             evidence_types_in_context=evidence_types,
             guard_results=GuardResults(
-                numeric_grounding=GuardErrorCode.NUMERIC_GROUNDING_FAILED not in guard_codes,
-                entity_grounding=GuardErrorCode.ENTITY_NOT_FOUND not in guard_codes,
+                numeric_grounding=(
+                    _checks_ran and GuardErrorCode.NUMERIC_GROUNDING_FAILED not in guard_codes
+                ),
+                entity_grounding=(
+                    _checks_ran and GuardErrorCode.ENTITY_NOT_FOUND not in guard_codes
+                ),
                 citation_completeness=GuardErrorCode.CITATION_INCOMPLETE not in guard_codes,
                 refusal_triggered=citation_state == "rejected",
             ),
