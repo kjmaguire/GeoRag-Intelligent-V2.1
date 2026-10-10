@@ -3756,8 +3756,14 @@ async def query_coverage_gap(
             if ingest_row is not None:
                 indexed = int(ingest_row["indexed_n"] or 0)
                 processed = int(ingest_row["processed_n"] or 0)
+                # Clamped: the archive path's two counts are different
+                # populations (manifest rows in the project's sections vs its
+                # reports with provenance), so processed can exceed indexed,
+                # and a negative "gap" means nothing.
                 gap_pct = (
-                    100.0 * (indexed - processed) / indexed if indexed > 0 else 0.0
+                    min(100.0, max(0.0, 100.0 * (indexed - processed) / indexed))
+                    if indexed > 0
+                    else 0.0
                 )
                 ingest_gap = IngestGapStats(
                     indexed=indexed, processed=processed, gap_pct=round(gap_pct, 2)

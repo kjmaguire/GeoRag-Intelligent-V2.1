@@ -117,6 +117,18 @@ class TestQueryCoverageGap:
         assert 96.9 <= result.ingest_gap.gap_pct <= 97.0
 
     @pytest.mark.asyncio
+    async def test_gap_is_never_negative_when_more_reports_than_manifest_rows(self) -> None:
+        # 5 manifest rows in the project's sections, 7 of its reports with
+        # provenance: the two counts are different populations.
+        pool, _ = _build_pool(indexed=5, processed=7, collars_total=3, attribute_data={})
+        result = await query_coverage_gap(
+            _make_deps(pg_pool=pool),
+            workspace_id="a0000000-0000-0000-0000-000000000001",
+            project_id="proj-test-uuid",
+        )
+        assert result.ingest_gap.gap_pct == 0.0
+
+    @pytest.mark.asyncio
     async def test_attribute_coverage_rows_shape(self) -> None:
         """Each attribute row reports collars_with_data / collars_total / coverage_pct."""
         pool, _captured = _build_pool(
