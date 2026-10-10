@@ -55,6 +55,7 @@ from app.agent.hole_id_patterns import (
     HOLE_ID_RE,
     NUMERIC_HOLE_ID_RE,
     canonical_hole_id,
+    find_ambiguous_hole_ids,
     find_lettered_hole_ids,
     find_numeric_hole_ids,
     hole_id_key,
@@ -2062,6 +2063,15 @@ _NUMERIC_HOLE_ID_RE = NUMERIC_HOLE_ID_RE
 _HOLE_CONTEXT_RE = HOLE_CONTEXT_RE
 _CITATION_PREFIX_SET = CITATION_PREFIXES
 
+#: Which of the given letter prefixes ("ZONE", "MAR") begin a hole of this
+#: project: the pool's answer to "is 'Zone-3' a place or a hole series?".
+_HOLE_SERIES_SQL = (
+    "SELECT DISTINCT substring(UPPER(hole_id) FROM '^[A-Z]+') AS prefix "
+    "FROM silver.collars "
+    "WHERE project_id = $1::uuid "
+    "AND substring(UPPER(hole_id) FROM '^[A-Z]+') = ANY($2::text[])"
+)
+
 # Known commodity codes (Module 4 identifier-boost list).
 # Any of these tokens, if mentioned bare, must appear in the cited evidence.
 _COMMODITY_CODES: frozenset[str] = frozenset({
@@ -2465,7 +2475,17 @@ async def verify_entities(
     # isotopes ("Pre-2010", "Zone-3", "Oct-2011", "Pb-206"): each used to be
     # reported as a critical fabricated drill hole (2026-10-10 audit,
     # finding 8). A hole word right in front of the token still makes it one.
-    candidates = find_lettered_hole_ids(clean)
+    #
+    # "Pre-2010" is a date, but "CO-99" and "SUB-77" are hole series that
+    # happen to be English: only a YEAR behind the prefix makes those a date
+    # (2026-10-10 review, item 5 -- the flat word list had made Layer 4 silent
+    # on a fabricated "CO-99"). The ones that stay ambiguous are a month with
+    # no year ("MAR-12") and a place ("Zone-3", "ZONE-3"): those are asked of
+    # the pool below -- a hole of that series in this project, or no hole.
+    candidates = find_lettered_hole_ids(clean, certain_only=True)
+    ambiguous: dict[str, str] = {}
+    for _token, _prefix in find_ambiguous_hole_ids(clean):
+        ambiguous.setdefault(_token.upper(), _prefix)
     # Compact IDs ("BH21", "DDH0023", "SRE0912") have no dash for HOLE_ID_RE to
     # find; they count with a drill-type prefix or a hole word in front, and a
     # compact spelling of a hole already named with its dash is the same hole
@@ -2507,6 +2527,13 @@ async def verify_entities(
         hid.upper() for hid in dict.fromkeys(candidates)
         if hid.split("-", 1)[0].upper() not in _CITATION_PREFIX_SET
     ]
+    # A token named a hole anywhere in the answer is a hole, ambiguous
+    # elsewhere or not.
+    ambiguous = {
+        token: prefix for token, prefix in ambiguous.items()
+        if token not in hole_ids and prefix not in _CITATION_PREFIX_SET
+    }
+    hole_ids.extend(ambiguous)
 
     warnings: list[str] = []
 
@@ -2550,14 +2577,33 @@ async def verify_entities(
                     project_id,
                     canon_ids,
                 )
-            # The SQL above fetches CANDIDATES by the separator-free canonical
-            # form (that is what silver.collars.hole_id_canonical holds), which
-            # merges "PLS-2-28" with "PLS-22-8". The match itself is confirmed
-            # on hole_id_key, which keeps the separator between digit groups,
-            # so a fabricated hole no longer passes as a real neighbour
-            # (audit item 24).
-            found: set[str] = {hole_id_key(r["hole_id"]) for r in rows}
-            for hid in hole_ids:
+                # The SQL above fetches CANDIDATES by the separator-free canonical
+                # form (that is what silver.collars.hole_id_canonical holds), which
+                # merges "PLS-2-28" with "PLS-22-8". The match itself is confirmed
+                # on hole_id_key, which keeps the separator between digit groups,
+                # so a fabricated hole no longer passes as a real neighbour
+                # (audit item 24).
+                found: set[str] = {hole_id_key(r["hole_id"]) for r in rows}
+                # A month or a place that is not a hole of this project is a
+                # date or a name -- unless the project has holes of that very
+                # series, in which case "ZONE-77" is a fabricated one. Same
+                # connection and same deadline as the lookup above.
+                absent = {
+                    prefix for token, prefix in ambiguous.items()
+                    if hole_id_key(token) not in found
+                }
+                series: set[str] = set()
+                if absent:
+                    series = {
+                        str(r["prefix"]).upper()
+                        for r in await conn.fetch(_HOLE_SERIES_SQL, project_id, sorted(absent))
+                    }
+            labels = {
+                token for token, prefix in ambiguous.items()
+                if hole_id_key(token) not in found and prefix not in series
+            }
+            named_holes = [hid for hid in hole_ids if hid not in labels]
+            for hid in named_holes:
                 key = hole_id_key(hid)
                 in_evidence = key in evidence_holes or hid.lower() in grounded_tokens
                 if key in found:
@@ -2566,7 +2612,7 @@ async def verify_entities(
                     # intercept onto real hole BH-21 used to pass silently
                     # (RAG-16).
                     if tool_results and not in_evidence:
-                        warnings.append(_not_in_evidence_warning(hid, clean, hole_ids))
+                        warnings.append(_not_in_evidence_warning(hid, clean, named_holes))
                     continue
                 if hid in numeric_far:
                     warnings.append(
