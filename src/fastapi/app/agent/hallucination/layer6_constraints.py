@@ -235,7 +235,14 @@ _CITATION_MARKER_RE = CITATION_MARKER_RE
 #     it ("a long-term price of 80", "IRR of 35%"), no digits between.
 # A figure written in a unit only a grade carries (g/t, ppm, ppb, oz/t) is a
 # grade whatever sits before it, except behind a currency mark.
-_CURRENCY = r"(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|\$|USD|CAD|AUD|EUR|GBP|€|£)"
+#
+# The price-WORD heuristic (the third bullet) is scoped to the ``grade_*``
+# constraints, the only ones a commodity name can mis-attach a price to. A
+# depth, a dip or a recovery that happens to sit next to "cost" or "price" is
+# still bounded: "the cost at depth 6,500 m" and "price recovery of 112 %" were
+# waved through by the global form (2026-10-10 review, item 8). A currency mark
+# or a price unit is proof of money for any constraint and stays global.
+_CURRENCY =r"(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|\$|USD|CAD|AUD|EUR|GBP|€|£)"
 _CURRENCY_BEFORE_RE = re.compile(r"(?<![A-Za-z])" + _CURRENCY + r"\s*$", re.IGNORECASE)
 _PRICE_UNIT_AFTER_RE = re.compile(
     r"\s*(?:" + _CURRENCY + r"\s*)?(?:/|per\s+)\s*(?:troy\s+)?"
@@ -252,14 +259,28 @@ _GRADE_UNIT_AFTER_RE = re.compile(
 )
 
 
-def _is_financial_figure(text: str, number_start: int, number_end: int) -> bool:
-    """Whether the number at this position is a price or a cost, not a measurement."""
+def _is_financial_figure(
+    text: str, number_start: int, number_end: int, *, grade_constraint: bool = True
+) -> bool:
+    """Whether the number at this position is a price or a cost, not a measurement.
+
+    A currency mark in front of the number, or a price unit behind it, is proof
+    it is money whatever it sits beside. A price WORD merely somewhere before it
+    ("the cost at depth 6,500 m", "price recovery of 112 %") is not: it is the
+    heuristic that keeps commodity names from turning an economics paragraph
+    into grade violations, and it is applied to ``grade_*`` constraints only
+    (``grade_constraint``). A depth, a dip or a recovery has no price to be
+    mistaken for, and a price word beside an impossible one must not be able to
+    shield it (2026-10-10 review, item 8).
+    """
     before = text[max(0, number_start - 40):number_start]
     if _CURRENCY_BEFORE_RE.search(before):
         return True
     after = text[number_end:number_end + 32]
     if _PRICE_UNIT_AFTER_RE.match(after):
         return True
+    if not grade_constraint:
+        return False
     if _GRADE_UNIT_AFTER_RE.match(after):
         return False
     return bool(_FINANCIAL_BEFORE_RE.search(before))
@@ -465,15 +486,18 @@ def _find_violations(text: str) -> list[ConstraintViolation]:
         if any(ms < end and start < me for ms, me in masked):
             continue
 
-        # A price, a cost or a financial ratio is not a measurement of
-        # anything this table bounds.
-        if _is_financial_figure(text, start, end):
-            continue
-
         governing = _governing_constraint(text, start, end)
         if governing is None:
             continue
         constraint, _keyword = governing
+
+        # A price, a cost or a financial ratio is not a grade. Decided after
+        # the constraint is known: the price-word heuristic is for grade
+        # constraints only (`_is_financial_figure`).
+        if _is_financial_figure(
+            text, start, end, grade_constraint=constraint.name.startswith("grade_")
+        ):
+            continue
 
         partner = _RANGE_PARTNER_RE.match(text, end)
         if _check_value_against_constraint(

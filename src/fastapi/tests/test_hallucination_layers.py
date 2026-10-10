@@ -424,6 +424,63 @@ class TestLayer6MoneyIsNotAGrade:
         assert [(v.value, v.constraint.name) for v in found] == [(value, constraint_name)]
 
 
+class TestLayer6MoneySkipIsForGradesOnly:
+    """The price-word heuristic must not shield a depth, a dip or a recovery.
+
+    "The cost at depth 6,500 m rises sharply" and "At the assumed price
+    recovery of 112 % was used" were findings on origin/main and passed once
+    the money skip became global (2026-10-10 review, item 8): the skip is for
+    the grade_* constraints a commodity name can mis-attach a price to.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "value", "constraint_name"),
+        [
+            ("The cost at depth 6,500 m rises sharply [NI43-1].", 6500.0, "depth_max_m"),
+            ("The hole was priced by depth 7,200 m [NI43-1].", 7200.0, "depth_max_m"),
+            ("Drilling cost is high: total depth of 6,500 m [NI43-1].", 6500.0, "depth_max_m"),
+            ("At the assumed price recovery of 112 % was used [NI43-1].", 112.0, "recovery_max_pct"),
+            ("The capex case assumes a dip of 120 degrees [NI43-1].", 120.0, "dip_range"),
+            ("Costs rose; the azimuth was 400 degrees [NI43-1].", 400.0, "azimuth_range"),
+        ],
+    )
+    def test_an_impossible_value_beside_a_price_word_is_flagged(
+        self, text: str, value: float, constraint_name: str
+    ) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        found = _find_violations(text)
+        assert [(v.value, v.constraint.name) for v in found] == [(value, constraint_name)]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # a currency mark or a price unit is money for ANY constraint
+            "Drilling at depth costs US$6,500 per metre [NI43-1].",
+            "The depth cost was $7,200 [NI43-1].",
+            "Drilling cost at depth: 6,500 per tonne of ore [NI43-1].",
+            # and the grade-side economics fixes stand
+            *TestLayer6MoneyIsNotAGrade.PRICES,
+        ],
+    )
+    def test_money_is_still_not_a_measurement(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        assert _find_violations(text) == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "The cost at depth 650 m rises sharply [NI43-1].",
+            "At the assumed price recovery of 92 % was used [NI43-1].",
+        ],
+    )
+    def test_a_plausible_value_beside_a_price_word_is_not_a_violation(self, text: str) -> None:
+        from app.agent.hallucination.layer6_constraints import _find_violations
+
+        assert _find_violations(text) == []
+
+
 # ---------------------------------------------------------------------------
 # Module 6 Chunk 3 — Guard 3: Completeness (per-claim citation coverage)
 # ---------------------------------------------------------------------------
