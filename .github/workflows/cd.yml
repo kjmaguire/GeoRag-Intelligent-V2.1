@@ -62,7 +62,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit SHA to deploy (empty = latest main)"
+        description: "Commit SHA to deploy (empty = latest main). Must be on main: anything else is refused."
         required: false
 
 concurrency:
@@ -125,16 +125,27 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:
+      # The ancestry check below needs history. Only a dispatch needs the
+      # check — the workflow_run path is, by its trigger, a push to main — so
+      # only a dispatch pays for the clone.
+      - uses: actions/checkout@v7
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Resolve deploy SHA
         id: resolve
         # Passed through env, not interpolated into the script: the dispatch
         # input is free text, and it becomes a checkout ref and an IMMUTABLE
         # ECR tag, so it must be a commit SHA and nothing else.
         env:
+          EVENT: ${{ github.event_name }}
           INPUT_SHA: ${{ github.event.inputs.sha }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           EVENT_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
           if [ -n "$INPUT_SHA" ]; then
             SHA="$INPUT_SHA"
           elif [ -n "$RUN_SHA" ]; then
@@ -145,6 +156,31 @@ jobs:
           if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{7,40}$'; then
             echo "::error::'${SHA}' is not a commit SHA (7-40 lowercase hex characters)"
             exit 1
+          fi
+
+          # A dispatch is the one path where a person names the commit, and a
+          # shape check says nothing about WHICH commit. Any commit in the
+          # repository's object store matches it — one from an unreviewed
+          # branch, a closed PR — and this workflow builds it, pushes it under
+          # an immutable tag and rolls production onto it. So the commit must
+          # already be part of main.
+          #
+          # Resolved to the full 40 characters first, for two reasons: the
+          # ancestry test wants one unambiguous object, and actions/checkout
+          # cannot fetch a seven-character abbreviation (it looks for a ref
+          # of that name), so a short SHA used to pass this step and fail the
+          # next job. The workflow_run path is untouched: it is a push to
+          # main, and already carries 40 characters.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if ! FULL=$(git rev-parse --verify --quiet "${SHA}^{commit}"); then
+              echo "::error::'${SHA}' is not a commit in this repository, or an abbreviation that matches more than one. Pass the full SHA."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$FULL" origin/main; then
+              echo "::error::${FULL} is not an ancestor of origin/main, so it has not been through review and CI. Merge it to main first, or deploy a SHA that is already on main."
+              exit 1
+            fi
+            SHA="$FULL"
           fi
           SHORT="${SHA::7}"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"

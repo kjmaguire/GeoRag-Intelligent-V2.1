@@ -11,6 +11,12 @@
 #                 stateful resource must surface as a warning.
 #   workflow_*    .github/workflows/terraform.yml: static checks on the
 #                 lines that decide which role a job can assume.
+#   cd_*          .github/workflows/cd.yml and terraform.yml's shell, pulled
+#                 out of the YAML and run: which commit a dispatch may deploy,
+#                 what the sweep gate refuses, and that a refused Qdrant does
+#                 not stop the other vendor services rolling. Plus the two
+#                 constants that must agree across files (the concurrency
+#                 group, the deploy role's session ceiling).
 #
 # Usage: bash deploy/aws/ci/tests/run.sh
 set -uo pipefail
@@ -156,6 +162,121 @@ awk '/^on:/{on=1;next} on && /^[a-z]/{exit} on{print}' "$WORKFLOW" | grep -Eq '^
 grep -q '^  contents: read$' "$WORKFLOW" || fail_case "default token permissions must be read-only"
 grep -Eq 'path: .*tfplan' "$WORKFLOW" && fail_case "the binary plan (it embeds state and secrets) must never be an artifact"
 grep -q 'diff -u approved/changes.json changes.json' "$WORKFLOW" || fail_case "apply must compare against the approved change list"
+done_case "$f"
+
+# ── workflow shell, run ────────────────────────────────────────────────
+CD="${ROOT}/.github/workflows/cd.yml"
+CI_TF="${ROOT}/deploy/aws/terraform/ci.tf"
+
+step_script() {  # print the dedented `run: |` body of the step named $2 in workflow $1
+  awk -v name="$2" '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    { line = $0; sub(/^ */, "", line) }
+    !on && line == "- name: " name { on = 1; next }
+    on && !inrun && line ~ /^run: \|$/ { inrun = 1; base = indent($0) + 2; next }
+    on && !inrun && line ~ /^- (name|uses):/ { exit }
+    inrun {
+      if ($0 ~ /^ *$/) { print ""; next }
+      if (indent($0) < base) exit
+      print substr($0, base + 1)
+    }' "$1"
+}
+
+# --- which commit may a dispatch deploy -----------------------------------
+# The shape check (7-40 hex) said nothing about WHICH commit: one from an
+# unreviewed branch passed it, was built, pushed and rolled onto production.
+# And a seven-character SHA passed it and then failed actions/checkout.
+# A real repository stands in for the checkout: main is A then B; F lives only
+# on a feature branch, as a commit fetched with `fetch-depth: 0` would.
+RESOLVE="${WORK}/resolve.sh"
+step_script "$CD" "Resolve deploy SHA" > "$RESOLVE"
+SRC="${WORK}/src"; CLONE="${WORK}/clone"
+rm -rf "$SRC" "$CLONE"; mkdir -p "$SRC"
+git -C "$SRC" init -q -b main
+git -C "$SRC" config user.email test@example.invalid
+git -C "$SRC" config user.name test
+git -C "$SRC" commit -q --allow-empty -m A
+git -C "$SRC" commit -q --allow-empty -m B
+git -C "$SRC" checkout -q -b feature
+git -C "$SRC" commit -q --allow-empty -m F
+git -C "$SRC" checkout -q main
+git clone -q "$SRC" "$CLONE"
+SHA_A=$(git -C "$CLONE" rev-parse origin/main~1)
+SHA_B=$(git -C "$CLONE" rev-parse origin/main)
+SHA_F=$(git -C "$CLONE" rev-parse origin/feature)
+
+# run_resolve <event> <input sha> <workflow_run head sha> <github.sha>
+# GIT_DIR points git at the stand-in checkout; GITHUB_OUTPUT is where the
+# step's outputs land.
+run_resolve() {
+  : > "${WORK}/gh_output"
+  OUT=$(env GIT_DIR="${CLONE}/.git" EVENT="$1" INPUT_SHA="$2" RUN_SHA="$3" EVENT_SHA="$4" \
+        GITHUB_OUTPUT="${WORK}/gh_output" bash "$RESOLVE" 2>&1)
+  RC=$?
+}
+out_of() { sed -n "s/^$1=//p" "${WORK}/gh_output"; }
+
+begin cd_resolve_step_was_extracted; f=$FAIL
+[ -s "$RESOLVE" ] || fail_case "could not extract the 'Resolve deploy SHA' step from cd.yml"
+done_case "$f"
+
+begin cd_dispatch_of_a_commit_on_main_is_deployed_in_full; f=$FAIL
+run_resolve workflow_dispatch "$SHA_B" "" "$SHA_B"
+[ "$RC" -eq 0 ] || fail_case "exit ${RC}: ${OUT}"
+[ "$(out_of sha)" = "$SHA_B" ] || fail_case "sha output is '$(out_of sha)', expected the full ${SHA_B}"
+[ "$(out_of short_sha)" = "${SHA_B:0:7}" ] || fail_case "short_sha is '$(out_of short_sha)'"
+done_case "$f"
+
+begin cd_dispatch_of_a_short_sha_is_resolved_to_the_full_one; f=$FAIL
+run_resolve workflow_dispatch "${SHA_A:0:7}" "" "$SHA_B"
+[ "$RC" -eq 0 ] || fail_case "exit ${RC}: ${OUT}"
+[ "$(out_of sha)" = "$SHA_A" ] || fail_case "sha output is '$(out_of sha)', expected the full ${SHA_A} (actions/checkout cannot fetch an abbreviation)"
+[ "$(out_of short_sha)" = "${SHA_A:0:7}" ] || fail_case "short_sha is '$(out_of short_sha)'"
+done_case "$f"
+
+begin cd_dispatch_of_an_unreviewed_commit_is_refused; f=$FAIL
+run_resolve workflow_dispatch "$SHA_F" "" "$SHA_B"
+[ "$RC" -ne 0 ] || fail_case "a commit that is on a branch but not on main was accepted"
+printf '%s' "$OUT" | grep -q 'not an ancestor of origin/main' || fail_case "must say why: ${OUT}"
+[ -z "$(out_of sha)" ] || fail_case "must not emit a sha for a refused commit"
+run_resolve workflow_dispatch "${SHA_F:0:7}" "" "$SHA_B"
+[ "$RC" -ne 0 ] || fail_case "the abbreviated form of an unreviewed commit was accepted"
+done_case "$f"
+
+begin cd_dispatch_of_an_unknown_commit_is_refused; f=$FAIL
+run_resolve workflow_dispatch "$(printf 'a%.0s' $(seq 1 40))" "" "$SHA_B"
+[ "$RC" -ne 0 ] || fail_case "a SHA that exists nowhere was accepted"
+printf '%s' "$OUT" | grep -q 'not a commit in this repository' || fail_case "must say why: ${OUT}"
+done_case "$f"
+
+begin cd_dispatch_that_is_not_a_sha_is_refused; f=$FAIL
+run_resolve workflow_dispatch "main" "" "$SHA_B"
+[ "$RC" -ne 0 ] || fail_case "a branch name was accepted"
+printf '%s' "$OUT" | grep -q 'is not a commit SHA' || fail_case "must say why: ${OUT}"
+done_case "$f"
+
+# Empty input means "latest main" -- github.sha, i.e. the tip of whatever ref
+# the dispatch was started from. From a feature branch that is not main.
+begin cd_dispatch_with_no_sha_from_main_deploys_main; f=$FAIL
+run_resolve workflow_dispatch "" "" "$SHA_B"
+[ "$RC" -eq 0 ] || fail_case "exit ${RC}: ${OUT}"
+[ "$(out_of sha)" = "$SHA_B" ] || fail_case "sha output is '$(out_of sha)'"
+done_case "$f"
+
+begin cd_dispatch_with_no_sha_from_a_feature_branch_is_refused; f=$FAIL
+run_resolve workflow_dispatch "" "" "$SHA_F"
+[ "$RC" -ne 0 ] || fail_case "a dispatch from a feature branch deployed that branch's tip"
+done_case "$f"
+
+# The CI-triggered path is a push to main by its trigger and already carries 40
+# characters: unchanged, and it needs no git at all (GIT_DIR points nowhere).
+begin cd_workflow_run_path_is_unchanged; f=$FAIL
+: > "${WORK}/gh_output"
+OUT=$(env GIT_DIR="${WORK}/no-such-repo" EVENT=workflow_run INPUT_SHA="" RUN_SHA="$SHA_B" EVENT_SHA="$SHA_F" \
+      GITHUB_OUTPUT="${WORK}/gh_output" bash "$RESOLVE" 2>&1); RC=$?
+[ "$RC" -eq 0 ] || fail_case "exit ${RC}: ${OUT}"
+[ "$(out_of sha)" = "$SHA_B" ] || fail_case "sha output is '$(out_of sha)', expected the run's head_sha"
+[ "$(out_of short_sha)" = "${SHA_B:0:7}" ] || fail_case "short_sha is '$(out_of short_sha)'"
 done_case "$f"
 
 echo
