@@ -3202,16 +3202,30 @@ async def _compute_pending_fields(
     project. Cheap: each probe is ``LIMIT 1`` on indexed columns. Failures
     degrade gracefully — on any error we fall back to the full candidate
     list so the OIUR uncertainty block is never under-stated.
+
+    One ``TIMEOUT_POSTGIS_S`` deadline covers the pool wait and all three
+    probes. ``pool.acquire()`` has no timeout of its own: with the pool
+    exhausted it waited until the whole-query deadline, so a tool that had
+    already finished its real work held the answer back for the probes
+    (audit 2026-10 finding 8). A timeout takes the same fail-closed path as
+    any other error.
     """
     if deps.pg_pool is None:
         return list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
     pending: list[str] = []
     try:
-        async with deps.pg_pool.acquire() as conn:
-            for field, sql in _PENDING_FIELD_PROBE_SQL.items():
-                row = await conn.fetchrow(sql, workspace_id, project_id)
-                if row is None:
-                    pending.append(field)
+        async with asyncio.timeout(settings.TIMEOUT_POSTGIS_S):
+            async with deps.pg_pool.acquire() as conn:
+                for field, sql in _PENDING_FIELD_PROBE_SQL.items():
+                    row = await conn.fetchrow(sql, workspace_id, project_id)
+                    if row is None:
+                        pending.append(field)
+    except TimeoutError:
+        logger.warning(
+            "_compute_pending_fields timed out after %.1fs workspace=%s project=%s",
+            settings.TIMEOUT_POSTGIS_S, workspace_id, project_id,
+        )
+        return list(_PROJECT_SUMMARY_EXTRACTION_CANDIDATES)
     except Exception:
         logger.exception(
             "_compute_pending_fields failed workspace=%s project=%s",
