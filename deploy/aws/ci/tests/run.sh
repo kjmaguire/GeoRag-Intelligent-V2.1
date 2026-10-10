@@ -279,6 +279,54 @@ OUT=$(env GIT_DIR="${WORK}/no-such-repo" EVENT=workflow_run INPUT_SHA="" RUN_SHA
 [ "$(out_of short_sha)" = "${SHA_B:0:7}" ] || fail_case "short_sha is '$(out_of short_sha)'"
 done_case "$f"
 
+# --- the sweep gate -------------------------------------------------------
+# 'available' is not 'up': the sweeps bring the platform up and down in tiers.
+GATE="${WORK}/sweep-gate.sh"
+step_script "$CD" "Sweep gate (no sweep running, no service scaled to zero)" > "$GATE"
+run_gate() {  # run_gate [VAR=VALUE ...]
+  begin_log
+  OUT=$(env PATH="${WORK}/bin:${PATH}" FAKE_AWS_LOG="${WORK}/aws.log" ECS_CLUSTER=georag "$@" bash "$GATE" 2>&1)
+  RC=$?
+}
+begin_log() { : > "${WORK}/aws.log"; }
+TEN="laravel-octane laravel-horizon laravel-reverb fastapi hatchet-worker sparse martin hatchet qdrant redis"
+
+begin cd_sweep_gate_step_was_extracted; f=$FAIL
+[ -s "$GATE" ] || fail_case "could not extract the sweep gate step from cd.yml"
+done_case "$f"
+
+begin cd_sweep_gate_passes_on_a_quiet_platform; f=$FAIL
+run_gate
+[ "$RC" -eq 0 ] || fail_case "exit ${RC}: ${OUT}"
+for svc in $TEN; do
+  grep -q "describe-services .*--services .*\b${svc}\b" "${WORK}/aws.log" || fail_case "the gate never asked about ${svc}"
+done
+done_case "$f"
+
+begin cd_sweep_gate_refuses_while_the_startup_sweep_runs; f=$FAIL
+run_gate FAKE_AWS_SWEEP_RUNNING=georag-startup-sweep
+[ "$RC" -ne 0 ] || fail_case "deployed over a running startup sweep"
+printf '%s' "$OUT" | grep -q 'georag-startup-sweep is running' || fail_case "must name the sweep: ${OUT}"
+done_case "$f"
+
+begin cd_sweep_gate_refuses_while_the_shutdown_sweep_runs; f=$FAIL
+run_gate FAKE_AWS_SWEEP_RUNNING=georag-shutdown-sweep
+[ "$RC" -ne 0 ] || fail_case "deployed over a running shutdown sweep"
+printf '%s' "$OUT" | grep -q 'georag-shutdown-sweep is running' || fail_case "must name the sweep: ${OUT}"
+done_case "$f"
+
+begin cd_sweep_gate_refuses_a_service_scaled_to_zero; f=$FAIL
+run_gate FAKE_AWS_ZERO="laravel-octane laravel-horizon"
+[ "$RC" -ne 0 ] || fail_case "deployed with Laravel scaled to zero"
+printf '%s' "$OUT" | grep -q 'scaled to zero: laravel-octane laravel-horizon' || fail_case "must name every service at zero: ${OUT}"
+done_case "$f"
+
+begin cd_sweep_gate_refuses_a_stack_that_is_not_fully_there; f=$FAIL
+run_gate FAKE_AWS_MISSING="sparse"
+[ "$RC" -ne 0 ] || fail_case "deployed with a service missing"
+printf '%s' "$OUT" | grep -q 'found 9 of the 10 services' || fail_case "must say how many were found: ${OUT}"
+done_case "$f"
+
 echo
 echo "${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

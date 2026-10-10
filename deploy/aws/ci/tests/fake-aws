@@ -7,6 +7,9 @@
 #   FAKE_AWS_ROLES_EXIST   "1" if both roles already exist            ("")
 #   FAKE_AWS_NO_PROVIDER   "1" if the GitHub OIDC provider is missing  ("")
 #   FAKE_AWS_NO_BUCKET     "1" if the state bucket is unreachable      ("")
+#   FAKE_AWS_SWEEP_RUNNING the task family that has a RUNNING task      ("")
+#   FAKE_AWS_ZERO          services reporting desiredCount 0            ("")
+#   FAKE_AWS_MISSING       services describe-services does not return   ("")
 set -uo pipefail
 
 printf '%s\n' "$*" >> "${FAKE_AWS_LOG:?FAKE_AWS_LOG must be set}"
@@ -41,5 +44,30 @@ case "$1 $2" in
     role=$(arg_after --role-name "$@")
     arg_after --policy-arn "$@" >> "${DOCS}/${role}.managed" ; echo >> "${DOCS}/${role}.managed" ;;
   "iam update-role") exit 0 ;;
+  # cd.yml's sweep gate. The real calls are filtered by --query; this fake
+  # answers with the already-filtered shape the step's script then parses.
+  "ecs list-tasks")
+    fam=$(arg_after --family "$@")
+    if [ -n "${FAKE_AWS_SWEEP_RUNNING:-}" ] && [ "${FAKE_AWS_SWEEP_RUNNING}" = "$fam" ]; then
+      echo "arn:aws:ecs:us-east-1:123456789012:task/georag/sweep0001"
+    else
+      echo
+    fi ;;
+  "ecs describe-services")
+    svcs=(); capture=0
+    for a in "$@"; do
+      case "$a" in
+        --services) capture=1; continue ;;
+        --*) capture=0 ;;
+      esac
+      [ "$capture" = 1 ] && svcs+=("$a")
+    done
+    out='[]'
+    for s in "${svcs[@]}"; do
+      case " ${FAKE_AWS_MISSING:-} " in *" $s "*) continue ;; esac
+      d=2; case " ${FAKE_AWS_ZERO:-} " in *" $s "*) d=0 ;; esac
+      out=$(jq -c --arg n "$s" --argjson d "$d" '. + [{name: $n, desired: $d}]' <<<"$out")
+    done
+    printf '%s\n' "$out" ;;
   *) echo "fake-aws: unexpected call: $*" >&2; exit 99 ;;
 esac
