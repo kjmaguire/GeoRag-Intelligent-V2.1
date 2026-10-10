@@ -411,13 +411,19 @@ class TestLayer3OrchestratorTightened:
         assert not any("31.1" in w for w in warnings)
 
     def test_m_to_ft_conversion_accepted(self) -> None:
-        """Metres to feet conversion (3.28084 factor) is accepted."""
-        from app.agent.hallucination.orchestrator_validators import _expand_grounded_with_conversions
+        """Metres to feet conversion (3.28084 factor) is accepted when the
+        answer says feet -- and only then (2026-10-10 audit, finding 2: the
+        factor used to be applied to every grounded value, whatever its unit
+        and whatever the answer's, via ``_expand_grounded_with_conversions``)."""
+        from app.agent.hallucination.orchestrator_validators import verify_numbers
 
-        grounded = {100.0}  # 100 m
-        expanded = _expand_grounded_with_conversions(grounded)
+        tool_results = [
+            ("query_spatial_collars", {"count": 1, "collars": [{"total_depth": 100.0}]})
+        ]
         # 100 m * 3.28084 = 328.084 ft
-        assert any(abs(v - 328.084) < 0.5 for v in expanded)
+        assert verify_numbers("The hole reached 328 ft. [DATA:1]", tool_results) == []
+        # 328 metres is not a restatement of 100 metres.
+        assert verify_numbers("The hole reached 328 m. [DATA:1]", tool_results)
 
     def test_disabled_returns_empty(self) -> None:
         """verify_numbers returns [] when NUMERICAL_VERIFICATION_ENABLED=False."""

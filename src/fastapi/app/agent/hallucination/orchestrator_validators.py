@@ -32,7 +32,6 @@ Usage in orchestrator:
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import logging
 import re
@@ -400,31 +399,204 @@ def _content_strings(obj: Any, key: str = "") -> list[str]:
     return out
 
 
-#: How far from a grounded value a derived statistic may sit and still be
-#: treated as derived. Half to double covers a mean, a median, any
-#: percentile and a rounded restatement; it does not cover a factor-of-ten
-#: transcription error, which is the mistake worth catching.
-_DERIVATION_SCALE_LOW = 0.5
-_DERIVATION_SCALE_HIGH = 2.0
+# ────────────────────────────────────────────────────────────────────────
+# Quantities: a number, the unit it is written in, and what it may be
+# grounded against (2026-10-10 audit, findings 1-3).
+#
+# Layer 3 used to ground a number three ways and none of them knew a unit:
+#
+#   * four "conversion factors" (10 000, 31.1035, 3.28084, 1 000) multiplied
+#     into EVERY grounded value, so "850 ppm" was grounded by 0.85 % (x1000,
+#     the ppb factor) and "18,500 ppb" by 1.85 g/t (x10 000, the % factor);
+#   * no factor at all for the commonest restatements: 48,200,000 tonnes as
+#     "48.2 Mt", "2.5 million ounces", oz per short ton;
+#   * a derivation window that accepted a number within 0.5x-2x of ANY
+#     numeric field of ANY structured result (an azimuth, a count, a depth, a
+#     grade), so an invented "7.44 g/t over 12.6 m" or "87 drill holes" was
+#     blessed by an unrelated number of about the right size.
+#
+# Now a number is read together with the unit written next to it
+# (`_scan_quantities`), the evidence is read the same way, and a number is
+# grounded by one of three things only: the same figure (literal, give or
+# take its rounding), the same quantity in ANOTHER unit of the same dimension
+# (the real family-to-family factor), or -- for a number with a unit -- a
+# mean / median / percentile of a structured series of that dimension, which
+# lies inside the series' own [min, max]. A bare number is literal-only.
+# ────────────────────────────────────────────────────────────────────────
+
+#: family -> (dimension, scale to the dimension's base unit). Two families
+#: convert into each other only inside one dimension, and the factor is the
+#: ratio of their scales -- so ppm -> % is 1e-4 and never 1e-3.
+#:
+#: Base units: ppm (1 g/t IS 1 ppm), metre, metric tonne, troy ounce, degree.
+#: "oz/t" carries both readings of the token: troy ounces per SHORT ton
+#: (34.2857 g/t, the North American convention) and per metric tonne
+#: (31.1035 g/t).
+_FAMILY_SCALES: dict[str, tuple[str, tuple[float, ...]]] = {
+    "conc_ppm": ("grade", (1.0,)),
+    "conc_ppb": ("grade", (1e-3,)),
+    "conc_pct": ("grade", (1e4,)),
+    "conc_ozt": ("grade", (34.2857, 31.1035)),
+    "length_m": ("length", (1.0,)),
+    "length_km": ("length", (1_000.0,)),
+    "length_ft": ("length", (0.3048,)),
+    "mass_kg": ("mass", (1e-3,)),
+    "mass_lb": ("mass", (4.5359237e-4,)),
+    "mass_mlb": ("mass", (453.59237,)),  # 1,000,000 lb
+    "mass_st": ("mass", (0.90718474,)),  # short ton
+    "mass_t": ("mass", (1.0,)),
+    "mass_kt": ("mass", (1e3,)),
+    "mass_mt": ("mass", (1e6,)),  # megatonne ("Mt")
+    "oz": ("troy_oz", (1.0,)),
+    "oz_k": ("troy_oz", (1e3,)),  # "koz"
+    "oz_m": ("troy_oz", (1e6,)),  # "Moz"
+    "angle_deg": ("angle", (1.0,)),
+}
+
+#: Every unit token the claim / evidence reader recognises, lower-cased. The
+#: unit-pair guard's table plus the spellings prose uses for the same units.
+_CLAIM_UNIT_FAMILY: dict[str, str] = {
+    **_UNIT_FAMILIES,
+    "oz/tons": "conc_ozt",
+    "oz/tonne": "conc_ozt",
+    "oz/tonnes": "conc_ozt",
+    "percent": "conc_pct",
+    "per cent": "conc_pct",
+    "parts per million": "conc_ppm",
+    "parts per billion": "conc_ppb",
+    "gram per tonne": "conc_ppm",
+    "grams per tonne": "conc_ppm",
+    "ounce per ton": "conc_ozt",
+    "ounces per ton": "conc_ozt",
+    "ounces per short ton": "conc_ozt",
+    "ounces per tonne": "conc_ozt",
+    "meter": "length_m",
+    "kilometre": "length_km",
+    "kilometres": "length_km",
+    "kilometer": "length_km",
+    "kilometers": "length_km",
+    "pound": "mass_lb",
+    "pounds": "mass_lb",
+    "mlb": "mass_mlb",
+    "mlbs": "mass_mlb",
+    "ton": "mass_st",
+    "tons": "mass_st",
+    "short ton": "mass_st",
+    "short tons": "mass_st",
+    "metric ton": "mass_t",
+    "metric tons": "mass_t",
+    "metric tonne": "mass_t",
+    "metric tonnes": "mass_t",
+    "oz": "oz",
+    "ounce": "oz",
+    "ounces": "oz",
+    "koz": "oz_k",
+    "moz": "oz_m",
+    "°": "angle_deg",
+    "deg": "angle_deg",
+    "degree": "angle_deg",
+    "degrees": "angle_deg",
+}
+
+#: "48.2 million tonnes", "71 million pounds", "48.2 M tonnes". A bare "M" is
+#: only a magnitude when a unit word follows it ("48.2 Mt" is its own unit,
+#: and "5 M" alone is left as metres).
+_MAGNITUDES: dict[str, float] = {
+    "thousand": 1e3, "million": 1e6, "billion": 1e9, "M": 1e6,
+}
+_QTY_AFTER_RE = re.compile(
+    r"\s*(?:(?P<mag>million|billion|thousand|(?-i:M))\s+)?"
+    r"(?P<unit>"
+    + "|".join(re.escape(u) for u in sorted(_CLAIM_UNIT_FAMILY, key=len, reverse=True))
+    + r")(?![A-Za-z0-9/²³])",
+    re.IGNORECASE,
+)
+_QTY_MAGNITUDE_ONLY_RE = re.compile(r"\s*(?P<mag>million|billion)\b", re.IGNORECASE)
+
+#: What may sit between two numbers that share one unit: "145.2 to 148.0 m",
+#: "120-126 m", "656 and 984 ft". The first number takes the second's unit.
+_RANGE_JOIN_RE = re.compile(
+    r"\s*(?:-|–|—|&|to|and|or|through|thru|,\s*and|,\s*or)\s*", re.IGNORECASE
+)
 
 
-def _is_same_order_as_any(num: float, grounded: list[float]) -> bool:
-    """Is ``num`` the scale of at least one grounded value?
+@dataclasses.dataclass(frozen=True)
+class _Quantity:
+    """A number as the text states it: ``48.2`` in "48.2 million tonnes".
 
-    Compares magnitudes, so a negative dip of -55 is judged against the 60
-    in the evidence rather than against the whole numeric span of the
-    payload. Zero is only ever derived from zero.
+    ``value`` is the number as written and ``exact`` / ``rounded`` its
+    rounding windows (`_written_tolerance`) in the same terms; ``magnitude``
+    is the "million" that follows it (1.0 when there is none) and ``family``
+    the unit family of the unit written after it (None when it has none).
     """
-    target = abs(num)
 
-    if target == 0.0:
-        return any(g == 0.0 for g in grounded)
+    value: float
+    exact: float
+    rounded: float
+    magnitude: float = 1.0
+    family: str | None = None
+    start: int = 0
+    end: int = 0
 
-    return any(
-        _DERIVATION_SCALE_LOW * abs(g) <= target <= _DERIVATION_SCALE_HIGH * abs(g)
-        for g in grounded
-        if g != 0.0
-    )
+    @property
+    def scaled(self) -> float:
+        """The figure with its "million" applied: 71e6 for "71 million"."""
+        return self.value * self.magnitude
+
+
+def _scan_quantities(text: str) -> list[_Quantity]:
+    """Every number in ``text`` with the unit it is written in.
+
+    The text is expected to be stripped of identifiers already (see
+    `_strip_non_claims`). A number with no unit of its own takes the unit of
+    the number a range word joins it to: both ends of "145.2 to 148.0 m" are
+    metres.
+    """
+    found: list[_Quantity] = []
+    for match in _NUMBER_RE.finditer(text):
+        token = match.group()
+        try:
+            value = _parse_number(token)
+        except ValueError:
+            continue
+        exact, rounded = _written_tolerance(token)
+        magnitude, family = 1.0, None
+        after = _QTY_AFTER_RE.match(text, match.end())
+        if after is not None:
+            family = _CLAIM_UNIT_FAMILY.get(after.group("unit").lower())
+            word = after.group("mag")
+            if word:
+                magnitude = _MAGNITUDES.get(word) or _MAGNITUDES.get(word.lower(), 1.0)
+        else:
+            only = _QTY_MAGNITUDE_ONLY_RE.match(text, match.end())
+            if only is not None:
+                magnitude = _MAGNITUDES[only.group("mag").lower()]
+        found.append(_Quantity(value, exact, rounded, magnitude, family, match.start(), match.end()))
+
+    for i in range(len(found) - 2, -1, -1):
+        here, following = found[i], found[i + 1]
+        if (
+            here.family is None
+            and here.magnitude == 1.0
+            and following.family is not None
+            and _RANGE_JOIN_RE.fullmatch(text[here.end : following.start])
+        ):
+            found[i] = dataclasses.replace(
+                here, family=following.family, magnitude=following.magnitude
+            )
+    return found
+
+
+def _conversion_factors(source: str, target: str) -> tuple[float, ...]:
+    """Multipliers ``m`` with ``value_in_target = value_in_source * m``.
+
+    Empty when either family is unknown or the two measure different things
+    (a percentage is never a length). A family converts into itself with 1.
+    """
+    src, dst = _FAMILY_SCALES.get(source), _FAMILY_SCALES.get(target)
+    if src is None or dst is None or src[0] != dst[0]:
+        return ()
+    return tuple(a / b for a in src[1] for b in dst[1])
 
 
 def _detect_unit_mismatches(
@@ -514,9 +686,9 @@ _NON_CONTENT_KEY_RE = re.compile(
 _IDENTIFIER_KEY_RE = re.compile(r"hole|sample_id|sample_number|sample_name")
 
 #: Tool results that are document prose. Their numbers ground only what they
-#: literally say (after rounding and unit conversion). The 2x "derived
-#: statistic" window is for structured rows -- a mean of collar depths is
-#: near some collar depth -- and applying it to every number in 5,000
+#: literally say (after rounding and unit conversion). The "derived
+#: statistic" allowance is for structured rows -- a mean of collar depths lies
+#: inside the collar depths -- and applying it to every number in 5,000
 #: characters of report text is what let a fabricated grade pass whenever
 #: the chunk happened to contain any value of the same magnitude.
 _DOCUMENT_TOOL_NAMES: frozenset[str] = frozenset((
@@ -526,9 +698,134 @@ _DOCUMENT_TOOL_NAMES: frozenset[str] = frozenset((
 
 @dataclasses.dataclass
 class _Evidence:
+    #: Every content number, unit-blind: what the answer may state verbatim.
     literal: set[float] = dataclasses.field(default_factory=set)
-    derivable: list[float] = dataclasses.field(default_factory=list)
+    #: ``(value, unit family)`` for each number the evidence states WITH a
+    #: unit -- written ("37.3 g/t") or implied by a structured field's name
+    #: (``total_depth`` is metres). The source of every unit conversion.
+    quantities: list[tuple[float, str]] = dataclasses.field(default_factory=list)
+    #: ``(unit family, series) -> (lowest, highest)`` over the values of one
+    #: structured series (``total_depth`` across the collars returned). A
+    #: mean, median or percentile of a series lies inside its own range, so
+    #: the range is all a derived statistic is ever allowed to claim.
+    bounds: dict[tuple[str, str], tuple[float, float]] = dataclasses.field(
+        default_factory=dict
+    )
     identifiers: set[str] = dataclasses.field(default_factory=set)
+
+    def add_quantity(self, value: float, family: str, series: str | None = None) -> None:
+        """Record ``value`` as a quantity of ``family``; a ``series`` name
+        also widens that series' range (leave it None for values a mean of
+        is never stated: coordinates, interval boundaries, a spread).
+
+        A value no measurement of the family can take -- a -999 or 1e10
+        sentinel for a missing depth -- is kept as a quantity but never
+        widens a range: one sentinel would otherwise make every number
+        "derivable".
+        """
+        self.quantities.append((value, family))
+        if series is None:
+            return
+        plausible = abs(value) <= 360.0 if family == "angle_deg" else 0.0 <= value < 1e6
+        if not plausible:
+            return
+        low, high = self.bounds.get((family, series), (value, value))
+        self.bounds[(family, series)] = (min(low, value), max(high, value))
+
+
+#: Structured numeric fields whose NAME fixes their unit -- the tools return
+#: bare floats, so the name is the only unit evidence there is. ``True``
+#: marks a measurement whose mean / median / percentile an answer may state;
+#: ``False`` a position or coordinate (an easting, the depth a sample starts
+#: at), which can be converted but is never averaged. A field not listed here
+#: has no unit: it grounds a literal restatement and nothing more.
+_FIELD_UNITS: dict[str, tuple[str, bool]] = {
+    **dict.fromkeys(
+        ("total_depth", "max_depth", "total_metres", "total_meters", "thickness",
+         "width", "true_width", "length"),
+        ("length_m", True),
+    ),
+    **dict.fromkeys(
+        ("depth", "depth_m", "depth_from", "depth_to", "from_depth", "to_depth",
+         "from_m", "to_m", "elevation", "easting", "northing", "radius_m",
+         "buffer_m", "distance_m"),
+        ("length_m", False),
+    ),
+    **dict.fromkeys(
+        ("azimuth", "dip", "plunge", "trend", "strike", "dip_deg", "strike_deg",
+         "plunge_deg", "trend_deg", "dip_direction_deg"),
+        ("angle_deg", True),
+    ),
+    **dict.fromkeys(("rqd", "recovery"), ("conc_pct", True)),
+}
+_FIELD_SUFFIX_FAMILY: tuple[tuple[str, str], ...] = (
+    ("_ppm", "conc_ppm"), ("_gpt", "conc_ppm"), ("_g_t", "conc_ppm"),
+    ("_ppb", "conc_ppb"), ("_pct", "conc_pct"), ("_percent", "conc_pct"),
+    ("_ft", "length_ft"), ("_km", "length_km"),
+)
+#: An assay value's unit is not in its field name (``value``) but in the
+#: ``element`` key of the row or result that carries it ("Au_ppb",
+#: "U3O8_pct_e") or in a sibling ``unit``.
+_GRADE_FIELD_RE = re.compile(
+    r"^(?:value|grade|(?:min|max|mean|median|avg)_(?:value|grade))$"
+)
+_ELEMENT_UNIT_RE = re.compile(r"_(ppm|ppb|pct|percent|gpt|g_t|opt)(?:_e)?$", re.IGNORECASE)
+_ELEMENT_UNIT_FAMILY: dict[str, str] = {
+    "ppm": "conc_ppm", "gpt": "conc_ppm", "g_t": "conc_ppm", "ppb": "conc_ppb",
+    "pct": "conc_pct", "percent": "conc_pct", "opt": "conc_ozt",
+}
+#: Pairs whose difference is an interval's width: the "over 2.8 m" an answer
+#: states for a sample taken from 145.2 to 148.0 m is a derived figure of two
+#: grounded depths, and used to pass only because it was near some other row.
+_INTERVAL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("from_depth", "to_depth"), ("depth_from", "depth_to"), ("from_m", "to_m"),
+)
+
+
+def _field_of(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _grade_family(element: Any, unit: Any) -> str | None:
+    """Unit family of the grade values a row / result carries, if it says."""
+    if isinstance(unit, str):
+        family = _CLAIM_UNIT_FAMILY.get(unit.strip().lower())
+        if family is not None:
+            return family
+    if isinstance(element, str):
+        match = _ELEMENT_UNIT_RE.search(element)
+        if match is not None:
+            return _ELEMENT_UNIT_FAMILY[match.group(1).lower()]
+    return None
+
+
+def _field_unit(
+    name: str, grade_family: str | None, element: str
+) -> tuple[str, str | None] | None:
+    """``(unit family, series)`` of a structured numeric field, or None.
+
+    ``series`` is None for a value that is not averaged. Grade values of one
+    element form one series however they are named (each sample's ``value``
+    and the result's ``min_value`` / ``max_value`` / ``mean_value`` /
+    ``median_value`` all lie in the range the samples span).
+    """
+    if grade_family is not None:
+        if _GRADE_FIELD_RE.match(name):
+            return grade_family, f"grade:{element}"
+        if name == "std_value":
+            return grade_family, None
+    known = _FIELD_UNITS.get(name)
+    if known is not None:
+        family, averaged = known
+        return family, (name if averaged else None)
+    for suffix, family in _FIELD_SUFFIX_FAMILY:
+        if name.endswith(suffix):
+            return family, name
+    return None
 
 
 def _is_document_result(tool_name: str, result: Any) -> bool:
@@ -544,14 +841,55 @@ def _is_document_result(tool_name: str, result: Any) -> bool:
     return isinstance(result, (DocumentSearchResult, PublicGeoscienceSearchResult))
 
 
-def _numbers_in(text: str) -> list[float]:
+def _evidence_text(text: str) -> str:
+    """Evidence prose with the identifiers whose digits are not content removed."""
     text = DESIGNATION_RE.sub(" ", text)
-    text = _IDENTIFIER_TOKEN_RE.sub(" ", HOLE_ID_RE.sub(" ", text))
+    return _IDENTIFIER_TOKEN_RE.sub(" ", HOLE_ID_RE.sub(" ", text))
+
+
+def _numbers_in(text: str) -> list[float]:
+    """Every number an evidence string states, and the figure a following
+    "million" makes of it ("48.2 million tonnes" states 48.2 and 48,200,000)."""
     out: list[float] = []
-    for m in _NUMBER_RE.finditer(text):
-        with contextlib.suppress(ValueError):
-            out.append(_parse_number(m.group()))
+    for quantity in _scan_quantities(_evidence_text(text)):
+        out.append(quantity.value)
+        if quantity.magnitude != 1.0:
+            out.append(quantity.scaled)
     return out
+
+
+def _quantities_in(text: str) -> list[tuple[float, str]]:
+    """``(value, unit family)`` for every number an evidence string writes a
+    unit after, with a following "million" applied."""
+    return [
+        (quantity.scaled, quantity.family)
+        for quantity in _scan_quantities(_evidence_text(text))
+        if quantity.family is not None
+    ]
+
+
+def _row_grade_context(
+    obj: Any, grade_family: str | None, element: str
+) -> tuple[str | None, str]:
+    """The grade unit and element of ``obj``'s numeric fields: its own when it
+    names an ``element`` / ``unit`` (even one with no recognisable unit --
+    the parent's unit is not its child's), else the enclosing object's."""
+    own_element, own_unit = _field_of(obj, "element"), _field_of(obj, "unit")
+    if isinstance(own_element, str) or isinstance(own_unit, str):
+        return (
+            _grade_family(own_element, own_unit),
+            own_element if isinstance(own_element, str) else element,
+        )
+    return grade_family, element
+
+
+def _add_interval_width(obj: Any, ev: _Evidence) -> None:
+    """Record ``to - from`` of a sampled / logged interval as a length."""
+    for start_name, end_name in _INTERVAL_FIELDS:
+        start, end = _field_of(obj, start_name), _field_of(obj, end_name)
+        if _is_number(start) and _is_number(end) and end >= start:
+            ev.add_quantity(float(end) - float(start), "length_m", "interval_width")
+            return
 
 
 def _walk_evidence(
@@ -561,6 +899,8 @@ def _walk_evidence(
     structured: bool,
     key: str = "",
     sample_sizes: bool = True,
+    grade_family: str | None = None,
+    element: str = "",
 ) -> None:
     """Collect content numbers from ``obj``, skipping non-content keys.
 
@@ -569,6 +909,9 @@ def _walk_evidence(
     result that reports its own ``total_count`` (a LIMIT-capped sample): the
     sample size is not a fact about the project, and offering it as one is
     how "50 holes" got grounded on a 567-hole project (audit item 3).
+
+    ``grade_family`` / ``element`` carry the unit of the grade values of the
+    row being walked down to its numeric fields (see `_field_unit`).
     """
     lowered = key.lower()
     if lowered and _IDENTIFIER_KEY_RE.search(lowered):
@@ -580,23 +923,35 @@ def _walk_evidence(
         return
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         reports_total = getattr(obj, "total_count", None) is not None
+        grade_family, element = _row_grade_context(obj, grade_family, element)
+        if structured:
+            _add_interval_width(obj, ev)
         for f in dataclasses.fields(obj):
             if reports_total and f.name == "count":
                 continue  # rows returned, not rows matched
             _walk_evidence(
                 getattr(obj, f.name), ev, structured=structured, key=f.name,
                 sample_sizes=sample_sizes and not reports_total,
+                grade_family=grade_family, element=element,
             )
     elif isinstance(obj, BaseModel):
+        grade_family, element = _row_grade_context(obj, grade_family, element)
+        if structured:
+            _add_interval_width(obj, ev)
         for name in type(obj).model_fields:
             _walk_evidence(
                 getattr(obj, name), ev, structured=structured, key=name,
                 sample_sizes=sample_sizes,
+                grade_family=grade_family, element=element,
             )
     elif isinstance(obj, dict):
+        grade_family, element = _row_grade_context(obj, grade_family, element)
+        if structured:
+            _add_interval_width(obj, ev)
         for k, v in obj.items():
             _walk_evidence(
-                v, ev, structured=structured, key=str(k), sample_sizes=sample_sizes
+                v, ev, structured=structured, key=str(k), sample_sizes=sample_sizes,
+                grade_family=grade_family, element=element,
             )
     elif isinstance(obj, (list, tuple, set, frozenset)):
         if structured and sample_sizes:
@@ -604,7 +959,8 @@ def _walk_evidence(
             ev.literal.add(float(len(obj)))
         for v in obj:
             _walk_evidence(
-                v, ev, structured=structured, key=key, sample_sizes=sample_sizes
+                v, ev, structured=structured, key=key, sample_sizes=sample_sizes,
+                grade_family=grade_family, element=element,
             )
     elif isinstance(obj, bool) or obj is None:
         return
@@ -612,9 +968,12 @@ def _walk_evidence(
         number = float(obj)
         ev.literal.add(number)
         if structured:
-            ev.derivable.append(number)
+            unit = _field_unit(lowered, grade_family, element)
+            if unit is not None:
+                ev.add_quantity(number, *unit)
     elif isinstance(obj, str):
         ev.literal.update(_numbers_in(obj))
+        ev.quantities.extend(_quantities_in(obj))
 
 
 def _collect_evidence(tool_results: list[tuple[str, Any]]) -> _Evidence:
@@ -642,21 +1001,29 @@ def _strip_non_claims(text: str, identifiers: set[str] | frozenset[str] = frozen
     return _IDENTIFIER_TOKEN_RE.sub(" ", HOLE_ID_RE.sub(" ", clean))
 
 
+def _extract_claims(
+    text: str, identifiers: set[str] | frozenset[str] = frozenset()
+) -> list[_Quantity]:
+    """Every numerical claim in ``text``, with the unit it is written in.
+
+    The numbers `_SMALL_NUMBERS` calls too common to verify are left out.
+    """
+    return [
+        quantity
+        for quantity in _scan_quantities(_strip_non_claims(text, identifiers))
+        if quantity.value not in _SMALL_NUMBERS
+    ]
+
+
 def _extract_number_tokens(
     text: str, identifiers: set[str] | frozenset[str] = frozenset()
 ) -> list[tuple[float, float, float]]:
     """(value, exact tolerance, rounded tolerance) for every numerical claim
     in ``text`` — see `_written_tolerance`."""
-    out: list[tuple[float, float, float]] = []
-    for match in _NUMBER_RE.finditer(_strip_non_claims(text, identifiers)):
-        try:
-            val = _parse_number(match.group())
-        except ValueError:
-            continue
-        if val not in _SMALL_NUMBERS:
-            exact, rounded = _written_tolerance(match.group())
-            out.append((val, exact, rounded))
-    return out
+    return [
+        (claim.value, claim.exact, claim.rounded)
+        for claim in _extract_claims(text, identifiers)
+    ]
 
 
 def _extract_numbers_from_text(text: str) -> list[float]:
@@ -670,32 +1037,6 @@ def _extract_numbers_from_text(text: str) -> list[float]:
     return [value for value, _exact, _rounded in _extract_number_tokens(text)]
 
 
-#: Conversion factors applied to every grounded value, both directions:
-#: ppm and % (10 000), g/t and oz/t (31.1035), m and ft (3.28084), and
-#: the x1000 steps (m and km, ppb and ppm, t and kt).
-_CONVERSION_FACTORS: tuple[float, ...] = (10_000.0, 31.1035, 3.28084, 1_000.0)
-
-
-def _expand_grounded_with_conversions(grounded: set[float]) -> set[float]:
-    """Expand the grounded set with all valid unit-conversion derivatives.
-
-    For each grounded value we add both directions of every conversion in
-    `_CONVERSION_FACTORS`. This lets the guard accept "1.2 oz/t" when the
-    tool returned "37.3 g/t" (37.3 / 31.1035 = 1.20). Rounding is handled
-    on the ANSWER side by `_written_tolerance`, so the rounded / truncated
-    copies of every expanded value this used to add (``round(v, 1)``,
-    ``round(v, 2)``, ``int(v)``) are gone -- they multiplied the grounded set
-    several-fold, and ``int()`` is not rounding.
-    """
-    expanded: set[float] = set(grounded)
-    for g in grounded:
-        if abs(g) < 1e9:  # skip sentinel values
-            for factor in _CONVERSION_FACTORS:
-                expanded.add(g / factor)
-                expanded.add(g * factor)
-    return expanded
-
-
 def _matches_grounded(value: float, tolerance: float, grounded: list[float]) -> bool:
     """Is ``value`` (as written, give or take its rounding) a grounded value?
 
@@ -704,6 +1045,57 @@ def _matches_grounded(value: float, tolerance: float, grounded: list[float]) -> 
     """
     target = abs(value)
     return any(abs(target - abs(g)) <= tolerance + 1e-9 * max(1.0, abs(g)) for g in grounded)
+
+
+def _grounding_route(claim: _Quantity, ev: _Evidence) -> str | None:
+    """How ``ev`` supports ``claim``: ``"literal"``, ``"converted"``,
+    ``"derived"``, or None when it does not.
+
+    * literal -- the same figure, give or take the rounding it was written
+      with (`_written_tolerance`), under any unit; "71 million" is 71,000,000.
+      Identifiers, scores, pages and section numbers are not content
+      (`_NON_CONTENT_KEYS`).
+    * converted -- the same quantity in ANOTHER unit of its dimension, at the
+      real factor between the two (`_conversion_factors`): 0.02 % is 200 ppm
+      and never 20 ppm, 48,200,000 t is 48.2 Mt, 1.85 g/t is 0.054 oz/ton.
+      Only a number written with a unit can be converted, and only from a
+      value the evidence states with one.
+    * derived -- a number with a unit that lies inside the range of a
+      STRUCTURED series of its dimension. A mean, median or percentile of
+      collar depths lies between the shallowest and the deepest (the Phase 5
+      follow-up case of "average depth is 375.3 m" over 66 collars). Document
+      prose has no series, and a bare number ("87 drill holes") has no unit:
+      counts are literal or they are flagged.
+    """
+    literal = [g for g in ev.literal if abs(g) < 1e9]
+    if _matches_grounded(claim.value, claim.rounded, literal):
+        return "literal"
+    if claim.magnitude != 1.0 and _matches_grounded(
+        claim.scaled, claim.rounded * claim.magnitude, literal
+    ):
+        return "literal"
+    if claim.family is None:
+        return None
+
+    # The written precision, in the claim's own unit and with its "million".
+    tolerance = claim.exact * claim.magnitude
+    for value, family in ev.quantities:
+        if abs(value) >= 1e9:  # a sentinel, not a measurement
+            continue
+        for factor in _conversion_factors(family, claim.family):
+            converted = abs(value * factor)
+            if abs(abs(claim.scaled) - converted) <= tolerance + 1e-9 * max(1.0, converted):
+                return "converted"
+    for (family, _series), (low, high) in ev.bounds.items():
+        for factor in _conversion_factors(family, claim.family):
+            floor, ceiling = sorted((low * factor, high * factor))
+            slack = tolerance + 1e-9 * max(1.0, abs(floor), abs(ceiling))
+            if (
+                floor - slack <= claim.scaled <= ceiling + slack
+                or floor - slack <= -claim.scaled <= ceiling + slack
+            ):
+                return "derived"
+    return None
 
 
 def verify_numbers(
@@ -765,47 +1157,30 @@ def verify_numbers(
     except Exception:
         logger.debug("L3 tuple guard: extractor raised — skipping", exc_info=True)
 
-    # Grounding (reworked 2026-09-29, audit RAG-1).
-    #
-    # 1. Literal: the answer's number, give or take the rounding it was
-    #    written with (`_written_tolerance`), equals a CONTENT number from
-    #    the evidence or a unit conversion of one. Identifiers, scores,
-    #    pages and section numbers are no longer content (`_NON_CONTENT_KEYS`).
-    # 2. Derived: only against STRUCTURED rows. A mean / median / percentile
-    #    of collar depths or assay values sits within 0.5x-2x of some row
-    #    value, the Phase 5 follow-up (2026-05-19) case of "average depth is
-    #    375.3 m" over 66 collars. Document prose gets no such allowance:
-    #    with every number of a 5,000-character chunk in the window, almost
-    #    any invented grade had a same-magnitude neighbour and passed.
-    #
-    #    The window is still over RAW values, never the conversion-expanded
-    #    set (audit 2026-06-27: one count of 10 expands to roughly 0..100000).
-    #
-    # The old "equals the number of distinct grounded values" rule is gone:
-    # that count is an artefact of serialisation, not of the data. Row
-    # counts ARE grounded now; every list in a structured result adds its
-    # length (`_walk_evidence`).
+    # Grounding (reworked 2026-09-29, audit RAG-1; unit-aware since
+    # 2026-10-10, see `_grounding_route`): literal, converted at the real
+    # factor between two units of one dimension, or -- for a number with a
+    # unit -- derived within the range of a structured series. The old
+    # "equals the number of distinct grounded values" rule is gone: that
+    # count is an artefact of serialisation, not of the data. Row counts ARE
+    # grounded now; every list in a structured result adds its length
+    # (`_walk_evidence`).
     evidence = _collect_evidence(tool_results)
-    literal = [g for g in evidence.literal if abs(g) < 1e9]
-    grounded = [
-        g for g in _expand_grounded_with_conversions(evidence.literal) if abs(g) < 1e9
-    ]
-    derivable = sorted(g for g in evidence.derivable if abs(g) < 1e6)
 
     warnings = []
-    for num, exact, rounded in _extract_number_tokens(text, evidence.identifiers):
-        if _matches_grounded(num, rounded, literal) or _matches_grounded(num, exact, grounded):
-            continue
-        if _is_same_order_as_any(num, derivable):
+    for claim in _extract_claims(text, evidence.identifiers):
+        route = _grounding_route(claim, evidence)
+        if route == "derived":
             logger.debug(
-                "Layer 3 derivation tolerance: %s is the scale of a structured "
-                "value, likely average/median/percentile",
-                num,
+                "Layer 3 derivation: %s %s lies inside a structured series of "
+                "its dimension, likely a mean/median/percentile",
+                claim.value, claim.family,
             )
+        if route is not None:
             continue
 
         warnings.append(
-            f"Layer 3: Ungrounded number {num} in response — "
+            f"Layer 3: Ungrounded number {claim.value} in response — "
             f"not found in any tool result (direct or via unit conversion)"
         )
 
@@ -813,9 +1188,9 @@ def verify_numbers(
     if warnings:
         logger.warning(
             "orchestrator_validators: %d ungrounded number(s) detected "
-            "(threshold removed per Module 6 Chunk 3 tightening; "
-            "derivation tolerance applied — only values outside the "
-            "grounded range remain flagged)",
+            "(threshold removed per Module 6 Chunk 3 tightening; a derived "
+            "statistic is accepted only inside the range of a structured "
+            "series in the same unit dimension)",
             len(warnings),
         )
 
@@ -878,17 +1253,9 @@ def _evidence_by_citation_id(
     return out
 
 
-def _number_in_evidence(
-    num: float, exact: float, rounded: float, ev: _Evidence
-) -> bool:
+def _number_in_evidence(claim: _Quantity, ev: _Evidence) -> bool:
     """The grounding test of :func:`verify_numbers`, against one evidence set."""
-    literal = [g for g in ev.literal if abs(g) < 1e9]
-    if _matches_grounded(num, rounded, literal):
-        return True
-    expanded = [g for g in _expand_grounded_with_conversions(ev.literal) if abs(g) < 1e9]
-    if _matches_grounded(num, exact, expanded):
-        return True
-    return _is_same_order_as_any(num, sorted(g for g in ev.derivable if abs(g) < 1e6))
+    return _grounding_route(claim, ev) is not None
 
 
 def verify_cited_number_support(
@@ -940,12 +1307,13 @@ def verify_cited_number_support(
         cited = [c for c in cited if c in per_id]
         if not cited:
             continue
-        for num, exact, rounded in _extract_number_tokens(unit.text, identifiers):
-            if any(_number_in_evidence(num, exact, rounded, per_id[c]) for c in cited):
+        for claim in _extract_claims(unit.text, identifiers):
+            num = claim.value
+            if any(_number_in_evidence(claim, per_id[c]) for c in cited):
                 continue
             elsewhere = [
                 cid for cid, ev in per_id.items()
-                if cid not in cited and _number_in_evidence(num, exact, rounded, ev)
+                if cid not in cited and _number_in_evidence(claim, ev)
             ]
             if not elsewhere:
                 continue  # in nothing at all: verify_numbers' finding
