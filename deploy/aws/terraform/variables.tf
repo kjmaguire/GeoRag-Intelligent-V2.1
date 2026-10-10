@@ -226,8 +226,10 @@ variable "db_backup_retention_days" {
     35 matches what Azure Flexible Server was configured for, which is the
     only durability posture Postgres has ever had here. Note this covers
     Postgres ONLY: on Azure, blob storage had no backup and no restore
-    procedure at all, which is why the S3 bucket below gets versioning and
-    replication rather than inheriting that gap.
+    procedure at all, which is why the S3 buckets (data.tf) get versioning,
+    with non-current versions kept 90 days, rather than inheriting that gap.
+    They are NOT replicated: versioning answers an overwrite or a delete, not
+    the loss of the bucket, the region or the account.
   EOT
   type        = number
   default     = 35
