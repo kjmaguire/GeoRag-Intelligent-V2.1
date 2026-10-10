@@ -12,7 +12,7 @@ calling Postgres functions or wrapping `ST_AsMVT()` around table queries.
 
 [docker-compose.yml:795](../../../docker-compose.yml).
 
-- Image `ghcr.io/maplibre/martin:1.7.0` (digest-pinned).
+- Image `ghcr.io/maplibre/martin:1.11.0` (digest-pinned).
 - Port `${MARTIN_PORT:-3002}:3000`.
 - Config: [docker/martin/martin.yaml](../../../docker/martin/martin.yaml).
 - DB: direct to `postgresql:5432` (bypasses PgBouncer) as the `georag_app`
