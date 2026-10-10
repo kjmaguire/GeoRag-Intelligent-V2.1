@@ -333,6 +333,11 @@ export default function FoundryNewProject() {
     const [dragging, setDragging] = useState(false);
     const [submitting, setSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
+    // The server's 422 message for the project code (unique per workspace). Kept
+    // apart from `submitError` and shown under the field: the code is typed on
+    // the first step and the create happens on the last, so a banner down there
+    // would not say which field to fix.
+    const [codeError, setCodeError] = useState<string | null>(null);
     const [submitProgress, setSubmitProgress] = useState<{ done: number; total: number } | null>(null);
     const uploadLimit = useUploadLimit();
     const MAX_FILE_BYTES = uploadLimit.bytes;
@@ -631,6 +636,7 @@ export default function FoundryNewProject() {
     async function submit() {
         setSubmitting(true);
         setSubmitError(null);
+        setCodeError(null);
         try {
             // Built per request, not once: the upload loop below can run for
             // minutes, and the token cookie is rewritten by every response.
@@ -647,6 +653,10 @@ export default function FoundryNewProject() {
                     headers: { ...requestHeaders(), 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         project_name: form.name,
+                        // The short code (silver.projects.project_code), unique
+                        // per workspace. Omitted when blank or whitespace, like
+                        // crs_epsg below: the column stays NULL either way.
+                        ...(form.code.trim() !== '' ? { project_code: form.code.trim() } : {}),
                         company: form.operator,
                         commodity: form.commodity,
                         // region carries the state/province code (e.g. "WY", "ON")
@@ -666,6 +676,18 @@ export default function FoundryNewProject() {
                 });
                 const createJson = await createRes.json().catch(() => ({}));
                 if (!createRes.ok) {
+                    // A 422 on the code (already used in this workspace) belongs
+                    // on the code field, which lives on the first step: put it
+                    // there and take the user to it, rather than leaving a
+                    // banner on the Review step that names no field.
+                    const codeMessage: unknown = createJson.errors?.project_code?.[0];
+                    if (createRes.status === 422 && typeof codeMessage === 'string' && codeMessage !== '') {
+                        setCodeError(codeMessage);
+                        setStep('Identity');
+                        setSubmitting(false);
+                        setSubmitProgress(null);
+                        return;
+                    }
                     throw new Error(createJson.message || `Project create failed (HTTP ${createRes.status})`);
                 }
                 projectId = createJson.data?.project_id ?? createJson.project_id;
@@ -866,11 +888,27 @@ export default function FoundryNewProject() {
                                 <Field label="Project code">
                                     <input
                                         type="text"
+                                        name="project_code"
                                         value={form.code}
-                                        onChange={(e) => setField('code', e.target.value)}
+                                        onChange={(e) => {
+                                            setField('code', e.target.value);
+                                            // Edited: whatever the server said about the old value no longer applies.
+                                            setCodeError(null);
+                                        }}
+                                        maxLength={64}
+                                        aria-invalid={codeError ? true : undefined}
                                         className="w-full text-sm px-3 py-2 rounded border"
                                         style={inputStyle}
                                     />
+                                    {codeError && (
+                                        <p
+                                            role="alert"
+                                            className="mt-1 text-[11px]"
+                                            style={{ color: 'var(--danger, #f87171)' }}
+                                        >
+                                            {codeError}
+                                        </p>
+                                    )}
                                 </Field>
                                 <Field label="Operator">
                                     <input
