@@ -17,15 +17,35 @@
  * ## Method
  *
  * Minimum curvature — the same method `promote_silver_to_gold` uses for the
- * server-side traces, so a hole drawn here agrees with its MVT trace on the
- * map. Each station's attitude becomes a unit direction vector and each
- * segment is the circular arc between them; because it works on vectors, an
- * azimuth pair straddling north needs no special case. (`circularMeanDeg` is
- * exported for anywhere a single averaged bearing is wanted.)
+ * server-side traces. Each station's attitude becomes a unit direction vector
+ * and each segment is the circular arc between them; because it works on
+ * vectors, an azimuth pair straddling north needs no special case.
+ * (`circularMeanDeg` is exported for anywhere a single averaged bearing is
+ * wanted.)
+ *
+ * ## Does a hole drawn here agree with its MVT trace? (GIS-12, audit 2026-10)
+ *
+ * Only as far as the AZIMUTHS agree, and this module does not touch them:
+ * WorkspaceController converts a DECLARED reference (a station's own
+ * `azimuth_reference`, else the project's `orientation_reference`) to an
+ * azimuth from TRUE north before it sends the stations, because true north is
+ * this frame's north (`SurveyAzimuthReference`). With that, a hole whose
+ * azimuths are true, magnetic (+ the project's declination) or grid north of
+ * the project CRS is drawn where its map trace is.
+ *
+ * Two things are NOT reconciled, and a caller should not claim otherwise:
+ *   - a hole with NO declared reference is drawn at its recorded azimuth, read
+ *     as true north (Kyle, 2026-09-29: no correction unless declared), while
+ *     promote reads the same number as grid north of the collar's UTM zone, so
+ *     the map trace differs from this drawing by the grid convergence (about
+ *     2.5 degrees at 58 N, 3 degrees from the central meridian);
+ *   - a declared reference that could not be applied (magnetic with no
+ *     declination, or no usable grid) arrives flagged `azimuth_unapplied`,
+ *     drawn as recorded, and the caption says so.
  *
  * Conventions:
- *   - azimuth: degrees clockwise from north, in whatever north the data uses
- *     (declination / grid convergence are NOT applied — see GIS-12);
+ *   - azimuth: degrees clockwise from TRUE north when the server converted a
+ *     declared reference, otherwise exactly as recorded (above);
  *   - dip: degrees from horizontal in the silver convention — negative is
  *     below horizontal (-60 = 60° down), positive is an UP-HOLE (+30 = 30°
  *     up). The sign used to be ignored, which drew every up-hole downward;
@@ -68,11 +88,19 @@ export interface SurveyStationInput {
     depth: number;
     azimuth: number | null;
     dip: number | null;
+    /**
+     * The station declares an azimuth reference (its own, or the project's)
+     * that the server could not apply — magnetic with no declination, or no
+     * usable grid — so `azimuth` is as recorded.
+     */
+    azimuth_unapplied?: boolean | null;
 }
 
 export interface DesurveyCollar {
     azimuth: number | null;
     dip: number | null;
+    /** As SurveyStationInput.azimuth_unapplied, for the collar's own azimuth. */
+    azimuthUnapplied?: boolean;
     /**
      * Total depth, or null when the collar has none (§04e 2026-09-29: the
      * column is optional). The path is extended to max(TD, extendTo, last
@@ -102,6 +130,8 @@ export interface DesurveyedHole {
     /** At least one downhole survey station contributed. */
     surveyed: boolean;
     orientation: OrientationSource;
+    /** A declared azimuth reference of this hole could not be applied: azimuths are as recorded. */
+    azimuthUnapplied: boolean;
     /** Deepest MD the path reaches. */
     maxDepth: number;
 }
@@ -279,7 +309,8 @@ export function desurveyHole(
         });
     }
 
-    return { path, surveyed, orientation, maxDepth };
+    const azimuthUnapplied = collar.azimuthUnapplied === true || surveys.some((st) => st.azimuth_unapplied === true);
+    return { path, surveyed, orientation, azimuthUnapplied, maxDepth };
 }
 
 /**
@@ -345,6 +376,8 @@ export interface CollarForDesurvey {
     elevation_source?: 'file' | 'terrain' | null;
     azimuth?: number | null;
     dip?: number | null;
+    /** As SurveyStationInput.azimuth_unapplied, for the collar's own azimuth. */
+    azimuth_unapplied?: boolean | null;
     total_depth?: number | null;
 }
 
@@ -402,7 +435,12 @@ export function desurveyCollars(
     for (const c of collars) {
         if (!hasLonLat(c)) continue;
         const hole = desurveyHole(
-            { azimuth: c.azimuth ?? null, dip: c.dip ?? null, totalDepth: c.total_depth ?? null },
+            {
+                azimuth: c.azimuth ?? null,
+                dip: c.dip ?? null,
+                totalDepth: c.total_depth ?? null,
+                azimuthUnapplied: c.azimuth_unapplied === true,
+            },
             byCollar.get(c.collar_id) ?? [],
             extendTo.get(c.collar_id) ?? 0,
         );
@@ -571,14 +609,19 @@ export function describeDesurvey(
     let surveyed = 0;
     let collarOnly = 0;
     let vertical = 0;
+    let unapplied = 0;
     for (const h of holes) {
         if (h.orientation === 'surveys') surveyed++;
         else if (h.orientation === 'collar') collarOnly++;
         else vertical++;
+        if (h.azimuthUnapplied) unapplied++;
     }
     const parts = [`${surveyed} desurveyed (minimum curvature)`];
     if (collarOnly > 0) parts.push(`${collarOnly} unsurveyed — projected along collar azimuth/dip`);
     if (vertical > 0) parts.push(`${vertical} with no orientation — drawn vertical`);
+    if (unapplied > 0) {
+        parts.push(`${unapplied} with a declared azimuth reference that could not be applied — azimuths as recorded`);
+    }
     if ((opts.unplaced ?? 0) > 0) parts.push(`${opts.unplaced} with no geographic position — not drawn`);
     if (opts.frame) parts.push(`metres about ${describeOrigin(opts.frame.origin)}`);
     return parts.join(' · ');

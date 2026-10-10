@@ -374,3 +374,54 @@ describe('one local frame for every collar (GIS audit 2026-10)', () => {
         expect(gap).toBeLessThan(14600);
     });
 });
+
+// ── Declared azimuth references (GIS audit 2026-10, finding 5) ───────────────
+//
+// WorkspaceController converts a declared reference (a station's own, else the
+// project's) to an azimuth from true north before it sends the stations. This
+// module only has to carry through what the server could NOT convert, so the
+// caption can say so instead of drawing it as if it were corrected.
+describe('azimuth references the server could not apply (GIS-12)', () => {
+    const collar = { collar_id: 'a', lng: -102, lat: 58, azimuth: 90, dip: -60, total_depth: 100 };
+
+    it('flags a hole whose stations carry azimuth_unapplied, and the caption says so', () => {
+        const holes = desurveyCollars(
+            [collar],
+            [
+                { collar_id: 'a', depth: 0, azimuth: 90, dip: -60, azimuth_unapplied: true },
+                { collar_id: 'a', depth: 50, azimuth: 92, dip: -60, azimuth_unapplied: true },
+            ],
+        );
+        expect(holes.get('a')!.azimuthUnapplied).toBe(true);
+        expect(describeDesurvey(holes.values())).toContain(
+            '1 with a declared azimuth reference that could not be applied — azimuths as recorded',
+        );
+    });
+
+    it('flags a hole whose own collar azimuth could not be converted', () => {
+        const holes = desurveyCollars([{ ...collar, azimuth_unapplied: true }], []);
+        expect(holes.get('a')!.azimuthUnapplied).toBe(true);
+    });
+
+    it('does not flag, or mention, an ordinary hole', () => {
+        const holes = desurveyCollars([collar], [{ collar_id: 'a', depth: 0, azimuth: 90, dip: -60 }]);
+        expect(holes.get('a')!.azimuthUnapplied).toBe(false);
+        expect(describeDesurvey(holes.values())).not.toContain('azimuth reference');
+    });
+
+    it('draws a flagged station at the azimuth it was given: converting is the servers job', () => {
+        const unflagged = desurveyHole({ azimuth: 90, dip: -60, totalDepth: 100 }, [
+            { depth: 100, azimuth: 90, dip: -60 },
+        ]);
+        const flagged = desurveyHole({ azimuth: 90, dip: -60, totalDepth: 100 }, [
+            { depth: 100, azimuth: 90, dip: -60, azimuth_unapplied: true },
+        ]);
+        expect(flagged.path).toEqual(unflagged.path);
+        expect(flagged.azimuthUnapplied).toBe(true);
+    });
+
+    it('carries the flag into a scene caption', () => {
+        const scene = buildScene3D([{ ...collar, azimuth_unapplied: true }], []);
+        expect(scene.caption).toContain('could not be applied');
+    });
+});

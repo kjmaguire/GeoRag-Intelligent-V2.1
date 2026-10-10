@@ -242,6 +242,163 @@ final class WorkspaceThreeDPayloadTest extends TestCase
     }
 
     /**
+     * A project at 58 N, -102 E (UTM 14N; its project grid, EPSG:26913, is a
+     * different projection) with one collar recorded at azimuth 90 and
+     * stations at azimuth 90. The expected numbers are the ones the Python
+     * promote step implies; see tests/Unit/Services/Collars/SurveyAzimuthReferenceTest.php
+     * and src/fastapi/tests/test_azimuth_reference_php_parity.py.
+     *
+     * @param list<array{0: float, 1: ?string}> $stations [depth, own azimuth_reference]
+     *
+     * @return array{user: User, project: Project, collar_id: string}
+     */
+    private function seedAzimuthProject(?string $reference, ?float $declination, ?int $crsEpsg, array $stations): array
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars(0);
+        DB::statement(
+            'UPDATE silver.projects SET orientation_reference = ?, magnetic_declination = ?, crs_epsg = ? WHERE project_id = ?::uuid',
+            [$reference ?? 'BOH', $declination, $crsEpsg, $project->project_id],
+        );
+        $collarId = (string) Str::uuid();
+        $workspaceId = (string) DB::table('silver.projects')->where('project_id', $project->project_id)->value('workspace_id');
+        DB::statement(
+            "INSERT INTO silver.collars (
+                collar_id, hole_id, project_id, workspace_id, easting, northing, elevation,
+                total_depth, azimuth, dip, hole_type, status, geom_4326
+             ) VALUES (?::uuid, 'AZ-1', ?::uuid, ?::uuid, 0, 0, 300, 100, 90, -60, 'DDH', 'completed',
+                       ST_SetSRID(ST_MakePoint(-102, 58), 4326))",
+            [$collarId, $project->project_id, $workspaceId],
+        );
+        foreach ($stations as [$depth, $own]) {
+            DB::statement(
+                "INSERT INTO silver.surveys (survey_id, collar_id, workspace_id, depth, azimuth, dip, survey_method, azimuth_reference)
+                 VALUES (gen_random_uuid(), ?::uuid, ?::uuid, ?, 90, -60, 'downhole', ?)",
+                [$collarId, $workspaceId, $depth, $own],
+            );
+        }
+
+        return ['user' => $user, 'project' => $project, 'collar_id' => $collarId];
+    }
+
+    /**
+     * @return array{collars: list<array<string, mixed>>, surveys: list<array<string, mixed>>}
+     */
+    private function fetchAzimuths(User $user, Project $project): array
+    {
+        $out = ['collars' => [], 'surveys' => []];
+        $this->actingAs($user)
+            ->get('/projects/'.$project->slug.'/workspace')
+            ->assertInertia(function (AssertableInertia $page) use (&$out): void {
+                $page->where('collars', function ($collars) use (&$out): bool {
+                    $out['collars'] = array_map(fn ($c) => (array) $c, iterator_to_array($collars));
+
+                    return true;
+                });
+                $page->loadDeferredProps('viz3d', function (AssertableInertia $reload) use (&$out): void {
+                    $reload->where('surveys_3d', function ($surveys) use (&$out): bool {
+                        $out['surveys'] = array_map(fn ($s) => (array) $s, iterator_to_array($surveys));
+
+                        return true;
+                    });
+                });
+            });
+
+        return $out;
+    }
+
+    /**
+     * GIS audit 2026-10 (finding 5): promote_silver_to_gold converts a
+     * declared azimuth reference before it desurveys the map trace; the 3D
+     * payload sent the raw numbers, so a magnetic or non-local-grid hole was
+     * drawn rotated against its own trace by the whole declination or
+     * convergence. Station azimuths now arrive relative to TRUE north (the 3D
+     * frame's north): the station's own reference wins, then the project's.
+     */
+    public function test_declared_azimuth_references_reach_the_3d_payload_as_true_north_azimuths(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedAzimuthProject(
+            reference: 'grid',
+            declination: 12.0,
+            crsEpsg: 26913,
+            stations: [[10.0, null], [20.0, 'true'], [30.0, 'magnetic'], [40.0, 'grid']],
+        );
+
+        $got = $this->fetchAzimuths($user, $project);
+        $byDepth = [];
+        foreach ($got['surveys'] as $s) {
+            $byDepth[(int) $s['depth']] = $s;
+        }
+
+        // No reference of its own: the project's (grid north of EPSG:26913,
+        // where true north is 2.5448022 degrees anticlockwise of grid north).
+        $this->assertEqualsWithDelta(92.544802210, $byDepth[10]['azimuth'], 1e-6);
+        $this->assertSame(90.0, (float) $byDepth[10]['azimuth_recorded']);
+        $this->assertSame('grid', $byDepth[10]['azimuth_reference']);
+        // Its own 'true' wins over the project's grid: already true north.
+        $this->assertSame(90.0, (float) $byDepth[20]['azimuth']);
+        $this->assertSame('true', $byDepth[20]['azimuth_reference']);
+        $this->assertArrayNotHasKey('azimuth_recorded', $byDepth[20]);
+        // Its own 'magnetic' + the project's 12 degrees east declination.
+        $this->assertEqualsWithDelta(102.0, $byDepth[30]['azimuth'], 1e-9);
+        $this->assertSame(90.0, (float) $byDepth[30]['azimuth_recorded']);
+        // Its own 'grid' is the project's grid too.
+        $this->assertEqualsWithDelta(92.544802210, $byDepth[40]['azimuth'], 1e-6);
+        foreach ($byDepth as $s) {
+            $this->assertArrayNotHasKey('azimuth_unapplied', $s);
+        }
+
+        // The collar's own azimuth takes the project's declaration.
+        $this->assertEqualsWithDelta(92.544802210, $got['collars'][0]['azimuth'], 1e-6);
+        $this->assertSame(90.0, (float) $got['collars'][0]['azimuth_recorded']);
+        $this->assertFalse($got['collars'][0]['azimuth_unapplied']);
+    }
+
+    public function test_a_declared_grid_with_no_project_crs_uses_the_collars_own_utm_zone(): void
+    {
+        // promote: a project CRS that is missing, or the collar's own zone,
+        // leaves the grid azimuth alone - the collar's zone IS the grid. Here
+        // that is UTM 14N (EPSG:32614), where true north is 2.5448022
+        // degrees CLOCKWISE of grid north. 99999 is not in spatial_ref_sys.
+        foreach ([null, 32614, 99999] as $crs) {
+            ['user' => $user, 'project' => $project] = $this->seedAzimuthProject('grid', null, $crs, [[10.0, null]]);
+            $got = $this->fetchAzimuths($user, $project);
+            $this->assertEqualsWithDelta(87.455197790, $got['surveys'][0]['azimuth'], 1e-6, 'project crs_epsg '.var_export($crs, true));
+        }
+    }
+
+    public function test_a_magnetic_reference_without_a_declination_is_flagged_not_guessed(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedAzimuthProject('magnetic', null, null, [[10.0, null], [20.0, 'true']]);
+
+        $got = $this->fetchAzimuths($user, $project);
+
+        $this->assertSame(90.0, (float) $got['surveys'][0]['azimuth']);
+        $this->assertTrue($got['surveys'][0]['azimuth_unapplied']);
+        // A station that declares its own reference is not held up by the project's gap.
+        $this->assertSame(90.0, (float) $got['surveys'][1]['azimuth']);
+        $this->assertArrayNotHasKey('azimuth_unapplied', $got['surveys'][1]);
+        $this->assertTrue($got['collars'][0]['azimuth_unapplied']);
+        $this->assertSame(90.0, (float) $got['collars'][0]['azimuth']);
+    }
+
+    public function test_an_undeclared_project_sends_the_recorded_azimuths_untouched(): void
+    {
+        // BOH / TOH are the core-orientation mark: they declare no north.
+        foreach (['BOH', 'TOH'] as $mark) {
+            ['user' => $user, 'project' => $project] = $this->seedAzimuthProject($mark, 12.0, 26913, [[10.0, null]]);
+            $got = $this->fetchAzimuths($user, $project);
+
+            $this->assertSame(90.0, (float) $got['surveys'][0]['azimuth']);
+            foreach (['azimuth_reference', 'azimuth_recorded', 'azimuth_unapplied'] as $key) {
+                $this->assertArrayNotHasKey($key, $got['surveys'][0], $mark.' must not add '.$key);
+            }
+            $this->assertSame(90.0, (float) $got['collars'][0]['azimuth']);
+            $this->assertNull($got['collars'][0]['azimuth_recorded']);
+            $this->assertFalse($got['collars'][0]['azimuth_unapplied']);
+        }
+    }
+
+    /**
      * The 3D fallback path: when silver.surveys is empty for a hole but
      * AZIMUTH + SANG curves exist in silver.well_log_curves, the
      * controller should derive station rows on the fly so Trajectories

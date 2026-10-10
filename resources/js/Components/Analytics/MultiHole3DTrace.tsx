@@ -14,6 +14,8 @@ interface Collar {
     collar_id: string;
     hole_id: string;
     azimuth: number | null;
+    /** The project's declared azimuth reference could not be applied to `azimuth`. */
+    azimuth_unapplied?: boolean | null;
     dip: number | null;
     elevation: number | null;
     /** EPSG:4326 position (geom_4326): what a hole is placed by. */
@@ -33,6 +35,7 @@ interface Survey {
     depth: number;
     azimuth: number | null;
     dip: number | null;
+    azimuth_unapplied?: boolean | null;
 }
 
 interface Props {

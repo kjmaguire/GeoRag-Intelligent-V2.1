@@ -61,7 +61,12 @@ interface Collar {
     lng: number | null;
     ore_bands: number;
     ore_thickness_m: number;
+    /** Relative to TRUE north when the project declares an azimuth reference (the 3D frame's north). */
     azimuth?: number | null;
+    /** The collar table's own azimuth, sent when `azimuth` was converted from it. */
+    azimuth_recorded?: number | null;
+    /** The project's declared reference could not be applied: `azimuth` is as recorded. */
+    azimuth_unapplied?: boolean;
     dip?: number | null;
     elevation?: number | null;
     /** 'terrain' = no elevation in the file; `elevation` is the terrain model's. */
@@ -75,8 +80,15 @@ interface Collar {
 interface Survey3D {
     collar_id: string;
     depth: number;
+    /** Relative to TRUE north when the station declares a reference (SurveyAzimuthReference). */
     azimuth: number | null;
     dip: number | null;
+    /** 'true' | 'magnetic' | 'grid': the declared reference that was applied (or not). */
+    azimuth_reference?: string;
+    /** The recorded azimuth, sent when `azimuth` was converted from it. */
+    azimuth_recorded?: number;
+    /** A declared reference that could not be applied: `azimuth` is as recorded. */
+    azimuth_unapplied?: boolean;
 }
 
 interface Structure3D {
@@ -994,6 +1006,8 @@ export default function FoundryWorkspace({
                                                                                 hole_id:
                                                                                     c.hole_id_canonical || c.hole_id,
                                                                                 azimuth: c.azimuth ?? null,
+                                                                                azimuth_unapplied:
+                                                                                    c.azimuth_unapplied ?? false,
                                                                                 dip: c.dip ?? null,
                                                                                 elevation: c.elevation ?? null,
                                                                                 // Placed by lng/lat (geom_4326); easting/northing

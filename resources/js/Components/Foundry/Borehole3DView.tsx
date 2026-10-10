@@ -95,6 +95,7 @@ export function Borehole3DView({
                 elevation: c?.elevation ?? null,
                 elevation_source: c?.elevation_source ?? null,
                 azimuth: c?.azimuth ?? null,
+                azimuth_unapplied: c?.azimuth_unapplied ?? null,
                 dip: c?.dip ?? null,
             };
         });
