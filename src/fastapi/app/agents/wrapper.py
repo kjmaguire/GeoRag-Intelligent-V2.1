@@ -215,7 +215,15 @@ async def _idempotency_lookup(key_hash: bytes) -> dict[str, Any] | None:
         "FROM workspace.idempotency_keys WHERE key_hash = $1",
         key_hash,
     )
-    return dict(row) if row else None
+    if not row:
+        return None
+    found = dict(row)
+    # asyncpg hands jsonb back as text unless the pool registered a codec, and
+    # the pools the agents run on do not. A deduped run must return the stored
+    # dict, not its JSON text, or its caller cannot validate it.
+    if isinstance(found.get("result_summary"), (str, bytes, bytearray)):
+        found["result_summary"] = json.loads(found["result_summary"])
+    return found
 
 
 async def _idempotency_store(
@@ -530,13 +538,18 @@ def georag_agent(
 
             duration_ms = int((time.monotonic() - t0) * 1000)
 
-            # Update circuit breaker — failures count, refusals don't.
-            await _circuit_record(
-                name,
-                ctx.workspace_id,
-                policy,
-                success=(outcome in ("success", "refusal")),
-            )
+            # Update circuit breaker — failures count, refusals don't. A call the
+            # breaker itself rejected never ran, so it is not evidence about the
+            # agent: recording it would INCR + re-EXPIRE the counter, so any
+            # caller that keeps knocking holds the breaker open indefinitely
+            # instead of letting cool_down_seconds elapse.
+            if outcome != "circuit_open":
+                await _circuit_record(
+                    name,
+                    ctx.workspace_id,
+                    policy,
+                    success=(outcome in ("success", "refusal")),
+                )
 
             # Persist idempotency record on success (R2+).
             if outcome == "success" and id_key is not None and id_components is not None:
