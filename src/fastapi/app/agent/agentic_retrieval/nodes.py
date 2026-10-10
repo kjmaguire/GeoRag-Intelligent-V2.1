@@ -3560,6 +3560,47 @@ async def _reissue_llm_only(
     state.response = _with_retrieval_failures(new_response, state.retrieval_failures)
 
 
+def _apply_state_mutation(current: Any, update: dict[str, Any], *, field: str) -> Any:
+    """Return ``current`` with a Stage 4 strategy's field updates applied.
+
+    ``state.retrieval_profile`` is a Pydantic model, but
+    ``state.retrieval_filters`` is a FROZEN DATACLASS
+    (``preprocessor.RetrievalFilters``) and has no ``model_copy``. Calling it
+    raised AttributeError, which a broad ``except`` logged at debug level, so
+    every filter mutation (LOOSEN_FILTERS in particular) silently did nothing
+    and the loop re-ran retrieval with the filters it already had (audit 2026-10
+    finding 20).
+
+    Only declared fields are applied, for either kind of object, and a key that
+    is not declared (some strategies emit fields that do not exist yet) is
+    ignored and said so, rather than looking applied. A container a dataclass
+    declares keeps its type: LOOSEN_FILTERS writes ``[]`` where the field is a
+    ``frozenset``.
+    """
+    is_dataclass = dataclasses.is_dataclass(current) and not isinstance(current, type)
+    declared = (
+        {f.name for f in dataclasses.fields(current)}
+        if is_dataclass
+        else set(type(current).model_fields)
+    )
+    ignored = sorted(set(update) - declared)
+    if ignored:
+        logger.warning(
+            "repair_loop: %s has no field(s) %s; those mutations are ignored",
+            field, ", ".join(ignored),
+        )
+    known = {key: value for key, value in update.items() if key in declared}
+    if not is_dataclass:
+        return current.model_copy(update=known)
+    for key, value in known.items():
+        existing = getattr(current, key)
+        if isinstance(existing, frozenset) and isinstance(value, (list, tuple, set)):
+            known[key] = frozenset(value)
+        elif isinstance(existing, tuple) and isinstance(value, (list, set, frozenset)):
+            known[key] = tuple(value)
+    return dataclasses.replace(current, **known)
+
+
 async def _reissue_retrieval(
     state: AgenticRetrievalState,
     mutations: dict[str, Any],
@@ -3567,31 +3608,21 @@ async def _reissue_retrieval(
     """Stage 4 — merge the strategy's state mutations + re-run
     execute_node + assemble_node. Caller wraps in try/except.
 
-    The mutations dict is a `model_copy(update=...)` payload for the
-    matching state field (retrieval_profile / retrieval_filters).
+    The mutations dict carries the field updates for the matching state value
+    (retrieval_profile / retrieval_filters); see :func:`_apply_state_mutation`.
+    A mutation that cannot be applied raises, so the caller restores its
+    checkpoint instead of paying for a second retrieval and LLM call that
+    would be identical to the first.
     """
-    # Apply mutations.
     if "retrieval_filters" in mutations and state.retrieval_filters is not None:
-        try:
-            state.retrieval_filters = state.retrieval_filters.model_copy(
-                update=mutations["retrieval_filters"]
-            )
-        except Exception:
-            logger.debug(
-                "repair_loop: retrieval_filters model_copy failed",
-                exc_info=True,
-            )
+        state.retrieval_filters = _apply_state_mutation(
+            state.retrieval_filters, mutations["retrieval_filters"], field="retrieval_filters",
+        )
 
     if "retrieval_profile" in mutations and state.retrieval_profile is not None:
-        try:
-            state.retrieval_profile = state.retrieval_profile.model_copy(
-                update=mutations["retrieval_profile"]
-            )
-        except Exception:
-            logger.debug(
-                "repair_loop: retrieval_profile model_copy failed",
-                exc_info=True,
-            )
+        state.retrieval_profile = _apply_state_mutation(
+            state.retrieval_profile, mutations["retrieval_profile"], field="retrieval_profile",
+        )
 
     # Re-run execute then assemble on a copy with the SSE callbacks removed:
     # assemble_node forwards token_callback into _call_llm, and a second
