@@ -16,7 +16,7 @@ Each test below fails on the code as deployed.
 from __future__ import annotations
 
 import re
-import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +24,11 @@ import pytest
 
 TAB = chr(9)
 NL = chr(10)
+
+#: Committed legacy workbooks; see tests/fixtures/xls/make_fixtures.py.
+_XLS_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "xls"
+LEGACY_COLLARS_XLS = _XLS_FIXTURES / "collars_legacy.xls"
+LEGACY_AGES_XLS = _XLS_FIXTURES / "ages_legacy.xls"
 
 
 class TestMapInfoIsAnArchiveMember:
@@ -151,25 +156,43 @@ class TestLegacyXlsReachesTheTextFallback:
         and so does this test, without anyone having to predict which
         version number does it.
         """
-        xlrd = pytest.importorskip("xlrd")
-        xlwt = pytest.importorskip("xlwt")
+        import xlrd  # a declared dependency: a missing one must FAIL, not skip
 
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("collars")
-        for col, name in enumerate(("hole_id", "easting", "northing")):
-            sheet.write(0, col, name)
-        sheet.write(1, 0, "TR002")
-        sheet.write(1, 1, 400807.0)
-        sheet.write(1, 2, 6117291.0)
-
-        target = Path(tempfile.mkdtemp()) / "legacy.xls"
-        book.save(str(target))
-
-        opened = xlrd.open_workbook(str(target))
+        # A committed .xls, read as-is. This used to be built here with xlwt,
+        # which is in no lockfile, so the test skipped on every CI run and the
+        # one behavioural guard on "xlrd can still open a legacy workbook" never
+        # executed. tests/fixtures/xls/make_fixtures.py says where the bytes
+        # came from; the row is a text id, floats, an integer-looking id and a
+        # date cell.
+        opened = xlrd.open_workbook(str(LEGACY_COLLARS_XLS))
         read = opened.sheet_by_index(0)
         assert read.nrows == 2, f"xlrd {xlrd.__version__} did not read the rows"
         assert read.cell_value(0, 0) == "hole_id"
+        assert read.cell_value(1, 0) == "TR002"
         assert read.cell_value(1, 1) == 400807.0
+        assert read.cell_value(1, 2) == 6117291.0
+
+    def test_the_fixture_carries_the_cell_types_a_drill_archive_has(self):
+        """What the committed workbook IS, so a regenerated one cannot lose it.
+
+        The integer-looking id comes back from xlrd as the float 1001.0 (the
+        format has no integer cell), and the date is a date-typed cell whose
+        value is a serial number until it is converted with the workbook's
+        datemode. Both are xlrd facts, asserted at the library, so they hold
+        whatever the ingestion layer does with the text.
+        """
+        import xlrd
+
+        book = xlrd.open_workbook(str(LEGACY_COLLARS_XLS))
+        sheet = book.sheet_by_name("collars")
+
+        assert sheet.cell_type(1, 0) == xlrd.XL_CELL_TEXT
+        assert sheet.cell_type(1, 3) == xlrd.XL_CELL_NUMBER
+        assert sheet.cell_value(1, 3) == 1001.0
+        assert sheet.cell_type(1, 4) == xlrd.XL_CELL_NUMBER
+        assert sheet.cell_value(1, 4) == 152.75
+        assert sheet.cell_type(1, 5) == xlrd.XL_CELL_DATE
+        assert xlrd.xldate_as_datetime(sheet.cell_value(1, 5), book.datemode) == datetime(2023, 7, 14)
 
     def test_xlrd_satisfies_the_floor_pandas_demands(self):
         """The version fact that IS real, and the one that bit.
@@ -179,7 +202,8 @@ class TestLegacyXlsReachesTheTextFallback:
         floor is a genuine requirement even though the reader itself is not
         the limitation.
         """
-        xlrd = pytest.importorskip("xlrd")
+        import xlrd
+
         major, minor, patch = (int(p) for p in xlrd.__version__.split(".")[:3])
         assert (major, minor, patch) >= (2, 0, 1), (
             f"xlrd {xlrd.__version__} is below the 2.0.1 floor pandas requires; "
@@ -213,23 +237,15 @@ class TestLegacyXlsReachesTheTextFallback:
             f"a .xls must be read by xlrd, not openpyxl; got {result.skipped_reason}"
         )
 
-    def test_it_reads_a_real_xls(self, tmp_path: Path):
-        """Full round trip when xlwt is available to build a fixture."""
-        pytest.importorskip("xlrd")
-        xlwt = pytest.importorskip("xlwt")
+    def test_it_reads_a_real_xls(self):
+        """Full round trip through the ingester's reader, on a committed workbook.
+
+        The fixture (two sheets, one empty) used to be built with xlwt at test
+        time, so this skipped on every CI run. It is read as-is now.
+        """
         from app.services.ingest.xlsx_ingester import _xls_sheet_texts
 
-        book = xlwt.Workbook()
-        sheet = book.add_sheet("Ages")
-        for c, v in enumerate(["Sample", "Age Ma", "method"]):
-            sheet.write(0, c, v)
-        for c, v in enumerate(["82ASh014", 37.1, "K-Ar"]):
-            sheet.write(1, c, v)
-        book.add_sheet("Empty")
-        path = tmp_path / "ages.xls"
-        book.save(str(path))
-
-        out = _xls_sheet_texts(str(path))
+        out = _xls_sheet_texts(str(LEGACY_AGES_XLS))
         assert [name for name, _ in out] == ["Ages"], "an empty sheet adds nothing"
         text = out[0][1]
         assert "Sample" in text and "82ASh014" in text
