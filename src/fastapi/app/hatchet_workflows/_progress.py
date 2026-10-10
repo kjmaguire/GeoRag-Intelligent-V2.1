@@ -38,6 +38,7 @@ See [[ingestion-runs-ui-2026-05-24]] for design notes and
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -78,6 +79,90 @@ ALLOWED_TRIGGERS: tuple[str, ...] = (
     "manual_retry",
     "stale_run_sweep",
 )
+
+
+#: Per ingest workflow, the fields of its input that the UPLOADER declared --
+#: the ones a re-dispatch must replay because nothing else can supply them.
+#: Identity (workspace, project, key, run id, correlation token, file size) is
+#: rebuilt from the progress row and is deliberately not here.
+#:
+#: This is the whitelist behind ``silver.ingest_progress.dispatch_params``.
+#: A workflow listed with ``()`` has no declared fields (the PDF/TIFF pair
+#: re-derive everything from the bytes), so a missing record costs nothing; one
+#: listed with fields cannot be recovered without them. A workflow absent from
+#: the table is treated like ``()``.
+DISPATCH_PARAM_FIELDS: dict[str, tuple[str, ...]] = {
+    # EPSG:32613 is assumed when source_epsg is absent (DEFAULT_SOURCE_EPSG);
+    # column_map is the mapping the user confirmed for a sheet nobody else can
+    # read.
+    "ingest_tabular": ("sheet_type", "source_epsg", "column_map"),
+    "ingest_spatial": ("feature_type", "source_epsg", "source_crs_wkt"),
+    "ingest_well_logs": ("hole_id",),
+    "ingest_geophysics": ("source_epsg", "source_name"),
+    # Forwarded to every member the archive fans out.
+    "ingest_zip_archive": ("source_epsg",),
+    "ingest_pdf": (),
+    "tiff_normalize": (),
+}
+
+
+def dispatch_params_for(workflow_name: str, payload: object) -> dict[str, object] | None:
+    """The uploader-declared fields of ``payload``, ready to store, or None.
+
+    ``{}`` means the payload declared nothing (defaults are what the upload
+    wanted). None means this module has no whitelist for the workflow, so
+    nothing is recorded and the column stays NULL ("not recorded").
+    """
+    fields = DISPATCH_PARAM_FIELDS.get(workflow_name)
+    if fields is None:
+        return None
+    declared: dict[str, object] = {}
+    for name in fields:
+        value = getattr(payload, name, None)
+        if value is not None:
+            declared[name] = value
+    return declared
+
+
+def decode_dispatch_params(raw: object) -> dict[str, object] | None:
+    """A ``dispatch_params`` column value as a dict; None when it is NULL or unreadable.
+
+    asyncpg hands jsonb back as text unless a codec is registered, and tests
+    pass dicts, so both are accepted. Anything that is not a JSON object is
+    "not recorded" -- the same answer as NULL, because replaying a guess is
+    the failure this exists to prevent.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (str, bytes, bytearray)):
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+    return None
+
+
+def recovery_params_block_reason(workflow_name: str | None, raw_params: object) -> str | None:
+    """Why a run cannot be re-dispatched for want of its upload's parameters.
+
+    A re-dispatch rebuilds the workflow input from the progress row. For a
+    workflow whose input has declared fields, a row that never recorded them
+    (``dispatch_params`` NULL: written before the column existed, or by a path
+    that does not record it) is NOT a row whose upload declared nothing, and
+    guessing is how a collar file declared as EPSG:26904 got re-placed in
+    zone 13. Such a run is left ``timed_out`` and the sweep says why.
+
+    ``{}`` -- recorded, nothing declared -- is recoverable, and so is any
+    workflow with no declared fields.
+    """
+    if not workflow_name or not DISPATCH_PARAM_FIELDS.get(workflow_name):
+        return None
+    if decode_dispatch_params(raw_params) is None:
+        return f"dispatch_params_unrecorded:{workflow_name}"
+    return None
 
 
 def recovery_max_attempts() -> int:
@@ -370,7 +455,8 @@ _START_RUN_SQL = """
         step_index, total_steps,
         triggered_by, parent_run_id, recovery_reason,
         attempt_number,
-        started_at, updated_at
+        started_at, updated_at,
+        dispatch_params
     )
     SELECT
         $1::uuid, $2::uuid, $3::uuid, $4,
@@ -383,10 +469,16 @@ _START_RUN_SQL = """
             FROM silver.ingest_progress
             WHERE workspace_id = $2::uuid AND minio_key = $5
         ), 1),
-        now(), now()
+        now(), now(),
+        $11::jsonb
     ON CONFLICT (run_id) DO NOTHING
     RETURNING run_id::text
 """
+
+
+def _dispatch_params_json(dispatch_params: dict[str, object] | None) -> str | None:
+    """The ``$11`` argument of :data:`_START_RUN_SQL`: JSON text, or NULL."""
+    return None if dispatch_params is None else json.dumps(dispatch_params, default=str)
 
 
 async def start_run(
@@ -399,8 +491,13 @@ async def start_run(
     recovery_reason: str | None = None,
     workflow_run_id: str | None = None,
     run_id: str | None = None,
+    dispatch_params: dict[str, object] | None = None,
 ) -> str | None:
     """Insert an ingest_progress row and return its run_id.
+
+    ``dispatch_params`` is what the uploader declared (see
+    :data:`DISPATCH_PARAM_FIELDS`), kept on the row so a recovery run can
+    replay it. None leaves the column NULL, i.e. "not recorded".
 
     Pass ``run_id`` when the caller already minted one (Laravel stamps a
     UUID on every upload and forwards it to the workflow). The row is then
@@ -445,6 +542,7 @@ async def start_run(
                 triggered_by,
                 parent_run_id,
                 recovery_reason,
+                _dispatch_params_json(dispatch_params),
             )
         # ON CONFLICT DO NOTHING returns no row when the run already
         # exists; that is a success, not a failure — the id is still ours.
@@ -497,6 +595,7 @@ async def claim_dispatch(
     minio_key: str,
     run_id: str | None = None,
     triggered_by: str = "upload",
+    dispatch_params: dict[str, object] | None = None,
 ) -> DispatchClaim:
     """Record the queued progress row BEFORE dispatch, or report a duplicate.
 
@@ -554,6 +653,7 @@ async def claim_dispatch(
             triggered_by,
             None,
             None,
+            _dispatch_params_json(dispatch_params),
         )
         if inserted is None:
             prior = await conn.fetchrow(

@@ -48,6 +48,10 @@ tests/test_ingest_progress_state_machine.py
 # A failed first attempt must leave the run open: a retry that succeeds has to
 # be able to complete it (2026-10-10; the body closed it 'failed' on EVERY attempt).
 tests/test_ingest_retry_keeps_run_open.py
+# A recovered run replays what the upload declared (CRS, column map, ...) from
+# silver.ingest_progress.dispatch_params, and is declined when it was never
+# recorded (2026-10-10).
+tests/test_recovery_replays_upload_params.py
 tests/test_stale_run_detector.py
 tests/test_orphan_sweep.py
 tests/test_mv_refresh.py

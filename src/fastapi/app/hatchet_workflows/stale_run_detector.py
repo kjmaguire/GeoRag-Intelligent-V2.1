@@ -238,9 +238,16 @@ def retry_block_reason(row: dict, *, max_attempts: int) -> str | None:
     for field in ("minio_key", "workspace_id", "project_id"):
         if not row.get(field):
             return f"missing_{field}"
-    if recovery_workflow_for_key(row["minio_key"]) is None:
+    workflow_name = recovery_workflow_for_key(row["minio_key"])
+    if workflow_name is None:
         return f"no_recovery_workflow:prefix={_key_prefix(row['minio_key'])!r}"
-    return None
+    # What the uploader declared (CRS, column map, ...) is not in the row's
+    # identity columns. A recovery that cannot replay it would re-ingest the
+    # file with defaults -- a collar file declared EPSG:26904 placed in zone 13
+    # -- so a run whose parameters were never recorded is left timed_out.
+    return ingest_progress.recovery_params_block_reason(
+        workflow_name, row.get("dispatch_params"),
+    )
 
 
 class StaleRunDetectorInput(BaseModel):
@@ -451,6 +458,18 @@ async def _unembedded_image_count(
         return 0
 
 
+def _declared_params(workflow_name: str, stale_row: dict) -> dict:
+    """The uploader-declared input fields recorded on ``stale_row``.
+
+    Only fields on the workflow's whitelist are returned, so a column value
+    that outlived a renamed input field cannot smuggle an unknown key into the
+    model (and identity fields can never be overridden from here).
+    """
+    stored = ingest_progress.decode_dispatch_params(stale_row.get("dispatch_params")) or {}
+    allowed = ingest_progress.DISPATCH_PARAM_FIELDS.get(workflow_name, ())
+    return {k: v for k, v in stored.items() if k in allowed}
+
+
 def _build_recovery_payload(
     *,
     workflow_name: str,
@@ -475,10 +494,19 @@ def _build_recovery_payload(
     ``file_size`` is informational for the PDF/TIFF pair: preflight
     re-downloads and re-derives the real size against the 2 GB cap, so 0 is
     safe here. (input.file_size has no other reference in either module.)
+
+    What the uploader DECLARED -- ``source_epsg``, ``column_map``,
+    ``source_crs_wkt``, ``feature_type``, ``hole_id``, ``source_name`` -- is
+    replayed from ``stale_row["dispatch_params"]`` (see
+    ``_progress.DISPATCH_PARAM_FIELDS``). It used to be dropped, so a recovered
+    ingest_tabular run fell back to the default CRS. A row that never recorded
+    them is declined upstream (``retry_block_reason``); here, absent params
+    simply mean "none to replay".
     """
     workspace_id = stale_row["workspace_id"]
     project_id = stale_row["project_id"]
     minio_key = stale_row["minio_key"]
+    declared = _declared_params(workflow_name, stale_row)
 
     if workflow_name == "ingest_pdf":
         from app.hatchet_workflows.ingest_pdf import IngestPdfInput, ingest_pdf
@@ -517,6 +545,7 @@ def _build_recovery_payload(
             project_id=project_id,
             minio_key=minio_key,
             run_id=recovery_run_id,
+            **declared,
         )
 
     if workflow_name == "ingest_spatial":
@@ -530,6 +559,7 @@ def _build_recovery_payload(
             project_id=project_id,
             minio_key=minio_key,
             run_id=recovery_run_id,
+            **declared,
         )
 
     if workflow_name == "ingest_well_logs":
@@ -543,6 +573,7 @@ def _build_recovery_payload(
             project_id=project_id,
             minio_key=minio_key,
             run_id=recovery_run_id,
+            **declared,
         )
 
     if workflow_name == "ingest_geophysics":
@@ -556,6 +587,7 @@ def _build_recovery_payload(
             project_id=project_id,
             minio_key=minio_key,
             run_id=recovery_run_id,
+            **declared,
         )
 
     if workflow_name == "ingest_tabular":
@@ -565,14 +597,19 @@ def _build_recovery_payload(
         )
 
         prefix = _key_prefix(minio_key)
+        # The sheet_type the upload actually carried wins; the upload
+        # category (the key's prefix) is only the fallback for a row that
+        # recorded none.
+        declared.setdefault(
+            "sheet_type",
+            prefix if prefix in _TABULAR_SHEET_TYPE_PREFIXES else None,
+        )
         return ingest_tabular, IngestTabularInput(
             workspace_id=workspace_id,
             project_id=project_id,
             minio_key=minio_key,
             run_id=recovery_run_id,
-            sheet_type=(
-                prefix if prefix in _TABULAR_SHEET_TYPE_PREFIXES else None
-            ),
+            **declared,
         )
 
     # Unreachable while this stays in lockstep with
@@ -617,6 +654,11 @@ async def _dispatch_recovery_run(
             triggered_by="stale_run_sweep",
             parent_run_id=stale_row["run_id"],
             recovery_reason="stale_heartbeat",
+            # Carried down the chain: the recovery row must still know what the
+            # upload declared, or a second-level recovery would lose it again.
+            dispatch_params=ingest_progress.decode_dispatch_params(
+                stale_row.get("dispatch_params"),
+            ),
         )
         if recovery_run_id is None:
             log.warning(
@@ -693,7 +735,8 @@ async def detect(input: StaleRunDetectorInput, ctx: Context) -> StaleRunDetector
                current_stage,
                current_step,
                attempt_number,
-               triggered_by
+               triggered_by,
+               dispatch_params
           FROM silver.ingest_progress
          WHERE status IN ('queued','started')
            AND COALESCE(last_heartbeat_at, started_at) < now()

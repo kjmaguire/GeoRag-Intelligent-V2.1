@@ -382,6 +382,11 @@ async def _claim_and_dispatch(
     project_id = str(payload.project_id) if payload.project_id else ""
     caller_run_id = getattr(payload, "run_id", None)
     triggered_by = _triggered_by(request)
+    # What the uploader declared (source_epsg, column_map, ...), kept on the
+    # row so the stale sweep and the nightly integrity sweep can replay it when
+    # they re-dispatch this run. Without it a recovered ingest_tabular run
+    # falls back to EPSG:32613 for a file the geologist said was something else.
+    dispatch_params = ingest_progress.dispatch_params_for(site, payload)
 
     if not (workspace_id and project_id):
         ref = await workflow.aio_run_no_wait(payload)
@@ -394,6 +399,7 @@ async def _claim_and_dispatch(
             minio_key=payload.minio_key,
             run_id=caller_run_id,
             triggered_by=triggered_by,
+            dispatch_params=dispatch_params,
         )
     except Exception as exc:
         log.warning(
@@ -408,6 +414,7 @@ async def _claim_and_dispatch(
             triggered_by=triggered_by,
             workflow_run_id=ref.workflow_run_id,
             run_id=caller_run_id,
+            dispatch_params=dispatch_params,
         )
         return _DispatchOutcome(ref.workflow_run_id, caller_run_id, True)
 

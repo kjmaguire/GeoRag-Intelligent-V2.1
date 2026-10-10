@@ -173,6 +173,18 @@ nightly_ingestion_integrity = hatchet.workflow(
 # ---------------------------------------------------------------------------
 # Tier 1 — Bronze orphan recovery (spec T10)
 # ---------------------------------------------------------------------------
+#: The newest recorded dispatch_params for a key, across all of its runs.
+_RECORDED_PARAMS_SQL = """
+    SELECT dispatch_params
+      FROM silver.ingest_progress
+     WHERE workspace_id = $1::uuid
+       AND minio_key    = $2
+       AND dispatch_params IS NOT NULL
+     ORDER BY attempt_number DESC, started_at DESC
+     LIMIT 1
+"""
+
+
 async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
     report = TierReport(tier=1, name="bronze_audit")
 
@@ -285,6 +297,37 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
                 report.notes.append(f"unroutable_key: {file_key}")
                 continue
 
+            # What the original upload declared (CRS, column map, ...), if any
+            # earlier run of this key recorded it. An orphan with NO run at all
+            # -- the normal shape for a non-PDF orphan, whose dispatch never
+            # reached the trigger endpoint -- has nothing recorded, and for a
+            # workflow whose input has declared fields that is not the same as
+            # "none were declared": re-dispatching it would read the file with
+            # defaults (a collar file placed in UTM zone 13) and, because the
+            # logical source name strips the upload timestamp, REPLACE the rows
+            # of a later correct re-upload of the same file. Decided before the
+            # claim, like F29's routing check, so a refusal burns no attempt.
+            async with conn.transaction():
+                await bind_workspace_scope(
+                    conn, workspace_id=workspace_id,
+                    site="nightly_integrity.tier1.params",
+                )
+                recorded = await conn.fetchval(_RECORDED_PARAMS_SQL, workspace_id, file_key)
+            dispatch_params = ingest_progress.decode_dispatch_params(recorded)
+            params_block = ingest_progress.recovery_params_block_reason(
+                workflow_name, recorded,
+            )
+            if params_block is not None:
+                report.items_skipped += 1
+                report.notes.append(f"{params_block}: {file_key}")
+                log.warning(
+                    "tier1.bronze.not_recovered key=%s workflow=%s reason=%s -- "
+                    "the upload's declared parameters were never recorded, so "
+                    "re-dispatching would guess them",
+                    file_key, workflow_name, params_block,
+                )
+                continue
+
             async with conn.transaction():
                 await bind_workspace_scope(
                     conn, workspace_id=workspace_id,
@@ -302,6 +345,7 @@ async def _tier_1_bronze(pool: asyncpg.Pool) -> TierReport:
                     workspace_id=workspace_id,
                     project_id=project_id,
                     minio_key=file_key,
+                    dispatch_params=dispatch_params,
                 )
                 if outcome == "dispatched":
                     report.items_dispatched += 1
@@ -329,6 +373,7 @@ def _recovery_trigger_payload(
     minio_key: str,
     run_id: str,
     correlation_token: str,
+    dispatch_params: dict | None = None,
 ) -> dict:
     """Body for a workflow's /internal/v1/shadow/{name}/trigger endpoint.
 
@@ -336,6 +381,12 @@ def _recovery_trigger_payload(
     correlation_token and re-derive their own size, and the four that take
     a caller-minted ``run_id`` get one so the progress row the endpoint
     creates and the row the workflow upserts are the same row.
+
+    ``dispatch_params`` is what the original upload declared (``source_epsg``,
+    ``column_map``, ...; see ``_progress.DISPATCH_PARAM_FIELDS``), replayed so
+    the recovered run reads the file the way the first one was told to. It
+    used to be dropped, and the trigger then ran ingest_tabular under the
+    default CRS. Only whitelisted fields are copied.
     """
     if workflow_name in ("ingest_pdf", "tiff_normalize"):
         return {
@@ -354,13 +405,15 @@ def _recovery_trigger_payload(
         "minio_key": minio_key,
         "run_id": run_id,
     }
+    allowed = ingest_progress.DISPATCH_PARAM_FIELDS.get(workflow_name, ())
+    payload.update({k: v for k, v in (dispatch_params or {}).items() if k in allowed})
     if workflow_name == "ingest_tabular":
         # The upload category is the sheet_type hint the geologist chose;
         # a CSV whose headers do not self-identify only routed correctly the
-        # first time because of it.
+        # first time because of it. A sheet_type the upload carried itself wins.
         prefix = _key_prefix(minio_key)
         if prefix in _TABULAR_SHEET_TYPE_PREFIXES:
-            payload["sheet_type"] = prefix
+            payload.setdefault("sheet_type", prefix)
     return payload
 
 
@@ -376,6 +429,7 @@ INGEST_TRIGGER_HEADER = "X-Ingest-Trigger"
 
 async def _dispatch_recovery(
     *, workflow_name: str, workspace_id: str, project_id: str, minio_key: str,
+    dispatch_params: dict | None = None,
 ) -> tuple[str, str | None]:
     """POST to the FastAPI trigger endpoint for the OWNING workflow.
 
@@ -430,6 +484,7 @@ async def _dispatch_recovery(
         minio_key=minio_key,
         run_id=run_id,
         correlation_token=str(_uuid.uuid4()),
+        dispatch_params=dispatch_params,
     )
     headers = {
         "Authorization": f"Bearer {jwt_token}",
