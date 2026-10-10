@@ -101,29 +101,57 @@ def test_terminal_statuses_match_db_check_constraint():
     )
 
 
+def _checkout_root() -> pathlib.Path | None:
+    """The repo checkout (the directory that holds `artisan`), or None in the FastAPI image.
+
+    This used to be ``Path(__file__).parents[2]``, which is ``src/``: the migration was
+    looked up under ``src/database/migrations``, never found, and the test skipped on
+    every run, in CI too. The root is found by what marks it, not by counting parents.
+    """
+    for parent in pathlib.Path(__file__).resolve().parents:
+        if (parent / "artisan").is_file():
+            return parent
+    return None
+
+
 def test_migration_creates_archive_ingest_runs_table():
-    """Migration must exist and create silver.archive_ingest_runs.
+    """Migration must exist, create silver.archive_ingest_runs, and allow the statuses the helper writes.
 
     The FastAPI container doesn't mount the Laravel `database/`
-    directory (only `src/fastapi/` is in the image), so the file
-    isn't reachable from inside the container. The PHPUnit sibling
+    directory (only `src/fastapi/` is in the image), so inside the
+    image there is nothing to read and the test skips. In a checkout
+    (CI, a developer machine) the file must be there: a missing
+    migration FAILS rather than skips. The PHPUnit sibling
     ``tests/Feature/Tenancy/ArchiveIngestRunsMigrationTest.php``
-    runs the full shape assertion on the host side.
+    runs the fuller shape assertion on the host side.
     """
-    migration = (
-        pathlib.Path(__file__).parents[2]
-        / "database"
-        / "migrations"
-        / "2026_06_03_040000_create_silver_archive_ingest_runs.php"
-    )
-    if not migration.exists():
+    root = _checkout_root()
+    if root is None:
         pytest.skip(
-            "Migration not reachable from FastAPI container — host-side "
-            "PHPUnit test (ArchiveIngestRunsMigrationTest) is the source "
-            "of truth for this assertion."
+            "not a repo checkout (the FastAPI image ships src/fastapi only) — host-side "
+            "PHPUnit test (ArchiveIngestRunsMigrationTest) is the source of truth there."
         )
+    migration = root / "database" / "migrations" / "2026_06_03_040000_create_silver_archive_ingest_runs.php"
+    assert migration.is_file(), (
+        f"{migration} is gone. The archive-ingest parent table's migration was renamed or "
+        "deleted; update this path (and ArchiveIngestRunsMigrationTest) with it."
+    )
     src = migration.read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS silver.archive_ingest_runs" in src
+
+    # The CHECK constraint is what the helper's writes are validated against: a status the
+    # helper can write but the constraint rejects is an INSERT/UPDATE that fails at runtime.
+    import re
+
+    from app.hatchet_workflows._archive_progress import TERMINAL_STATUSES
+
+    check = re.search(r"archive_ingest_runs_status_valid CHECK \(\s*status IN \((.*?)\)\s*\)", src, re.S)
+    assert check, "archive_ingest_runs_status_valid CHECK constraint not found in the migration"
+    allowed = set(re.findall(r"'([a-z_]+)'", check.group(1)))
+    assert allowed == {"queued", "extracting", "fanning_out", *TERMINAL_STATUSES}, (
+        f"migration allows {sorted(allowed)}; the helper's TERMINAL_STATUSES are {sorted(TERMINAL_STATUSES)} "
+        "plus the non-terminal queued/extracting/fanning_out. Change both together."
+    )
 
 
 def test_workflow_marks_partial_when_per_file_errors_present():
