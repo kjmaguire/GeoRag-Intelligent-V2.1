@@ -476,7 +476,19 @@ def _pivot_long_to_wide(
         n_samples,
     )
 
-    wide_df = pl.DataFrame(list(group_records.values()))
+    # Built column by column from the full column list, NOT from the list of
+    # row dicts: pl.DataFrame(list_of_dicts) infers its columns from the first
+    # 100 dicts, so an element first seen in the 101st sample group
+    # ("Au" for 100 samples, then the first "Mo") had its whole column dropped
+    # with no warning (audit finding 8).
+    wide_columns = [*group_key_cols, *assay_col_names]
+    wide_df = pl.DataFrame({
+        column: [record.get(column) for record in group_records.values()]
+        for column in wide_columns
+    })
+    lost = [column for column in assay_col_names if column not in wide_df.columns]
+    if lost:  # unreachable by construction; a silent drop is the failure to prevent
+        raise RuntimeError(f"long-format pivot lost assay column(s): {lost}")
     # Align flags list with wide_df row order (dict preserves insertion order).
     pivoted_flags = list(group_flags.values())
     pivoted_unit_ambiguity = list(group_unit_ambiguity.values())
