@@ -61,7 +61,7 @@ class CsvSamplesExporter
                 ]);
 
             if (! empty($filters['hole_id'])) {
-                $query->where('c.hole_id', $filters['hole_id']);
+                CollarExportQuery::whereHoleId($query, (string) $filters['hole_id'], 'c');
             }
             if (isset($filters['from_depth_min'])) {
                 $query->where('s.from_depth', '>=', $filters['from_depth_min']);

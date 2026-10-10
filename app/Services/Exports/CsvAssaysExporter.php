@@ -102,7 +102,7 @@ class CsvAssaysExporter
                 ]);
 
             if (! empty($filters['hole_id'])) {
-                $query->where('c.hole_id', $filters['hole_id']);
+                CollarExportQuery::whereHoleId($query, (string) $filters['hole_id'], 'c');
             }
             if (! empty($filters['element'])) {
                 $query->where('a.element', $filters['element']);

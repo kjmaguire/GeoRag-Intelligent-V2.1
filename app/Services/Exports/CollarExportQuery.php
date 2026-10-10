@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services\Exports;
 
 use App\Models\Collar;
+use App\Support\HoleId;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 
@@ -115,6 +116,10 @@ final class CollarExportQuery
             }
         }
 
+        if (! empty($filters['hole_id'])) {
+            self::whereHoleId($query, (string) $filters['hole_id']);
+        }
+
         if (! empty($filters['drill_date_from'])) {
             $query->where('drill_date', '>=', $filters['drill_date_from']);
         }
@@ -129,6 +134,32 @@ final class CollarExportQuery
         }
 
         return $query;
+    }
+
+    /**
+     * Narrow to one hole the way GET /projects/{p}/collars?hole_id= does: the
+     * display id exactly, or the same canonical id (HoleId::canonicalize), so
+     * "LEB-23-001" and "leb 23 001" name the same collar.
+     *
+     * The collar exporters accepted `filters.hole_id` and ignored it, so a
+     * one-hole export shipped the whole project; the child exporters compared
+     * the display id exactly and found nothing for a differently spelled id.
+     *
+     * @param \Illuminate\Contracts\Database\Query\Builder $query
+     * @param string $table the collars table's alias in $query ('' when unaliased)
+     */
+    public static function whereHoleId($query, string $holeId, string $table = ''): void
+    {
+        $prefix = $table !== '' ? "{$table}." : '';
+        $canonical = HoleId::canonicalize($holeId);
+
+        $query->where(function ($match) use ($prefix, $holeId, $canonical): void {
+            $match->where("{$prefix}hole_id", $holeId);
+
+            if ($canonical !== null) {
+                $match->orWhere("{$prefix}hole_id_canonical", $canonical);
+            }
+        });
     }
 
     /**

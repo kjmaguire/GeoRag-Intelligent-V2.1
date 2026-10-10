@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Services\Exports;
 
 use App\Services\Exports\CsvCollarExporter;
+use App\Services\Exports\CsvSamplesExporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Concerns\RequiresPostgres;
 use Tests\Concerns\SeedsCollarExportData;
@@ -60,6 +61,40 @@ final class CsvCollarExporterTest extends TestCase
         $this->assertSame('2024-06-15', $row['drill_date']);
         $this->assertEquals(412.5, $row['elevation']);
         $this->assertEquals(150.0, $row['total_depth']);
+    }
+
+    public function test_a_hole_id_filter_exports_that_hole_whatever_its_spelling(): void
+    {
+        // filters.hole_id was validated and then ignored: a one-hole export
+        // shipped every collar in the project.
+        $project = $this->exportProject(26913);
+        $at = ['x' => 500000.0, 'y' => 6000000.0, 'srid' => 26913];
+        $this->exportCollar($project, 'LEB-23-001', $at);
+        $this->exportCollar($project, 'LEB-23-002', $at);
+
+        $rows = $this->readCsv(
+            (new CsvCollarExporter)->export($project->project_id, ['hole_id' => 'leb 23 001'])['path'],
+        );
+
+        $this->assertCount(2, $rows, 'a header and exactly the one hole asked for');
+        $this->assertSame('LEB-23-001', array_combine(self::HEADER, $rows[1])['hole_id']);
+    }
+
+    public function test_a_child_export_finds_the_hole_by_its_canonical_id(): void
+    {
+        // The samples, assays, lithology and geochemistry exporters compared
+        // the display id exactly, so "leb 23 001" found nothing.
+        $project = $this->exportProject(26913);
+        $at = ['x' => 500000.0, 'y' => 6000000.0, 'srid' => 26913];
+        $this->exportSample($project, $this->exportCollar($project, 'LEB-23-001', $at), 1.0, 2.0, ['Au_ppm' => 1.5]);
+        $this->exportSample($project, $this->exportCollar($project, 'LEB-23-002', $at), 1.0, 2.0, ['Au_ppm' => 2.5]);
+
+        $rows = $this->readCsv(
+            (new CsvSamplesExporter)->export($project->project_id, ['hole_id' => 'leb 23 001'])['path'],
+        );
+
+        $this->assertCount(2, $rows, 'a header and the one sample of that hole');
+        $this->assertContains('LEB-23-001', $rows[1]);
     }
 
     public function test_a_value_with_a_backslash_before_a_quote_round_trips_as_rfc_4180(): void
