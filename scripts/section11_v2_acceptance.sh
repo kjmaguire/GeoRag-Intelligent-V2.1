@@ -88,7 +88,7 @@ check_file "charts/georag/templates/_helpers.tpl"
 # ----------------------------------------------------------------------------
 echo
 echo "-- §11.6 service templates --"
-for svc in postgresql pgbouncer qdrant redis seaweedfs fastapi laravel hatchet martin ingress jobs namespace secrets networkpolicy pdb; do
+for svc in postgresql pgbouncer qdrant redis seaweedfs fastapi model-sidecars laravel hatchet martin ingress jobs namespace secrets networkpolicy pdb; do
     check_file "charts/georag/templates/$svc.yaml"
 done
 
@@ -119,6 +119,8 @@ SECRETS_ARGS=(
     --set "secrets.redisPassword=x"
     --set "secrets.fastapiServiceKey=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
     --set "secrets.laravelAppKey=base64:x"
+    --set "secrets.reverbAppKey=x"
+    --set "secrets.reverbAppSecret=x"
 )
 for flavor in k3s vanilla airgap; do
     TOTAL=$((TOTAL + 1))
@@ -156,9 +158,12 @@ SECRETS_ARGS_DRIFT=(
     --set "secrets.postgresPassword=CHANGEME"
     --set "secrets.pgAppPassword=CHANGEME"
     --set "secrets.martinDbPassword=CHANGEME"
+    --set "secrets.hatchetDbPassword=CHANGEME"
     --set "secrets.redisPassword=CHANGEME"
     --set "secrets.fastapiServiceKey=CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
     --set "secrets.laravelAppKey=base64:CHANGEME"
+    --set "secrets.reverbAppKey=CHANGEME"
+    --set "secrets.reverbAppSecret=CHANGEME"
 )
 for flavor in k3s vanilla airgap; do
     TOTAL=$((TOTAL + 1))

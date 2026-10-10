@@ -138,6 +138,10 @@ stringData:
   FASTAPI_SERVICE_KEY: "CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
   LARAVEL_APP_KEY: "base64:CHANGEME"
   HATCHET_CLIENT_TOKEN: ""
+  HATCHET_DB_PASSWORD: "CHANGEME"
+  REVERB_APP_ID: "georag-app"
+  REVERB_APP_KEY: "CHANGEME"
+  REVERB_APP_SECRET: "CHANGEME"
 ---
 # Source: georag/templates/martin.yaml
 # SEC-3 (2026-09-29): Martin used to start with only DATABASE_URL, which
@@ -977,6 +981,44 @@ data:
         #     station: text
         #     collection_year: int4
 ---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: georag-embedding-hf-cache
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: embedding
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: georag-reranker-hf-cache
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: reranker
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
 # Source: georag/templates/fastapi.yaml
 apiVersion: v1
 kind: Service
@@ -1019,7 +1061,7 @@ spec:
     - port: 7077
       targetPort: grpc
       name: grpc
-    - port: 8080
+    - port: 8888
       targetPort: api
       name: api
   selector:
@@ -1096,6 +1138,78 @@ spec:
     app.kubernetes.io/name: georag
     app.kubernetes.io/instance: georag
     app.kubernetes.io/component: martin
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-embedding
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: embedding
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: embedding
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-reranker
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: reranker
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: reranker
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: georag-sparse
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: sparse
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: http
+      name: http
+  selector:
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/component: sparse
 ---
 # Source: georag/templates/pgbouncer.yaml
 apiVersion: v1
@@ -1296,17 +1410,22 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: FASTAPI_SERVICE_KEY
+            # Triggering a workflow (/internal/v1/shadow/*/trigger) goes through
+            # the Hatchet client: token, gRPC address and TLS strategy.
             - name: HATCHET_CLIENT_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: georag-secrets
                   key: HATCHET_CLIENT_TOKEN
+            - name: HATCHET_CLIENT_HOST_PORT
+              value: "georag-hatchet:7077"
+            - name: HATCHET_CLIENT_TLS_STRATEGY
+              value: none
             # COHERE_API_KEY: chat (LLM_BACKEND=cohere, the default) and Cohere
             # Parse OCR both read it, and the API process runs the production-
-            # posture check that logs CRITICAL when it is empty. The worker gets
-            # the whole Secret through envFrom; this Deployment lists its keys,
-            # so the key must be named here or an on-prem install that set it
-            # reaches only the worker. optional: true - an air-gapped install
+            # posture check that logs CRITICAL when it is empty. This
+            # Deployment and the worker both name the key explicitly (neither
+            # takes the whole Secret). optional: true - an air-gapped install
             # (`ocr.engine: tesseract`, no egress) has no such key, and a
             # required reference would hold the pod in CreateContainerConfigError.
             - name: COHERE_API_KEY
@@ -1330,6 +1449,33 @@ spec:
             # air-gapped site sets `ocr.engine: tesseract` in values.
             - name: OCR_ENGINE
               value: "cohere_parse"
+            # Capped; the image default is 6. See fastapi.uvicornWorkers.
+            - name: UVICORN_WORKERS
+              value: "3"
+            # app/services/laravel_bridge.py falls back to http://laravel.test
+            # (the Herd local default) and dies on DNS: ingestion progress,
+            # workspace-data-updated and report-build progress all go through
+            # it, and the only symptom is a per-call "Name or service not
+            # known" while every pod stays healthy. Laravel's Service port, not
+            # the container's.
+            - name: LARAVEL_INTERNAL_URL
+              value: http://georag-laravel-octane:8000
+            - name: FASTAPI_INTERNAL_URL
+              value: http://georag-fastapi:8000
+            # The shared model sidecars; without these every uvicorn process
+            # loads its own copy of each model and the pod is OOM-killed.
+            - name: EMBEDDING_SERVICE_URL
+              value: "http://georag-embedding:8000"
+            - name: EMBEDDING_MODEL_NAME
+              value: "Qwen/Qwen3-Embedding-0.6B"
+            - name: EMBEDDING_MODEL_REVISION
+              value: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+            - name: SPARSE_SERVICE_URL
+              value: "http://georag-sparse:8000"
+            - name: RERANKER_BACKEND
+              value: "cross_encoder"
+            - name: RERANKER_SERVICE_URL
+              value: "http://georag-reranker:8000"
           resources:
             limits:
               cpu: "2"
@@ -1393,14 +1539,25 @@ spec:
           image: ghcr.io/anthropics/georag/fastapi:v1.0.0
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "app.hatchet_workflows.worker"]
-          envFrom:
-            - secretRef:
-                name: georag-secrets
+          # No envFrom. The worker used to take the whole release Secret — the
+          # Postgres superuser password, the Martin and Reverb credentials —
+          # and overrode only the one key it knew was dangerous. It reads
+          # exactly the variables below.
           env:
             - name: WORKER_POOL
               value: "all"
-            - name: HATCHET_CLIENT_HOST
+            # The SDK reads HATCHET_CLIENT_HOST_PORT (+ TLS strategy, token);
+            # the HATCHET_CLIENT_HOST this used to set is ignored, so the
+            # worker dialled localhost:7070.
+            - name: HATCHET_CLIENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: HATCHET_CLIENT_TOKEN
+            - name: HATCHET_CLIENT_HOST_PORT
               value: "georag-hatchet:7077"
+            - name: HATCHET_CLIENT_TLS_STRATEGY
+              value: none
             - name: POSTGRES_HOST
               value: georag-pgbouncer
             - name: POSTGRES_PORT
@@ -1411,8 +1568,7 @@ spec:
               value: "5432"
             # SEC-1 (2026-09-29): georag_app, as on AWS. Without these the
             # DSN fell back to POSTGRES_USER=georag — the superuser, which
-            # bypasses RLS — with the superuser password from envFrom.
-            # Explicit env wins over the envFrom Secret for the same key.
+            # bypasses RLS.
             - name: POSTGRES_USER
               value: georag_app
             - name: POSTGRES_DB
@@ -1424,8 +1580,67 @@ spec:
                   key: PG_APP_PASSWORD
             - name: REDIS_HOST
               value: georag-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
             - name: QDRANT_HOST
               value: georag-qdrant
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: QDRANT_API_KEY
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+            # Chat is not the worker's, but Cohere Parse OCR is. optional: true
+            # for an air-gapped install with no such key (see fastapi.yaml).
+            - name: COHERE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: COHERE_API_KEY
+                  optional: true
+            # Both default to compose hostnames (http://fastapi:8000,
+            # http://laravel.test) that do not resolve here. The first is read
+            # by nightly_ingestion_integrity, the second by every progress and
+            # workspace-data-updated callback to Laravel.
+            - name: FASTAPI_INTERNAL_URL
+              value: http://georag-fastapi:8000
+            - name: LARAVEL_INTERNAL_URL
+              value: http://georag-laravel-octane:8000
+            # The shared sidecars. Ingest still loads its own dense embedder
+            # (passage_embedder ignores EMBEDDING_SERVICE_URL), from the same
+            # model name and revision, so the vector spaces match.
+            - name: EMBEDDING_SERVICE_URL
+              value: "http://georag-embedding:8000"
+            - name: EMBEDDING_MODEL_NAME
+              value: "Qwen/Qwen3-Embedding-0.6B"
+            - name: EMBEDDING_MODEL_REVISION
+              value: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+            - name: SPARSE_SERVICE_URL
+              value: "http://georag-sparse:8000"
+            - name: RERANKER_BACKEND
+              value: "cross_encoder"
+            - name: RERANKER_SERVICE_URL
+              value: "http://georag-reranker:8000"
+            # Writable caches. The image's HF_HOME (/opt/hf_cache, which holds
+            # the baked SPLADE++ weights) is read-only for www-data, so the
+            # dense embedder's download needs somewhere else to go; without it
+            # the embed workflow never executes. Only the SentenceTransformer
+            # cache is moved, so the baked SPLADE++ weights are still found.
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: /tmp/hf_cache
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg_cache
+            - name: MPLCONFIGDIR
+              value: /tmp/mpl_cache
             # ADR-0025 follow-up: set explicitly. The code default is now
             # "cohere", which an on-prem / air-gapped install cannot reach (no
             # COHERE_API_KEY here, and no egress), so an unset value would take
@@ -1485,11 +1700,16 @@ spec:
           image: ghcr.io/anthropics/georag/laravel:v1.0.0
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8000
+            # The image's CMD is `octane:start --port=80` (docker/laravel.Dockerfile
+            # EXPOSEs 80), and this chart does not override it. The Service,
+            # the probe and the Ingress all reach this by the name `http`.
+            - containerPort: 80
               name: http
           env:
             - name: APP_ENV
               value: production
+            - name: APP_URL
+              value: "https://georag.example.com"
             - name: APP_KEY
               valueFrom:
                 secretKeyRef:
@@ -1502,7 +1722,7 @@ spec:
             # BindWorkspaceRlsContext's session-scoped binding is unsound
             # behind PgBouncer's transaction pooling (it refuses to serve
             # when DB_POOLED is true). No Laravel connection is configured
-            # with the superuser; migrations are an operator step.
+            # with the superuser; migrations are the schema Job's.
             - name: DB_CONNECTION
               value: pgsql
             - name: DB_HOST
@@ -1527,6 +1747,12 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: REDIS_PASSWORD
+            - name: QUEUE_CONNECTION
+              value: redis
+            - name: CACHE_STORE
+              value: redis
+            - name: SESSION_DRIVER
+              value: redis
             - name: FASTAPI_INTERNAL_URL
               value: http://georag-fastapi:8000
             - name: FASTAPI_SERVICE_KEY
@@ -1534,6 +1760,34 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: FASTAPI_SERVICE_KEY
+            # config/services.php falls back to http://martin:3000, the compose
+            # service name, which does not resolve here. Octane alone reads it
+            # (TileProxyController); no queued job touches Martin.
+            - name: MARTIN_INTERNAL_URL
+              value: http://georag-martin:3000
+            - name: BROADCAST_CONNECTION
+              value: reverb
+            - name: REVERB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_ID
+            - name: REVERB_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_KEY
+            - name: REVERB_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_SECRET
+            - name: REVERB_HOST
+              value: georag-laravel-reverb
+            - name: REVERB_PORT
+              value: "8080"
+            - name: REVERB_SCHEME
+              value: http
           resources:
             limits:
               cpu: "2"
@@ -1580,12 +1834,20 @@ spec:
           image: ghcr.io/anthropics/georag/laravel:v1.0.0
           imagePullPolicy: IfNotPresent
           command: ["php", "artisan", "horizon"]
-          envFrom:
-            - secretRef:
-                name: georag-secrets
+          # No envFrom: it handed this pod every key in the release Secret —
+          # the Postgres superuser password included — and, since the Secret
+          # keys the app key LARAVEL_APP_KEY, still left it without APP_KEY.
+          # Laravel reads exactly the variables below.
           env:
-            - name: REDIS_HOST
-              value: georag-redis
+            - name: APP_ENV
+              value: production
+            - name: APP_URL
+              value: "https://georag.example.com"
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: LARAVEL_APP_KEY
             # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
             # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
             # and talks to Postgres DIRECTLY, as on AWS. A superuser
@@ -1593,7 +1855,7 @@ spec:
             # BindWorkspaceRlsContext's session-scoped binding is unsound
             # behind PgBouncer's transaction pooling (it refuses to serve
             # when DB_POOLED is true). No Laravel connection is configured
-            # with the superuser; migrations are an operator step.
+            # with the superuser; migrations are the schema Job's.
             - name: DB_CONNECTION
               value: pgsql
             - name: DB_HOST
@@ -1611,6 +1873,52 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: PG_APP_PASSWORD
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
+            - name: QUEUE_CONNECTION
+              value: redis
+            - name: CACHE_STORE
+              value: redis
+            - name: SESSION_DRIVER
+              value: redis
+            # The queued job IS the chat (StreamQueryFromFastApi), and it reads
+            # config('services.fastapi.internal_url'), whose fallback is the
+            # compose hostname http://fastapi:8000. Octane only dispatches.
+            - name: FASTAPI_INTERNAL_URL
+              value: http://georag-fastapi:8000
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+            - name: BROADCAST_CONNECTION
+              value: reverb
+            - name: REVERB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_ID
+            - name: REVERB_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_KEY
+            - name: REVERB_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_SECRET
+            - name: REVERB_HOST
+              value: georag-laravel-reverb
+            - name: REVERB_PORT
+              value: "8080"
+            - name: REVERB_SCHEME
+              value: http
           resources:
             limits:
               cpu: "1"
@@ -1654,10 +1962,17 @@ spec:
           ports:
             - containerPort: 8080
               name: ws
-          envFrom:
-            - secretRef:
-                name: georag-secrets
+          # No envFrom, for the same reason as Horizon.
           env:
+            - name: APP_ENV
+              value: production
+            - name: APP_URL
+              value: "https://georag.example.com"
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: LARAVEL_APP_KEY
             # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
             # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
             # and talks to Postgres DIRECTLY, as on AWS. A superuser
@@ -1665,7 +1980,7 @@ spec:
             # BindWorkspaceRlsContext's session-scoped binding is unsound
             # behind PgBouncer's transaction pooling (it refuses to serve
             # when DB_POOLED is true). No Laravel connection is configured
-            # with the superuser; migrations are an operator step.
+            # with the superuser; migrations are the schema Job's.
             - name: DB_CONNECTION
               value: pgsql
             - name: DB_HOST
@@ -1683,6 +1998,56 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: PG_APP_PASSWORD
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
+            - name: QUEUE_CONNECTION
+              value: redis
+            - name: CACHE_STORE
+              value: redis
+            - name: SESSION_DRIVER
+              value: redis
+            - name: REVERB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_ID
+            - name: REVERB_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_KEY
+            - name: REVERB_APP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REVERB_APP_SECRET
+            # The WebSocket origin allowlist. config/reverb.php defaults to a
+            # localhost/georag.local list for dev; left at that, every upgrade
+            # from the real host is rejected and no answer ever streams.
+            - name: REVERB_ALLOWED_ORIGINS
+              value: "georag.example.com"
+            # REQUIRED. Both default to 10000 bytes, far below a completed LLM
+            # answer frame, and Reverb silently rejects an oversized payload.
+            # int64, not the bare value: Helm reads a YAML number as a float and
+            # `quote` would print 1000000 as "1e+06".
+            - name: REVERB_MAX_REQUEST_SIZE
+              value: "1000000"
+            - name: REVERB_APP_MAX_MESSAGE_SIZE
+              value: "1000000"
+            # The Redis pub/sub backplane (REDIS_HOST / REDIS_PASSWORD above).
+            # Each replica holds only the sockets connected to IT, and a
+            # publish reaches one replica, so with more than one and no
+            # backplane the frames that land on the wrong one are dropped
+            # silently. Harmless at one replica.
+            - name: REVERB_SCALING_ENABLED
+              value: "false"
+            - name: REVERB_SCALING_CHANNEL
+              value: reverb
           resources:
             limits:
               cpu: 500m
@@ -1690,6 +2055,12 @@ spec:
             requests:
               cpu: 100m
               memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /up
+              port: ws
+            initialDelaySeconds: 10
+            periodSeconds: 10
 ---
 # Source: georag/templates/martin.yaml
 apiVersion: apps/v1
@@ -1759,6 +2130,341 @@ spec:
         - name: config
           configMap:
             name: georag-martin-config
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-embedding
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  # A ReadWriteOnce volume cannot be attached to the old and the new pod at
+  # once, so a rolling update would wedge on the new pod's mount.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: embedding
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: embedding
+    spec:
+      
+      # The image runs as www-data (uid 33); the cache volume has to be
+      # writable by it.
+      securityContext:
+        fsGroup: 33
+      containers:
+        - name: embedding
+          image: ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - app.embedding_service:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --workers
+            - "1"
+            - --no-access-log
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Service-to-service auth: every route checks X-Service-Key against
+            # this (app/sidecar_auth.py), and the proxies in the fastapi pods
+            # and the worker send the same key.
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+            # Import-time cache mkdirs (numba, matplotlib, HF) target $HOME,
+            # which is not writable for www-data in this image.
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg_cache
+            - name: MPLCONFIGDIR
+              value: /tmp/mpl_cache
+            - name: OMP_NUM_THREADS
+              value: "2"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            - name: HF_HOME
+              value: /tmp/hf_cache
+            - name: HF_HUB_CACHE
+              value: /tmp/hf_cache
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: /tmp/hf_cache
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/hf_cache
+            # The same model and revision the fastapi pods and the worker are
+            # given (georag.modelServiceEnv).
+            - name: EMBEDDING_MODEL_NAME
+              value: "Qwen/Qwen3-Embedding-0.6B"
+            - name: EMBEDDING_MODEL_REVISION
+              value: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 4Gi
+            requests:
+              cpu: 500m
+              memory: 2Gi
+          # A model that has to be downloaded first can take many minutes; the
+          # startup probe holds the other two off for up to 15, and /health
+          # answers 503 until the model is loaded.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /tmp/hf_cache
+      volumes:
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: georag-embedding-hf-cache
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-reranker
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  # A ReadWriteOnce volume cannot be attached to the old and the new pod at
+  # once, so a rolling update would wedge on the new pod's mount.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: reranker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: reranker
+    spec:
+      
+      # The image runs as www-data (uid 33); the cache volume has to be
+      # writable by it.
+      securityContext:
+        fsGroup: 33
+      containers:
+        - name: reranker
+          image: ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - app.reranker_service:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --workers
+            - "1"
+            - --no-access-log
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Service-to-service auth: every route checks X-Service-Key against
+            # this (app/sidecar_auth.py), and the proxies in the fastapi pods
+            # and the worker send the same key.
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+            # Import-time cache mkdirs (numba, matplotlib, HF) target $HOME,
+            # which is not writable for www-data in this image.
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg_cache
+            - name: MPLCONFIGDIR
+              value: /tmp/mpl_cache
+            - name: OMP_NUM_THREADS
+              value: "2"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+            - name: HF_HOME
+              value: /tmp/hf_cache
+            - name: HF_HUB_CACHE
+              value: /tmp/hf_cache
+            - name: SENTENCE_TRANSFORMERS_HOME
+              value: /tmp/hf_cache
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/hf_cache
+            - name: RERANKER_BACKEND
+              value: "cross_encoder"
+            - name: RERANKER_TORCH_THREADS
+              value: "2"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 5Gi
+            requests:
+              cpu: 500m
+              memory: 2Gi
+          # A model that has to be downloaded first can take many minutes; the
+          # startup probe holds the other two off for up to 15, and /health
+          # answers 503 until the model is loaded.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /tmp/hf_cache
+      volumes:
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: georag-reranker-hf-cache
+---
+# Source: georag/templates/model-sidecars.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: georag-sparse
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: georag
+      app.kubernetes.io/instance: georag
+      app.kubernetes.io/component: sparse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: sparse
+    spec:
+      
+      containers:
+        - name: sparse
+          image: ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - uvicorn
+            - app.sparse_service:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --workers
+            - "1"
+            - --no-access-log
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            # Service-to-service auth: every route checks X-Service-Key against
+            # this (app/sidecar_auth.py), and the proxies in the fastapi pods
+            # and the worker send the same key.
+            - name: FASTAPI_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: FASTAPI_SERVICE_KEY
+            # Import-time cache mkdirs (numba, matplotlib, HF) target $HOME,
+            # which is not writable for www-data in this image.
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/xdg_cache
+            - name: MPLCONFIGDIR
+              value: /tmp/mpl_cache
+            - name: OMP_NUM_THREADS
+              value: "2"
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+          resources:
+            limits:
+              cpu: "2"
+              memory: 3Gi
+            requests:
+              cpu: 250m
+              memory: 1Gi
+          # A model that has to be downloaded first can take many minutes; the
+          # startup probe holds the other two off for up to 15, and /health
+          # answers 503 until the model is loaded.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 3
 ---
 # Source: georag/templates/pgbouncer.yaml
 apiVersion: apps/v1
@@ -1916,8 +2622,54 @@ spec:
           ports:
             - containerPort: 7077
               name: grpc
-            - containerPort: 8080
+            # Web UI + REST API. hatchet-lite serves both on 8888.
+            - containerPort: 8888
               name: api
+          # docker-compose.yml's hatchet-lite environment, with the two values
+          # that cannot carry over corrected for a cluster. This container had
+          # NO environment: hatchet-lite then dies at boot on the missing
+          # DATABASE_URL and takes every workflow and cron with it.
+          env:
+            # Declared before DATABASE_URL: $(VAR) only expands variables
+            # defined earlier in the list.
+            - name: HATCHET_DB_PW
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: HATCHET_DB_PASSWORD
+            # The engine's own database and role, inside the same Postgres
+            # (created by docker/postgresql/init/20-hatchet-database.sql;
+            # pg-init sets the password).
+            - name: DATABASE_URL
+              value: "postgres://hatchet:$(HATCHET_DB_PW)@georag-postgresql:5432/hatchet?sslmode=disable"
+            # Postgres-backed message queue; RabbitMQ is not deployed.
+            - name: SERVER_MSGQUEUE_KIND
+              value: postgres
+            - name: SERVER_DEFAULT_ENGINE_VERSION
+              value: V1
+            - name: SERVER_AUTH_COOKIE_DOMAIN
+              value: "localhost"
+            - name: SERVER_AUTH_COOKIE_INSECURE
+              value: "t"
+            - name: SERVER_AUTH_SET_EMAIL_VERIFIED
+              value: "t"
+            - name: SERVER_URL
+              value: "http://localhost:8888"
+            # Plaintext gRPC, as compose and the AWS tasks run it; the clients
+            # say HATCHET_CLIENT_TLS_STRATEGY=none to match. Cluster-internal.
+            - name: SERVER_GRPC_BIND_ADDRESS
+              value: "0.0.0.0"
+            - name: SERVER_GRPC_PORT
+              value: "7077"
+            - name: SERVER_GRPC_INSECURE
+              value: "t"
+            # What workers are told to dial. Compose sets `localhost`, which in
+            # a cluster would send every worker back to its own pod, so no
+            # workflow would ever be picked up: it has to be the Service.
+            - name: SERVER_GRPC_BROADCAST_ADDRESS
+              value: "georag-hatchet:7077"
+            - name: SERVER_INTERNAL_CLIENT_INTERNAL_GRPC_BROADCAST_ADDRESS
+              value: "georag-hatchet:7077"
           resources:
             limits:
               cpu: "1"
@@ -1925,9 +2677,21 @@ spec:
             requests:
               cpu: 250m
               memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /api/ready
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 8
           volumeMounts:
+            # /config, not /hatchet/config: that is where the engine writes the
+            # encryption keyset it generates on first boot, and where
+            # `hatchet-admin --config /config token create` reads it back. A
+            # volume anywhere else keeps nothing, and every restart generates a
+            # new keyset — which invalidates every client token.
             - name: config
-              mountPath: /hatchet/config
+              mountPath: /config
   volumeClaimTemplates:
     - metadata:
         name: config
@@ -2061,12 +2825,6 @@ spec:
               name: http
             - containerPort: 6334
               name: grpc
-          env:
-            - name: QDRANT__SERVICE__API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: georag-secrets
-                  key: QDRANT_API_KEY
           resources:
             limits:
               cpu: "2"
@@ -2141,9 +2899,16 @@ spec:
               # queue jobs (no TTL) alongside cache and sessions (TTL'd).
               # allkeys-lru would evict queued jobs silently. See
               # deploy/aws/terraform/services.tf for the full argument.
+              #
+              # --save "" is explicit whenever AOF is on. Left out, Redis keeps
+              # its default RDB save points and forks to snapshot the same
+              # dataset the AOF already covers: a second copy-on-write fork
+              # against a memory limit sized for one, and a second durability
+              # mechanism nobody chose. Compose and the AWS task both say it.
               redis-server \
                 --requirepass "$REDIS_PASSWORD" \
                 --appendonly yes \
+                --save "" \
                 --dir /data \
                 --maxmemory 1536mb \
                 --maxmemory-policy volatile-lru
@@ -2250,50 +3015,6 @@ spec:
           requests:
             storage: 100Gi
 ---
-# Source: georag/templates/jobs.yaml
-# Nightly hash-chain verifier. Reports via audit row; fails the Job
-# (and surfaces as a K8s event) if the chain is broken.
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: georag-audit-chain-verify
-  namespace: georag
-  labels:
-    helm.sh/chart: georag-0.2.0
-    app.kubernetes.io/name: georag
-    app.kubernetes.io/instance: georag
-    app.kubernetes.io/version: "v1.0.0"
-    app.kubernetes.io/managed-by: Helm
-spec:
-  schedule: "0 3 * * *"
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  concurrencyPolicy: Forbid
-  jobTemplate:
-    spec:
-      template:
-        metadata:
-          labels:
-            app.kubernetes.io/name: georag
-            app.kubernetes.io/instance: georag
-            app.kubernetes.io/component: audit-chain-verify
-        spec:
-          restartPolicy: OnFailure
-          
-          containers:
-            - name: verify
-              image: ghcr.io/anthropics/georag/fastapi:v1.0.0
-              imagePullPolicy: IfNotPresent
-              command: ["python", "-m", "app.audit.chain_verify"]
-              env:
-                - name: POSTGRES_HOST
-                  value: georag-postgresql
-                - name: POSTGRES_PASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: georag-secrets
-                      key: POSTGRES_PASSWORD
----
 # Source: georag/templates/ingress.yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -2324,6 +3045,21 @@ spec:
           # /internal rule straight to FastAPI whose comment said "NOT
           # exposed by default". Neither may come back: tiles go through
           # /tiles/... on Laravel, and /internal is service-to-service only.
+          # The one other front door: the browser's WebSocket to Reverb
+          # (/app/<key>), which streams every chat answer. Reverb is Laravel's
+          # own process, authenticates private channels through Laravel's
+          # /broadcasting/auth, and the HTTP publish API it also serves
+          # (/apps/<id>/events) stays unexposed: the publishers are in-cluster.
+          # A Prefix path matches whole segments, so this does not capture
+          # /application or /apple. Traefik and ingress-nginx both upgrade
+          # WebSockets without further annotations.
+          - path: /app
+            pathType: Prefix
+            backend:
+              service:
+                name: georag-laravel-reverb
+                port:
+                  number: 8080
           - path: /
             pathType: Prefix
             backend:
@@ -2333,9 +3069,16 @@ spec:
                   number: 8000
 ---
 # Source: georag/templates/jobs.yaml
-# One-shot Job that runs the bundled Phase 0 SQL migrations on first install.
-# Subsequent helm upgrades re-run it (idempotent — every migration uses
-# CREATE * IF NOT EXISTS / DO NOTHING ON CONFLICT).
+# First of two install/upgrade hooks: the database roles (georag_app,
+# martin_readonly) and the Hatchet engine's own role and database. Runs on every
+# install and upgrade (idempotent: create if absent, then re-set LOGIN and the
+# password, so a rotated Secret takes effect at the next `helm upgrade`).
+#
+# It used to loop over /app/database/raw/phase0/*.sql inside the fastapi image
+# as well, and ran the role block AFTER the loop. /app in that image is
+# src/fastapi, which holds no SQL, so psql was handed the literal glob, the
+# hook failed, and the roles below were never created. The roles depend on no
+# file and now run first; the schema is the next Job's.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -2372,11 +3115,6 @@ spec:
               set -e
               echo "Waiting for postgres to be ready..."
               until pg_isready -h $PGHOST -U $PGUSER; do sleep 2; done
-              echo "Applying migrations..."
-              for f in /app/database/raw/phase0/*.sql; do
-                echo "→ $f"
-                PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -f "$f" -v ON_ERROR_STOP=1
-              done
               # SEC-1 (2026-09-29): the runtime roles. Every Laravel pod and
               # the Hatchet worker log in as georag_app, Martin as
               # martin_readonly — neither may be a superuser or BYPASSRLS,
@@ -2386,13 +3124,25 @@ spec:
               # $$$$ is how a literal $$ survives kubelet's $(VAR) expansion.
               echo "Provisioning runtime roles..."
               PGPASSWORD=$PGPASSWORD psql -h $PGHOST -U $PGUSER -d $PGDATABASE -v ON_ERROR_STOP=1 \
-                -v app_pw="$PG_APP_PASSWORD" -v martin_pw="$MARTIN_DB_PASSWORD" <<'SQL'
+                -v app_pw="$PG_APP_PASSWORD" -v martin_pw="$MARTIN_DB_PASSWORD" \
+                -v hatchet_pw="$HATCHET_DB_PASSWORD" <<'SQL'
               SELECT format('CREATE ROLE georag_app LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'app_pw')
                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'georag_app')\gexec
               ALTER ROLE georag_app LOGIN PASSWORD :'app_pw';
               SELECT format('CREATE ROLE martin_readonly LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'martin_pw')
                WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'martin_readonly')\gexec
               ALTER ROLE martin_readonly LOGIN PASSWORD :'martin_pw';
+              -- The Hatchet engine's own database and role, inside this same
+              -- Postgres (docker/postgresql/init/20-hatchet-database.sql, which
+              -- compose gets from its bind-mounted init directory and this
+              -- chart's image does not run). Created here so the engine's
+              -- DATABASE_URL points at something; CREATE DATABASE cannot run in
+              -- a transaction block, which \gexec does not open.
+              SELECT format('CREATE ROLE hatchet LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', :'hatchet_pw')
+               WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'hatchet')\gexec
+              ALTER ROLE hatchet LOGIN PASSWORD :'hatchet_pw';
+              SELECT 'CREATE DATABASE hatchet OWNER hatchet'
+               WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'hatchet')\gexec
               DO $$$$
               BEGIN
                 IF EXISTS (SELECT 1 FROM pg_roles
@@ -2426,3 +3176,153 @@ spec:
                 secretKeyRef:
                   name: georag-secrets
                   key: MARTIN_DB_PASSWORD
+            - name: HATCHET_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: HATCHET_DB_PASSWORD
+---
+# Source: georag/templates/jobs.yaml
+# Second hook: the schema. `php artisan migrate`, then `db:apply-raw`, as the
+# owner role and from the laravel image — the two commands, in this order, that
+# the AWS schema task runs (deploy/aws/terraform/services.tf). Migrations first:
+# several database/raw files are guarded on tables the migrations create.
+# `db:apply-raw` walks database/raw/manifest.json, an explicit ordered list of
+# idempotent files, one transaction each, failing loudly
+# (ops/runbooks/raw-sql-layer.md). Globbing database/raw/phase0/ instead, as
+# the old pg-init did, cannot work on a fresh database: a lexical glob runs
+# `100-` before `20-`, and 96-98 alter silver.* tables the migrations create.
+#
+# --database=pgsql_migrations on BOTH commands. MIGRATE_DB_CONNECTION does not
+# steer `migrate` (it reads its connection from --database, not from config),
+# so without the flag it runs as georag_app and dies creating the `migrations`
+# table. No --isolated here: a hook Job is the only migration runner, and it
+# needs no cache lock.
+#
+# Runs after pg-init (hook weight 10 vs 5), so the roles the migrations GRANT to
+# exist and Postgres is already accepting connections.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: georag-schema
+  namespace: georag
+  labels:
+    helm.sh/chart: georag-0.2.0
+    app.kubernetes.io/name: georag
+    app.kubernetes.io/instance: georag
+    app.kubernetes.io/version: "v1.0.0"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: georag
+        app.kubernetes.io/instance: georag
+        app.kubernetes.io/component: schema
+    spec:
+      restartPolicy: OnFailure
+      
+      # Under `helm install` the hook weights already order the two Jobs and
+      # this passes at once. Applied raw (`kubectl apply -f
+      # kubernetes/manifests/<flavor>.yaml`) there are no hooks and both Jobs
+      # start together: the migrations GRANT to roles pg-init creates, and
+      # Postgres may still be initialising its data directory, so without this
+      # the Job spends its backoffLimit before either is true and stays failed.
+      initContainers:
+        - name: wait-for-roles
+          image: ghcr.io/anthropics/georag/fastapi:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "-c"]
+          args:
+            - |
+              until psql -h $PGHOST -U $PGUSER -d $PGDATABASE -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'martin_readonly'" 2>/dev/null | grep -qx 1; do
+                echo "Waiting for pg-init to create the runtime roles..."
+                sleep 3
+              done
+          env:
+            - name: PGHOST
+              value: georag-postgresql
+            - name: PGUSER
+              value: georag
+            - name: PGDATABASE
+              value: georag
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
+      containers:
+        - name: schema
+          image: ghcr.io/anthropics/georag/laravel:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - php artisan migrate --force --database=pgsql_migrations && php artisan db:apply-raw --database=pgsql_migrations
+          env:
+            - name: APP_ENV
+              value: production
+            - name: APP_URL
+              value: "https://georag.example.com"
+            - name: APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: LARAVEL_APP_KEY
+            # SEC-1/SEC-2 (2026-09-29): Laravel runs as georag_app
+            # (NOSUPERUSER NOBYPASSRLS, provisioned by the pg-init Job)
+            # and talks to Postgres DIRECTLY, as on AWS. A superuser
+            # bypasses RLS even under FORCE ROW LEVEL SECURITY, and
+            # BindWorkspaceRlsContext's session-scoped binding is unsound
+            # behind PgBouncer's transaction pooling (it refuses to serve
+            # when DB_POOLED is true). No Laravel connection is configured
+            # with the superuser; migrations are the schema Job's.
+            - name: DB_CONNECTION
+              value: pgsql
+            - name: DB_HOST
+              value: georag-postgresql
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_POOLED
+              value: "false"
+            - name: DB_DATABASE
+              value: georag
+            - name: DB_USERNAME
+              value: georag_app
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: PG_APP_PASSWORD
+            - name: REDIS_HOST
+              value: georag-redis
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: REDIS_PASSWORD
+            - name: QUEUE_CONNECTION
+              value: redis
+            - name: CACHE_STORE
+              value: redis
+            - name: SESSION_DRIVER
+              value: redis
+            # The owner role (config/database.php -> pgsql_migrations). The
+            # runtime connection above stays georag_app.
+            - name: MIGRATE_DB_CONNECTION
+              value: pgsql_migrations
+            - name: MIGRATE_DB_HOST
+              value: georag-postgresql
+            - name: MIGRATE_DB_PORT
+              value: "5432"
+            - name: MIGRATE_DB_USERNAME
+              value: georag
+            - name: MIGRATE_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: georag-secrets
+                  key: POSTGRES_PASSWORD
