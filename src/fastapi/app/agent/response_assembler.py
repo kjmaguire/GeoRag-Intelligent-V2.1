@@ -21,7 +21,10 @@ import logging
 import re
 from typing import Any, Literal
 
-from app.agent.hallucination.citation_markers import CITATION_MARKER_RE
+from app.agent.hallucination.citation_markers import (
+    CITATION_MARKER_RE,
+    normalize_grouped_markers,
+)
 from app.agent.llm_calls import get_run_llm_model
 from app.agent.public_geoscience_tool import (
     PublicGeoscienceRecord,
@@ -233,6 +236,11 @@ def assemble_response(
     If the LLM text contains no citation markers, we append them to the end so
     the text + citations list stay consistent.
     """
+    # "[NI43-1, NI43-2]" -> "[NI43-1] [NI43-2]" before anything reads the
+    # markers: the refusal check below treats an answer with no (single)
+    # marker as having grounded nothing, and the guards that run afterwards
+    # know one marker per bracket (2026-10-10 audit, finding 5).
+    text = normalize_grouped_markers(text)
     citations: list[Citation] = []
     sources_used: list[str] = []  # all chunk IDs involved (cited + retrieved)
 
