@@ -86,8 +86,9 @@ def test_insert_resolves_the_project_in_a_subselect() -> None:
         _ANSWER_RUN_INSERT_SQL
     )
     assert "RETURNING answer_run_id, project_id" in _ANSWER_RUN_INSERT_SQL
-    # Placeholder count is unchanged: still 21 binds, $2 still the project id.
-    assert "$20" in _ANSWER_RUN_INSERT_SQL and "$21" not in _ANSWER_RUN_INSERT_SQL
+    # $2 is still the project id. The count is 22 binds: the original twenty
+    # plus user_id ($21) and trace_id ($22), appended (finding 24).
+    assert "$22" in _ANSWER_RUN_INSERT_SQL and "$23" not in _ANSWER_RUN_INSERT_SQL
 
 
 @pytest.mark.asyncio

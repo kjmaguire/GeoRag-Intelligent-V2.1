@@ -3751,6 +3751,42 @@ def _embedding_model_for_run(state: AgenticRetrievalState) -> str | None:
         return None
 
 
+# answer_runs.user_id and answer_runs.trace_id (audit 2026-10 finding 24).
+# Both columns have existed since the table was created and nothing wrote
+# them, so a row could be joined neither to the person who asked nor to the
+# Laravel / FastAPI log lines for the same request (usage.usage_events, written
+# by the same node, already carries the trace id).
+_ANSWER_RUN_TRACE_ID_MAX_LEN = 64  # answer_runs.trace_id is VARCHAR(64)
+_BIGINT_MAX = 2**63 - 1
+
+
+def _answer_run_user_id(deps: Any) -> int | None:
+    """``public.users.id`` of the asker for ``answer_runs.user_id``, or None.
+
+    ``AgentDeps.user_id`` is the JWT ``sub`` claim, and Laravel mints it from
+    ``public.users.id`` (``FastApiJwtMinter``), so it is a decimal string. Anything
+    else (no JWT, an eval/service identity, a number too large for BIGINT)
+    records NULL: the column is nullable, and a value that cannot be a user id
+    must not turn into an error that costs the run its row.
+    """
+    raw = getattr(deps, "user_id", None)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not (text.isascii() and text.isdecimal()):
+        return None
+    value = int(text)
+    return value if 0 < value <= _BIGINT_MAX else None
+
+
+def _answer_run_trace_id(deps: Any) -> str | None:
+    """The request's W3C trace id for ``answer_runs.trace_id``, or None."""
+    raw = getattr(deps, "trace_id", None)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip()[:_ANSWER_RUN_TRACE_ID_MAX_LEN]
+
+
 def _classify_persist_guards(
     state: AgenticRetrievalState, citation_state: str,
 ) -> list[Any]:
@@ -4149,6 +4185,8 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
         getattr(state.response, "llm_model", None) or _settings.effective_llm_model
     )
     _backend_label = _normalize_backend(getattr(_settings, "LLM_BACKEND", None))
+    _asker_user_id = _answer_run_user_id(state.deps)
+    _request_trace_id = _answer_run_trace_id(state.deps)
     _answer_run_id: str | None = None
 
     # §04i guard outcomes + refusal reason (2026-09-07 — see the helpers
@@ -4217,6 +4255,10 @@ async def persist_node(state: AgenticRetrievalState) -> dict[str, Any]:
                 _guard_results_json,
                 _reranker_version_for_run(state),
                 _embedding_model_for_run(state),
+                # $21, $22 — appended after the original twenty so the
+                # positional indices the callers and tests rely on hold.
+                _asker_user_id,
+                _request_trace_id,
             )
     except TimeoutError:
         _report_persist_failure(
@@ -4300,6 +4342,7 @@ _ANSWER_RUN_INSERT_SQL = """
         query_text,
         query_class,
         workspace_data_version_at_query,
+        project_data_version_at_query,
         citation_lifecycle_state,
         model_name,
         backend_used,
@@ -4316,6 +4359,8 @@ _ANSWER_RUN_INSERT_SQL = """
         hallucination_guard_results,
         reranker_version,
         embedding_model,
+        user_id,
+        trace_id,
         citation_mode
     ) VALUES (
         $1::uuid,
@@ -4323,9 +4368,28 @@ _ANSWER_RUN_INSERT_SQL = """
         -- column is nullable, ON DELETE SET NULL). Replaces the separate
         -- SELECT 1 pre-check round-trip that used to precede this INSERT.
         (SELECT p.project_id FROM silver.projects p WHERE p.project_id = $2::uuid),
-        $3, $4, 0, $5, $6, $7, $8::uuid,
+        $3, $4,
+        -- Audit 2026-10 finding 24: this was the literal 0, so every row
+        -- claimed to have been answered against data version zero and the
+        -- staleness comparison (recorded vs current data_version) could
+        -- never fire. Read inside the INSERT, so no extra round trip: it is
+        -- the version at PERSIST time, seconds after retrieval, which makes
+        -- a bump that lands mid-run count as seen by this run. COALESCE
+        -- keeps the NOT NULL column satisfied if the row is not visible.
+        COALESCE(
+            (SELECT w.data_version FROM silver.workspaces w WHERE w.workspace_id = $1::uuid),
+            0
+        ),
+        -- NULL when the project does not resolve, like project_id above.
+        (SELECT p.data_version FROM silver.projects p WHERE p.project_id = $2::uuid),
+        $5, $6, $7, $8::uuid,
         $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16,
         $17, $18::jsonb, $19, $20,
+        -- FK-safe, same as project_id: answer_runs.user_id references
+        -- public.users with ON DELETE RESTRICT, and a violation would cost
+        -- the run its whole row. An id that does not resolve lands as NULL.
+        (SELECT u.id FROM public.users u WHERE u.id = $21::bigint),
+        $22,
         -- Audit RAG-22: never written before, so always NULL. CLAUDE.md
         -- rule 4: citation_mode is always posthoc_span_resolution.
         'posthoc_span_resolution'

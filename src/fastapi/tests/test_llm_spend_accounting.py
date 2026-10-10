@@ -299,14 +299,15 @@ def test_answer_runs_insert_carries_the_token_columns():
     assert "input_tokens" in stmt and "output_tokens" in stmt, (
         "These columns existed for four months and were never written."
     )
-    # 20 bind parameters, plus the literal 0 for
-    # workspace_data_version_at_query — check the highest placeholder so a
+    # 22 bind parameters — check the highest placeholder so a
     # column/parameter mismatch fails here rather than at runtime.
     # ($17 / $18 are rejection_reason / hallucination_guard_results,
     # written since 2026-09-07; $19 is reranker_version, since 2026-09-24;
-    # $20 is embedding_model, since ADR-0025, 2026-10-04.)
+    # $20 is embedding_model, since ADR-0025, 2026-10-04; $21 / $22 are
+    # user_id / trace_id, and the data versions are read in the statement
+    # rather than bound, since audit 2026-10 finding 24.)
     assert "$20" in stmt and "embedding_model" in stmt
-    assert "$21" not in stmt
+    assert "$22" in stmt and "$23" not in stmt
 
 
 def test_answer_runs_records_the_answering_model_not_the_configured_one():
