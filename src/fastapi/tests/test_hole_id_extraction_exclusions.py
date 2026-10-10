@@ -162,6 +162,40 @@ class TestCompactHoleIds:
         far = "hole " + "x" * 40 + " SRE0912"
         assert _compact(far) == []
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "hole SRE0912",
+            "hole ID SRE0912",
+            "hole No. SRE0912",
+            "hole #SRE0912",
+            "hole: SRE0912",
+            "hole 'SRE0912'",
+            "hole - SRE0912",
+            "hole PLS-22-08 and SRE0912",
+            "holes PLS-22-08, GH08-212 and SRE0912",
+        ],
+    )
+    def test_ids_and_glue_between_a_hole_word_and_the_token_keep_it_a_hole(self, text: str) -> None:
+        assert _compact(text) == ["SRE0912"]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Hole PLS-22-08 (sample MS240301) returned 2.31 g/t Au",
+            "Hole PLS-22-08 sample AB123456 returned 2.31 g/t Au",
+            "the hole returned 2.31 g/t in sample CU123456",
+            "drill hole 36-1085 and assay sample MS2024001",
+            "hole PLS-22-08 was resampled as batch QA2024",
+        ],
+    )
+    def test_a_sample_id_in_a_later_clause_is_not_a_hole(self, text: str) -> None:
+        """The hole word is within 32 characters of the token, but a word that
+        is not an ID stands between them: the sentence moved on."""
+        assert _compact(text) == []
+        sample_ids = {"MS240301", "AB123456", "CU123456", "MS2024001", "QA2024"}
+        assert not sample_ids & set(extract_hole_ids(text))
+
 
 # ---------------------------------------------------------------------------
 # Finding 8 -- Layer 4
@@ -259,6 +293,22 @@ class TestLayer4CompactIds:
         )
         assert pool.calls, "the compact id reaches the database"
         assert warnings == []
+
+    @pytest.mark.asyncio
+    async def test_a_sample_id_beside_a_real_hole_is_not_checked_as_a_hole(self) -> None:
+        """"sample MS240301" sits inside the 32-character window after "Hole",
+        behind a clause boundary. It used to be asked of silver.collars and, absent
+        there, reported."""
+        collars = ("query_spatial_collars", {
+            "count": 1, "collars": [{"hole_id": "PLS-22-08", "total_depth": 510.0}],
+        })
+        pool = _CollarPool(["PLS-22-08"])
+        warnings = await verify_entities(
+            "Hole PLS-22-08 (sample MS240301) reached a total depth of 510 m [DATA-1].",
+            PROJECT, pool, None, [collars],
+        )
+        assert warnings == []
+        assert [call[1] for call in pool.calls] == [["PLS-22-08"]]
 
     @pytest.mark.asyncio
     async def test_standards_and_formulas_in_an_answer_are_not_holes(self) -> None:

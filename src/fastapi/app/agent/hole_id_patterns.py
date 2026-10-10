@@ -297,14 +297,38 @@ _NOT_COMPACT_HOLE_PREFIXES: frozenset[str] = frozenset((
 ))
 
 
+#: Glue that may sit between a hole word and an ID, or between two IDs of a
+#: list: connectives ("and", "or"), the words that label an ID ("id", "no.",
+#: "number"), quotes, brackets, separators and a lone dash.
+_ID_LIST_GLUE_RE = re.compile(
+    r"\b(?:and|or|id|ids|no|nos|number|numbers)\b\.?"
+    r"|[&#:,;/()\[\]'\"‘’“”]"
+    r"|(?<!\S)[-–—]+(?!\S)",
+    re.IGNORECASE,
+)
+
+
+def _only_ids_between(gap: str) -> bool:
+    """Whether ``gap`` -- the text between a hole word and a token -- is
+    nothing but IDs and the glue between them ("PLS-22-08, ", " and BH-1 ").
+
+    "holes SRE0912, SRE0913 and SRE0914" is a list of holes; "hole PLS-22-08
+    (sample MS240301)" is a hole followed by a clause about something else, and
+    the sample ID in it is not a hole. Every piece left once the glue is
+    removed must carry a digit: a word ("sample", "returned") ends the list.
+    """
+    return all(any(ch.isdigit() for ch in piece) for piece in _ID_LIST_GLUE_RE.sub(" ", gap).split())
+
+
 def iter_compact_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
     """Compact hole IDs ("BH21", "DDH0023", "SRE0912") in ``text``.
 
-    The shape alone matches too much ("NI43", "WGS84", "ISO9001"), so a match
-    must also either start with a drill-type abbreviation
-    (:data:`DRILL_TYPE_PREFIXES`) or follow a hole word within
-    :data:`COMPACT_HOLE_CONTEXT_WINDOW` characters -- and never start with a
-    standards / datum prefix. Group 1 is the ID.
+    The shape alone matches too much ("NI43", "WGS84", "ISO9001", a sample ID
+    like "MS240301"), so a match must also either start with a drill-type
+    abbreviation (:data:`DRILL_TYPE_PREFIXES`) or be named as a hole: follow a
+    hole word within :data:`COMPACT_HOLE_CONTEXT_WINDOW` characters with
+    nothing but IDs in between (:func:`_only_ids_between`) -- and never start
+    with a standards / datum prefix. Group 1 is the ID.
     """
     contexts = [m.end() for m in HOLE_CONTEXT_RE.finditer(text)]
     for match in HOLE_ID_COMPACT_RE.finditer(text):
@@ -313,9 +337,9 @@ def iter_compact_hole_id_matches(text: str) -> Iterator[re.Match[str]]:
         prefix = letters.group().upper() if letters else ""
         if prefix in _NOT_COMPACT_HOLE_PREFIXES:
             continue
-        if prefix in DRILL_TYPE_PREFIXES or any(
-            0 <= match.start(1) - c <= COMPACT_HOLE_CONTEXT_WINDOW for c in contexts
-        ):
+        start = match.start(1)
+        near = [c for c in contexts if 0 <= start - c <= COMPACT_HOLE_CONTEXT_WINDOW]
+        if prefix in DRILL_TYPE_PREFIXES or (near and _only_ids_between(text[max(near):start])):
             yield match
 
 
