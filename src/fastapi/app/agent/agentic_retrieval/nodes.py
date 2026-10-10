@@ -1653,6 +1653,13 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             "refused this query -- %s",
             _l1_verdict.reason,
         )
+        # A data-source narrowing that left nothing denied every tool, so
+        # nothing was SEARCHED: the refusal must not say that nothing cleared
+        # the relevance threshold (2026-10-10 review, item 9).
+        _narrowed_out = bool(
+            state.retrieval_filters is not None
+            and state.retrieval_filters.no_data_source_allowed
+        )
         try:
             from app.metrics import RETRIEVAL_GATE_REFUSED_TOTAL  # noqa: PLC0415
 
@@ -1661,7 +1668,11 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             logger.debug("RETRIEVAL_GATE_REFUSED_TOTAL increment failed", exc_info=True)
         if state.status_callback is not None:
             try:
-                await state.status_callback("No relevant evidence found…")
+                await state.status_callback(
+                    "The selected data sources exclude this question…"
+                    if _narrowed_out
+                    else "No relevant evidence found…"
+                )
             except Exception:  # pragma: no cover — status is a UX affordance
                 logger.debug(
                     "agentic_retrieval.assemble: status_callback raised",
@@ -1686,7 +1697,9 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
             raise RetrievalBackendUnavailable(
                 "; ".join(state.retrieval_failures)
             )
-        response = assemble_response(build_refusal_text(), state.tool_results)
+        response = assemble_response(
+            build_refusal_text(narrowed_out=_narrowed_out), state.tool_results
+        )
         response = _with_retrieval_failures(response, state.retrieval_failures)
         # CHAT-10 — stamp the machine-readable refusal UNCONDITIONALLY.
         # refusal_payload used to be set only by repair_stage2 behind
@@ -1695,7 +1708,7 @@ async def assemble_node(state: AgenticRetrievalState) -> dict[str, Any]:
         # with a "conf 0.10" pill, and RefusalPanel never rendered. This
         # does not touch the flag's own behaviour (terminal repair
         # strategies still stamp only when it is on).
-        response.refusal_payload = build_refusal_payload()
+        response.refusal_payload = build_refusal_payload(narrowed_out=_narrowed_out)
         return {"response": response, **_fold_token_usage(state)}
 
     # Plan §3 — when CONTEXT_PREP_ENABLED is set, run the EvidencePacket

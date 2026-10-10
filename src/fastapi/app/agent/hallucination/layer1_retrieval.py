@@ -114,12 +114,35 @@ _REFUSAL_TEXT = (
 )
 
 
-def build_refusal_text() -> str:
-    """Typed refusal text for a hard Layer 1 gate failure."""
-    return _REFUSAL_TEXT
+#: Refusal text for a data-source selection that left nothing to search (the
+#: user asked only for sources the mode excludes: ``data_sources=["geophysics"]``
+#: in Field mode). NOTHING was searched, so "no passage cleared the relevance
+#: threshold" -- the text above -- would be false; it says what happened.
+#: Opens with "I don't have" for the same reason as `_REFUSAL_TEXT`.
+_NARROWED_OUT_TEXT = (
+    "I don't have any source to search under the data sources selected for "
+    "this question: the selection excluded every source it could use, so "
+    "nothing was searched. Widen the data-source selection, or leave it "
+    "unset, and ask again."
+)
 
 
-def build_refusal_payload() -> dict[str, Any]:
+def refusal_texts() -> tuple[str, ...]:
+    """Every canned Layer 1 refusal text (callers that must recognise one)."""
+    return (_REFUSAL_TEXT, _NARROWED_OUT_TEXT)
+
+
+def build_refusal_text(*, narrowed_out: bool = False) -> str:
+    """Typed refusal text for a hard Layer 1 gate failure.
+
+    ``narrowed_out`` is the case where the data-source narrowing excluded every
+    source (``RetrievalFilters.no_data_source_allowed``): no tool ran, so the
+    text says so instead of claiming nothing cleared the relevance threshold.
+    """
+    return _NARROWED_OUT_TEXT if narrowed_out else _REFUSAL_TEXT
+
+
+def build_refusal_payload(*, narrowed_out: bool = False) -> dict[str, Any]:
     """``GeoRAGResponse.refusal_payload`` for a hard Layer 1 gate failure.
 
     The same shape ``_build_terminal_refusal_payload`` in
@@ -130,14 +153,20 @@ def build_refusal_payload() -> dict[str, Any]:
     outcome; ``strategy`` is None because no repair strategy ran — the
     gate refused before the LLM was called.
     """
+    message = (
+        "The selected data sources exclude every source this question could "
+        "use, so nothing was searched and no answer was generated."
+        if narrowed_out
+        else (
+            "No retrieved evidence cleared the relevance threshold for this "
+            "project, so no answer was generated."
+        )
+    )
     return {
         "type": "refusal",
         "reason_code": "insufficient_evidence",
         "strategy": None,
-        "message": (
-            "No retrieved evidence cleared the relevance threshold for this "
-            "project, so no answer was generated."
-        ),
+        "message": message,
         "candidates": [],
         "guard_codes": [],
     }

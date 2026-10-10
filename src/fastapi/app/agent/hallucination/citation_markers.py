@@ -60,41 +60,60 @@ def canonical_ev_marker(evidence_id: str) -> str:
 # looked uncited to Layers 2 and 5 and was dropped -- and a figure in the
 # bracket text ("[NI43-1, 12]") was read as a numerical claim by Layer 3
 # (2026-10-10 audit, finding 5).
-_GROUP_SEPARATOR = r"\s*[,;]\s*"
+#
+# Four more spellings of the same thing (2026-10-10 review, item 9): a range
+# ("[NI43-1-3]", "[NI43-1–3]", "[NI43:1-3]"), a space ("[NI43-1 NI43-2]") and
+# "and" / "&" ("[NI43-1 and NI43-2]", "[NI43-1 & 2]"). A space joins only FULL
+# items -- "[NI43-1 12]" is a marker and a stray number, not two citations --
+# and a range expands to at most `_MAX_RANGE` ids, ascending. Expanding invents
+# no citation: every id is a separate marker that Layer 2 checks against the
+# Citation list and Layer 5 against the retrieved chunks.
+_DASHES = "-\u2013\u2014\u2212"
+_FULL_ITEM = rf"(?:{_PREFIX_ALT})[:-]\d+(?:[{_DASHES}]\d+)?"
+_ANY_ITEM = rf"(?:(?:{_PREFIX_ALT})[:-])?\d+(?:[{_DASHES}]\d+)?"
+_GROUP_SEPARATOR = r"\s*[,;&]\s*|\s+and\s+"
 _GROUPED_MARKER_RE = re.compile(
-    rf"\[((?:{_PREFIX_ALT})[:-]\d+(?:{_GROUP_SEPARATOR}(?:(?:{_PREFIX_ALT})[:-])?\d+)+)\]"
+    rf"\[({_FULL_ITEM}(?:(?:{_GROUP_SEPARATOR}){_ANY_ITEM}|\s+{_FULL_ITEM})*)\]"
 )
-_GROUP_SEPARATOR_RE = re.compile(_GROUP_SEPARATOR)
-_GROUP_ITEM_RE = re.compile(rf"(?:({_PREFIX_ALT})([:-]))?(\d+)")
+_GROUP_SPLIT_RE = re.compile(rf"{_GROUP_SEPARATOR}|\s+")
+_GROUP_ITEM_RE = re.compile(rf"(?:({_PREFIX_ALT})([:-]))?(\d+)(?:[{_DASHES}](\d+))?")
+_MAX_RANGE = 6
 
 
 def normalize_grouped_markers(text: str) -> str:
     """Rewrite grouped markers as adjacent single markers.
 
-    ``[NI43-1, NI43-2]`` and ``[NI43-1; NI43-2]`` become ``[NI43-1][NI43-2]``;
-    ``[NI43-1, 2]`` becomes ``[NI43-1][NI43-2]`` (and ``[DATA-1, NI43-2, 5]``
-    gives DATA-1, NI43-2, NI43-5). The separator of each full item is kept.
-    No space is put between the markers, so removing the last one (an
-    invented id) leaves "[NI43-1]." and not "[NI43-1] .".
+    ``[NI43-1, NI43-2]``, ``[NI43-1; NI43-2]``, ``[NI43-1 NI43-2]`` and
+    ``[NI43-1 and NI43-2]`` become ``[NI43-1][NI43-2]``; ``[NI43-1, 2]``
+    becomes ``[NI43-1][NI43-2]`` (and ``[DATA-1, NI43-2, 5]`` gives DATA-1,
+    NI43-2, NI43-5); ``[NI43-1-3]`` becomes ``[NI43-1][NI43-2][NI43-3]``. The
+    separator of each full item is kept. No space is put between the markers,
+    so removing the last one (an invented id) leaves "[NI43-1]." and not
+    "[NI43-1] .".
 
     Pure rewriting, no judgement: it invents nothing a later layer would
     accept. Every id it produces is a separate marker that Layer 2 checks
     against the Citation list and Layer 5 against the retrieved chunks, so
     ``[NI43-1, 99]`` costs the invented ``[NI43-99]`` and keeps ``[NI43-1]``.
+    A descending or wider-than-`_MAX_RANGE` range is left as written.
     """
-    if "[" not in text or not (";" in text or "," in text):
+    if "[" not in text:
         return text
 
     def _expand(match: re.Match[str]) -> str:
         prefix, separator = "", "-"
         singles: list[str] = []
-        for item in _GROUP_SEPARATOR_RE.split(match.group(1)):
+        for item in _GROUP_SPLIT_RE.split(match.group(1)):
             parsed = _GROUP_ITEM_RE.fullmatch(item)
             if parsed is None:  # the pattern above admits nothing else
                 return match.group(0)
             if parsed.group(1):
                 prefix, separator = parsed.group(1), parsed.group(2)
-            singles.append(f"[{prefix}{separator}{parsed.group(3)}]")
+            first = int(parsed.group(3))
+            last = int(parsed.group(4)) if parsed.group(4) else first
+            if last < first or last - first >= _MAX_RANGE:
+                return match.group(0)
+            singles.extend(f"[{prefix}{separator}{n}]" for n in range(first, last + 1))
         return "".join(singles)
 
     return _GROUPED_MARKER_RE.sub(_expand, text)

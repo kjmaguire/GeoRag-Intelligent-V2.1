@@ -2592,7 +2592,11 @@ async def search_documents(
             # default is a no-op on a probability). Anything else -- bedrock,
             # and a value that is not a backend at all (the service refuses to
             # start with one, but this is the line that would otherwise run
-            # unfiltered) -- is held to the calibrated hosted floor.
+            # unfiltered) -- is held to the hosted floor. That floor (0.2) was
+            # measured against Rerank v4 and has NOT been validated on Rerank
+            # 3.5 (ADR-0022): it is a carried-over number, not a calibrated one.
+            # The score it gates IS a [0, 1] relevance score; the threshold on
+            # it is what still has to be measured.
             if RERANKER_BACKEND == "qwen3_causal":
                 min_score = settings.RERANKER_SCORE_THRESHOLD_PROBABILITY
             elif RERANKER_BACKEND == "cross_encoder":
