@@ -1,13 +1,16 @@
 {
   "_comment": "Per-file count of exception handlers that neither re-raise nor report. A debt register, not an allowance -- regenerate with `python scripts/check_silent_exception_handlers.py --update` only after a real reduction.",
   "by_exception_caught": {
+    "AgentCircuitOpenError": 1,
+    "AgentError+Exception": 1,
+    "AgentRefusalError": 1,
     "AttributeError+ImportError": 1,
     "AttributeError+TypeError+ValueError": 1,
     "CancelledError": 1,
-    "Exception": 78,
+    "Exception": 84,
     "FileNotFoundError": 1,
     "HTTPError+ValueError": 2,
-    "ImportError": 29,
+    "ImportError": 30,
     "ImportError+TypeError": 2,
     "IndexError+ValueError": 2,
     "InvalidOperation+ValueError": 1,
@@ -24,6 +27,7 @@
     "QueueEmpty": 1,
     "RuntimeError": 2,
     "StatisticsError": 1,
+    "TimeoutError": 1,
     "TypeError": 1,
     "TypeError+ValueError": 32,
     "UniqueViolationError": 1,
@@ -48,6 +52,7 @@
     "src/fastapi/app/agents/phase0/index_health.py": 1,
     "src/fastapi/app/agents/phase0/model_upgrade_watch.py": 2,
     "src/fastapi/app/agents/phase0/storage_tiering.py": 2,
+    "src/fastapi/app/agents/wrapper.py": 11,
     "src/fastapi/app/audit/cold_tier_archive.py": 1,
     "src/fastapi/app/db/dsn.py": 2,
     "src/fastapi/app/hatchet_workflows/_export_extras.py": 4,
@@ -114,5 +119,5 @@
     "src/georag_geoparsers/georag_geoparsers/xlsx_parser.py": 1,
     "src/georag_geoparsers/georag_geoparsers/xyz_parser.py": 1
   },
-  "total": 199
+  "total": 210
 }
