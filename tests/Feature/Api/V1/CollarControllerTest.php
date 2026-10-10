@@ -204,6 +204,45 @@ class CollarControllerTest extends TestCase
             ->assertJsonValidationErrors('hole_id');
     }
 
+    public function test_show_sends_the_well_log_curves_the_strip_log_draws(): void
+    {
+        $collar = Collar::factory()->create(['project_id' => $this->project->project_id]);
+        $workspaceId = DB::table('silver.projects')->where('project_id', $this->project->project_id)->value('workspace_id');
+        $insert = function (string $name, ?string $unit, array $depths) use ($collar, $workspaceId): void {
+            DB::table('silver.well_log_curves')->insert([
+                'curve_id' => (string) Str::uuid(),
+                'collar_id' => $collar->collar_id,
+                'workspace_id' => $workspaceId,
+                'curve_name' => $name,
+                'curve_unit' => 'GAPI',
+                'min_depth' => min($depths),
+                'max_depth' => max($depths),
+                'step' => 0.1,
+                'sample_count' => count($depths),
+                'las_version' => '2.0',
+                'depths' => '{'.implode(',', $depths).'}',
+                'values' => '{'.implode(',', array_map(fn ($d) => $d * 2, $depths)).'}',
+                'depth_unit' => $unit,
+            ]);
+        };
+        // 2,500 samples (0.1 m over 250 m): thinned to at most 1,000.
+        $insert('GR', 'm', array_map(fn (int $i): float => $i / 10, range(0, 2499)));
+        // A legacy row in an unrecorded unit cannot be placed on the metre axis.
+        $insert('OLD', null, [0.0, 1.0, 2.0]);
+
+        $response = $this->actingAs($this->user)
+            ->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}")
+            ->assertOk();
+
+        $curves = $response->json('data.well_log_curves');
+        $this->assertSame(['GR'], array_column($curves, 'curve_name'));
+        $this->assertSame(2500, $curves[0]['sample_count']);
+        $this->assertLessThanOrEqual(1000, count($curves[0]['depths']));
+        $this->assertSame(count($curves[0]['depths']), count($curves[0]['values']));
+        $this->assertEquals(0.0, $curves[0]['depths'][0]);
+        $this->assertEquals(0.0, $curves[0]['values'][0]);
+    }
+
     public function test_index_returns_404_for_nonexistent_project(): void
     {
         $response = $this->getJson('/api/v1/projects/00000000-0000-0000-0000-000000000000/collars');
@@ -597,35 +636,6 @@ class CollarControllerTest extends TestCase
 
         $this->assertSame('Diamond', $row['hole_type']);
         $this->assertSame('Completed', $row['status']);
-    }
-
-    public function test_show_does_not_read_well_log_curves_it_never_serialises(): void
-    {
-        // Each curve row holds two float8[] arrays (every depth, every value).
-        // CollarResource never emits them, so loading them was pure cost.
-        $collar = Collar::factory()->create(['project_id' => $this->project->project_id]);
-        DB::table('well_log_curves')->insert([
-            'curve_id' => (string) Str::uuid(),
-            'collar_id' => $collar->collar_id,
-            'workspace_id' => $this->project->workspace_id,
-            'curve_name' => 'GR',
-            'min_depth' => 0,
-            'max_depth' => 2,
-            'sample_count' => 3,
-            'depths' => '{0,1,2}',
-            'values' => '{10,11,12}',
-        ]);
-
-        DB::enableQueryLog();
-        $response = $this->getJson("/api/v1/projects/{$this->project->project_id}/collars/{$collar->collar_id}");
-        $queries = array_column(DB::getQueryLog(), 'query');
-        DB::disableQueryLog();
-
-        $response->assertOk()->assertJsonMissingPath('data.well_log_curves');
-        $this->assertSame([], array_values(array_filter(
-            $queries,
-            fn (string $sql): bool => str_contains($sql, 'well_log_curves'),
-        )));
     }
 
     public function test_show_projects_the_geochemistry_columns_the_table_has(): void

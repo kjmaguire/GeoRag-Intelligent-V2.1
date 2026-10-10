@@ -47,6 +47,23 @@ class WellLogCurve extends Model
     ];
 
     /**
+     * A float8[] column as a PHP list of floats. pdo_pgsql returns the array
+     * literal ("{1.5,2,NaN}"); a value already decoded passes through.
+     *
+     * @return list<float>
+     */
+    public static function floatArray(mixed $value): array
+    {
+        if (is_array($value)) {
+            return array_map('floatval', array_values($value));
+        }
+
+        $trimmed = is_string($value) ? trim($value, '{}') : '';
+
+        return $trimmed === '' ? [] : array_map('floatval', explode(',', $trimmed));
+    }
+
+    /**
      * The collar this curve belongs to.
      */
     public function collar(): BelongsTo

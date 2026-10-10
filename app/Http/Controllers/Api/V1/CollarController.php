@@ -225,6 +225,10 @@ class CollarController extends Controller
                 'structures',
                 'samples',
                 'geochemistry',
+                // StripLogViewer's curve track. A row with no depth_unit is a
+                // legacy one in an unrecorded unit and cannot share the
+                // metre axis, so it is not sent.
+                'wellLogCurves' => fn ($curves) => $curves->whereNotNull('depth_unit')->orderBy('curve_name'),
             ])
                 ->withCount(['surveys', 'samples'])
                 ->selectRaw('*, ST_X(geom_4326) AS longitude, ST_Y(geom_4326) AS latitude')

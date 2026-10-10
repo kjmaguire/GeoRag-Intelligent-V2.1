@@ -62,10 +62,16 @@ interface MineralizationRow {
     grain_size?: string | null;
     notes?: string | null;
 }
+// One curve as CollarResource sends it: parallel depth (metres) and value
+// arrays, thinned server-side to at most 1,000 samples.
 interface WellLogCurve {
+    curve_id?: string;
     curve_name?: string | null;
-    depth_m?: number | null;
-    value?: number | null;
+    curve_unit?: string | null;
+    null_value?: number | null;
+    sample_count?: number;
+    depths?: number[];
+    values?: number[];
     [k: string]: unknown;
 }
 interface CollarRecord {
@@ -824,7 +830,10 @@ export default function StripLogViewer({ holeId, projectId, onQueryHole }: Strip
     if (loading) return <LoadingState />;
     if (error) return <ErrorState message={error} />;
     if (!holeId || !collar) return <EmptyState holeId={holeId} />;
-    if (lithologyLogs.length === 0 && !hasAlteration && !hasMineralization) return <EmptyState holeId={holeId} />;
+    // A curve-only hole (a LAS with no logged intervals) still has a track to draw.
+    if (lithologyLogs.length === 0 && !hasAlteration && !hasMineralization && !hasCurves) {
+        return <EmptyState holeId={holeId} />;
+    }
 
     // ── Full render ───────────────────────────────────────────────────────────
 

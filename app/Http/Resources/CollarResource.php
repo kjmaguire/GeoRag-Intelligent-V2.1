@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Resources;
 
+use App\Models\WellLogCurve;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -156,9 +157,57 @@ class CollarResource extends JsonResource
                 'assay_values_ppm' => $g->assay_values_ppm,
             ]),
             ),
+            // The curves StripLogViewer draws beside the lithology column. It
+            // read `well_log_curves` from this payload, which never carried
+            // one, so the curve track could not render. Depths are metres, on
+            // the same axis as the intervals; show() leaves out legacy rows
+            // whose depth unit was never recorded, which cannot be placed.
+            'well_log_curves' => $this->whenLoaded('wellLogCurves', fn () => $this->wellLogCurves
+                ->map(fn (WellLogCurve $curve): array => self::curvePayload($curve))
+                ->values(),
+            ),
 
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
+        ];
+    }
+
+    /**
+     * Most samples sent per curve. A LAS at 0.1 m over 1,000 m is 10,000 per
+     * curve; the viewer draws about 500, so the payload is thinned by stride.
+     */
+    public const MAX_CURVE_POINTS = 1000;
+
+    /**
+     * One curve as the viewer draws it: parallel `depths` (metres) and
+     * `values` arrays, thinned to MAX_CURVE_POINTS, with `sample_count` the
+     * number stored.
+     *
+     * @return array<string, mixed>
+     */
+    private static function curvePayload(WellLogCurve $curve): array
+    {
+        $depths = WellLogCurve::floatArray($curve->depths);
+        $values = WellLogCurve::floatArray($curve->values);
+        $count = min(count($depths), count($values));
+        $toMetres = $curve->depth_unit === 'ft' ? 0.3048 : 1.0;
+        $stride = max(1, (int) ceil($count / self::MAX_CURVE_POINTS));
+
+        $outDepths = [];
+        $outValues = [];
+        for ($i = 0; $i < $count; $i += $stride) {
+            $outDepths[] = $depths[$i] * $toMetres;
+            $outValues[] = $values[$i];
+        }
+
+        return [
+            'curve_id' => $curve->curve_id,
+            'curve_name' => $curve->curve_name,
+            'curve_unit' => $curve->curve_unit,
+            'null_value' => $curve->null_value,
+            'sample_count' => $count,
+            'depths' => $outDepths,
+            'values' => $outValues,
         ];
     }
 }
