@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DownholeMultiLog, LithologyStripColumn, type LithologyInterval } from '@/Components/Foundry/Charts';
+import {
+    DownholeMultiLog,
+    LithologyStripColumn,
+    geologyDepth,
+    sharedDepthAxis,
+    type LithologyInterval,
+} from '@/Components/Foundry/Charts';
 import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
 import { formatU3O8Pct } from '@/lib/grade';
+import { crsLabel } from '@/lib/workspacePage';
 import { Modal } from '@/Components/Foundry/primitives';
 
 interface HolePayload {
@@ -62,11 +69,14 @@ export function CompareHolesPanel({
     leftHole,
     rightHole,
     chartHeight,
+    crsEpsg,
 }: {
     projectSlug: string;
     leftHole: string;
     rightHole: string;
     chartHeight: number;
+    /** The project's declared CRS: what the eastings and northings are measured in. */
+    crsEpsg?: number | null;
 }) {
     const [left, setLeft] = useState<FetchState>({ kind: 'loading' });
     const [right, setRight] = useState<FetchState>({ kind: 'loading' });
@@ -86,16 +96,32 @@ export function CompareHolesPanel({
         };
     }, [projectSlug, leftHole, rightHole]);
 
-    // Shared depth axis so both holes plot at the same scale.
-    const depthMax = Math.max(
-        left.kind === 'ready' ? left.payload.log_depth_max : 0,
-        right.kind === 'ready' ? right.payload.log_depth_max : 0,
-        600,
+    // Shared depth axis so both holes plot at the same scale, curves and
+    // geology alike: it reaches the deepest curve, logged interval or total
+    // depth of either hole. `log_depth_max` counts only when the hole has
+    // curves — the API reports a 600 m placeholder for one that has none, and
+    // the old fixed 600 m floor turned every shallow pair into a column of
+    // dead space (and, with the strip column now honouring the axis, would
+    // have squashed their geology into the top of it).
+    const depthMax = sharedDepthAxis(
+        [left, right].flatMap((state) => {
+            if (state.kind !== 'ready') return [];
+            const hole = state.payload;
+            return [
+                hole.log_tracks.length > 0 ? hole.log_depth_max : null,
+                hole.total_depth,
+                geologyDepth({
+                    intervals: hole.lithology_intervals,
+                    alteration: hole.alteration_intervals,
+                    mineralization: hole.mineralization_intervals,
+                }),
+            ];
+        }),
     );
 
     return (
         <>
-            <DiffStats left={left} right={right} />
+            <DiffStats left={left} right={right} crsEpsg={crsEpsg} />
 
             <div className="grid grid-cols-2 gap-6 mt-6">
                 {[left, right].map((state, i) => {
@@ -134,11 +160,14 @@ export function CompareHolesModal({
     leftHole,
     rightHole,
     onClose,
+    crsEpsg,
 }: {
     projectSlug: string;
     leftHole: string;
     rightHole: string;
     onClose: () => void;
+    /** The project's declared CRS, for labelling eastings and northings. */
+    crsEpsg?: number | null;
 }) {
     // Chart height tied to modal viewport so charts breathe on tall windows
     // without forcing a page scroll on short ones.
@@ -193,13 +222,14 @@ export function CompareHolesModal({
                     leftHole={leftHole}
                     rightHole={rightHole}
                     chartHeight={chartH}
+                    crsEpsg={crsEpsg}
                 />
             </div>
         </Modal>
     );
 }
 
-function DiffStats({ left, right }: { left: FetchState; right: FetchState }) {
+function DiffStats({ left, right, crsEpsg }: { left: FetchState; right: FetchState; crsEpsg?: number | null }) {
     if (left.kind !== 'ready' || right.kind !== 'ready') {
         return (
             <div
@@ -236,12 +266,14 @@ function DiffStats({ left, right }: { left: FetchState; right: FetchState }) {
         { label: 'Curves rendered', l: String(L.log_tracks.length), r: String(R.log_tracks.length) },
         { label: 'Lithology bands', l: String(L.lithology_intervals.length), r: String(R.lithology_intervals.length) },
         {
-            label: 'Easting (UTM 13N)',
+            // Named for the project's own CRS (FE-18). This said "UTM 13N" for
+            // every project, including ones surveyed in another zone.
+            label: `Easting (${crsLabel(crsEpsg)})`,
             l: L.easting !== null ? Math.round(L.easting).toLocaleString() : '—',
             r: R.easting !== null ? Math.round(R.easting).toLocaleString() : '—',
         },
         {
-            label: 'Northing (UTM 13N)',
+            label: `Northing (${crsLabel(crsEpsg)})`,
             l: L.northing !== null ? Math.round(L.northing).toLocaleString() : '—',
             r: R.northing !== null ? Math.round(R.northing).toLocaleString() : '—',
         },

@@ -17,10 +17,12 @@ vi.mock('@inertiajs/react', () => ({
 import DataImportWizard from '../DataImportWizard';
 
 let uploads: string[];
+let uploadHeaders: Array<Record<string, string>>;
 let uploadStatus: number;
 
 beforeEach(() => {
     uploads = [];
+    uploadHeaders = [];
     uploadStatus = 200;
     inertia.props = { upload_limit: { bytes: 10_000, human: '10 KB' } };
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -32,6 +34,7 @@ beforeEach(() => {
             );
         }
         uploads.push(((init?.body as FormData).get('file') as File).name);
+        uploadHeaders.push((init?.headers ?? {}) as Record<string, string>);
         return uploadStatus === 200
             ? new Response('{}', { status: 200 })
             : new Response('<html>Request Entity Too Large</html>', { status: uploadStatus });
@@ -65,6 +68,22 @@ describe('DataImportWizard upload limit (FE-2)', () => {
         expect(uploads).toEqual(['small.pdf']);
         // Partial failure: stay on the page.
         expect(inertia.visit).not.toHaveBeenCalled();
+    });
+
+    it('sends the live XSRF cookie token on each upload, never the stale csrf meta tag', async () => {
+        document.head.innerHTML = '<meta name="csrf-token" content="stale-from-page-load">';
+        document.cookie = 'XSRF-TOKEN=live-token; path=/';
+        try {
+            await addFiles([new File(['%PDF-1.4'], 'small.pdf', { type: 'application/pdf' })]);
+            fireEvent.click(await screen.findByRole('button', { name: /start ingest/i }));
+            await waitFor(() => expect(uploads).toEqual(['small.pdf']));
+
+            expect(uploadHeaders[0]['X-XSRF-TOKEN']).toBe('live-token');
+            expect(uploadHeaders[0]).not.toHaveProperty('X-CSRF-TOKEN');
+        } finally {
+            document.head.innerHTML = '';
+            document.cookie = 'XSRF-TOKEN=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        }
     });
 
     it('explains a 413 as the limit rather than "HTTP 413"', async () => {

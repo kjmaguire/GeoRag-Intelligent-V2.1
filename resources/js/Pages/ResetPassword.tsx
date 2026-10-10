@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type JSX } from 'react';
 import { Head, Link } from '@inertiajs/react';
+import { csrfHeaders } from '@/lib/csrf';
 
 interface ResetPasswordProps {
     token: string;
@@ -9,12 +10,6 @@ interface ResetPasswordProps {
 interface ResetPasswordApiResponse {
     message?: string;
     errors?: Record<string, string[]>;
-}
-
-/** Same-origin session CSRF token; stateful Sanctum requests are rejected (419) without it. */
-function csrfHeader(): Record<string, string> {
-    const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
-    return token ? { 'X-CSRF-TOKEN': token } : {};
 }
 
 export default function ResetPassword({ token, email }: ResetPasswordProps): JSX.Element {
@@ -35,7 +30,7 @@ export default function ResetPassword({ token, email }: ResetPasswordProps): JSX
                 headers: {
                     Accept: 'application/json',
                     'Content-Type': 'application/json',
-                    ...csrfHeader(),
+                    ...csrfHeaders(),
                 },
                 body: JSON.stringify({
                     token,

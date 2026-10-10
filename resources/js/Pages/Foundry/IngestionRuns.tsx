@@ -4,6 +4,7 @@ import { importWizardHref } from '@/lib/importWizardLink';
 import { PageHeader, Card, Pill, Stat, EmptyState, ProgressBar } from '@/Components/Foundry/primitives';
 import { formatTime } from '@/lib/time';
 import { listenPrivate } from '@/lib/echoChannel';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * IngestionRuns — per-project pipeline progress.
@@ -127,13 +128,12 @@ function ColumnMapper({ slug, minioKey, facts }: { slug: string; minioKey: strin
         setBusy(true);
         setError(null);
         try {
-            const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
             const res = await fetch(`/projects/${slug}/ingestion-runs/remap`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
-                    ...(token ? { 'X-CSRF-TOKEN': token } : {}),
+                    ...csrfHeaders(),
                 },
                 body: JSON.stringify({
                     minio_key: minioKey,

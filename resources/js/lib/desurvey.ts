@@ -476,6 +476,22 @@ export function buildScene3D(
     };
 }
 
+/**
+ * Plotly scene aspect for every 3D view built on a Scene3D: true scale.
+ *
+ * The scene is in metres on all three axes (easting and northing offsets from
+ * the project centroid, elevation), and `aspectmode: 'data'` draws 1 m the same
+ * length on each, so a hole's apparent dip and azimuth can be read off the plot.
+ * The five Workspace views used `aspectmode: 'manual'` with `{ x: 1, y: 1,
+ * z: 0.6 }`, which fits whatever the data spans into a fixed 1 : 1 : 0.6 box:
+ * a 600 m x 200 m footprint came out square, and every dip was off by an amount
+ * that depended on the project's shape. DrillTrace3D, MultiHole3DTrace and
+ * OrientationSpiral already draw true scale (GIS-9, 2026-09-29); this is the
+ * same rule for the rest. A project that is much deeper than it is wide draws as
+ * a tall box, which is what it is; the camera can be rotated and zoomed.
+ */
+export const SCENE_3D_ASPECT = { aspectmode: 'data' } as const;
+
 /** z-axis title for a Scene3D. */
 export function sceneZAxisTitle(
     scene: Pick<Scene3D, 'elevationKnownForAll'> & Partial<Pick<Scene3D, 'elevationFromTerrainAny'>>,

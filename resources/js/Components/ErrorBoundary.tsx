@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * Global React error boundary.
@@ -16,7 +17,11 @@ import { Component, type ErrorInfo, type ReactNode } from 'react';
  *
  * Telemetry: errors are POSTed to /api/v1/client-errors best-effort. The
  * endpoint is optional — 404 is tolerated so local dev still works without
- * wiring the collector.
+ * wiring the collector. It sits in the `api` group behind Sanctum's stateful
+ * middleware, so the POST must carry the XSRF token or it is a 419 (the
+ * crash report was never recorded). bootstrap.ts also lists the path as one
+ * that never bounces to /login, so a failed report can't replace this panel
+ * with the sign-in page.
  */
 
 interface Props {
@@ -52,7 +57,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 fetch('/api/v1/client-errors', {
                     method: 'POST',
                     credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...csrfHeaders() },
                     body: JSON.stringify(payload),
                     keepalive: true,
                 }).catch(() => {});

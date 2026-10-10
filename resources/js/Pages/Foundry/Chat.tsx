@@ -13,6 +13,7 @@ import type { Citation as SharedCitation } from '@/types';
 import {
     createDeltaBuffer,
     isHeartbeat,
+    isRetryableFailure,
     isUncitedAnswer,
     normaliseValidationState,
     readPromptParam,
@@ -20,6 +21,7 @@ import {
     type ValidationState,
 } from '@/lib/chatStream';
 import { formatTime, formatWhen } from '@/lib/time';
+import { csrfHeaders } from '@/lib/csrf';
 import {
     ContextEnvelopeForm,
     EMPTY_ENVELOPE,
@@ -228,18 +230,17 @@ function newUuid(): string {
     });
 }
 
-function getCsrf(): string | null {
-    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
-}
-
-/** Headers every same-origin JSON call from this page sends. */
+/**
+ * Headers every same-origin JSON call from this page sends. The CSRF token is
+ * the live XSRF cookie, re-read per call (lib/csrf.ts): the <meta> tag this
+ * used to read goes stale after a SPA sign-out/sign-in and then 419s.
+ */
 function jsonHeaders(): Record<string, string> {
-    const csrf = getCsrf();
     return {
         'Content-Type': 'application/json',
         Accept: 'application/json',
         'X-Requested-With': 'XMLHttpRequest',
-        ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}),
+        ...csrfHeaders(),
     };
 }
 
@@ -300,6 +301,11 @@ export default function FoundryChat({
     const mountedRef = useRef(true);
     const [streaming, setStreaming] = useState(false);
     const [conversationId, setConversationId] = useState<string>(active_thread_id ?? '');
+    // Bumped when a thread the reader picked has finished loading, to re-run the
+    // thread-sync effect below even if the server's `active_thread_id` did not
+    // change (it does not, when the reader clicks the thread that was active
+    // before they pressed "+ New").
+    const [syncEpoch, setSyncEpoch] = useState(0);
     // Mobile (< lg) thread rail — collapsed by default, toggled by the
     // hamburger button in the conversation header. Below `lg:` the rail
     // renders inline above the conversation (same "toggle reveals a block
@@ -545,13 +551,18 @@ export default function FoundryChat({
     // streaming bubble and resetting a freshly-minted conversation id
     // mid-answer. Thread switching is disabled while a stream is live
     // (CHAT-12), so the bail below is belt and braces.
+    //
+    // `syncEpoch` is the other trigger: "+ New" resets the page locally, and the
+    // server never learns of it, so its `active_thread_id` still names the old
+    // thread. Clicking that thread again returns the very same id, which alone
+    // would not re-run this and the blank transcript would stay (FE-5).
     useEffect(() => {
         if (streamingRef.current) return;
         updateMessages(initialMessages);
         setConversationId(active_thread_id ?? '');
         stickToBottomRef.current = true;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [active_thread_id]);
+    }, [active_thread_id, syncEpoch]);
 
     // Follow new tokens only while the reader is already at (or within a few
     // lines of) the bottom. Scrolling up to re-read an earlier answer while
@@ -571,8 +582,14 @@ export default function FoundryChat({
         // CHAT-12 — switching mid-answer showed thread B's title over
         // thread A's transcript, and the next question went into A.
         if (streamingRef.current) return;
-        router.get(`/projects/${project.slug}/chat`, { thread: id }, { preserveState: true });
         setMobileThreadsOpen(false);
+        // Already the thread on screen: nothing to fetch.
+        if (id === conversationId) return;
+        router.get(
+            `/projects/${project.slug}/chat`,
+            { thread: id },
+            { preserveState: true, onSuccess: () => setSyncEpoch((epoch) => epoch + 1) },
+        );
     }
 
     function newThread() {
@@ -1173,9 +1190,18 @@ export default function FoundryChat({
         }
     }
 
+    // The thread on screen, by the id the page is actually showing. The
+    // `active_thread*` props are only what the server last chose: after "+ New"
+    // they still name the old thread, and after the first message of a new
+    // thread they lag it. The title falls back to `active_thread` for a thread
+    // older than the 50 the rail lists.
+    const currentTitle =
+        threads.find((t) => t.id === conversationId)?.title ??
+        (active_thread !== null && active_thread.id === conversationId ? active_thread.title : null);
+
     return (
         <AppLayout>
-            <Head title={active_thread?.title ?? 'Chat — GeoRAG'} />
+            <Head title={currentTitle ?? 'Chat — GeoRAG'} />
 
             <div
                 className="flex-1 grid lg:grid-cols-[280px_1fr] overflow-hidden"
@@ -1233,14 +1259,15 @@ export default function FoundryChat({
                                 key={t.id}
                                 type="button"
                                 onClick={() => selectThread(t.id)}
+                                aria-current={t.id === conversationId ? 'true' : undefined}
                                 // CHAT-12 — switching mid-answer split the
                                 // header from the transcript.
                                 disabled={streaming}
                                 className="w-full text-left px-3 py-2.5 border-b transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 style={{
                                     borderColor: 'var(--line-1)',
-                                    background: t.id === active_thread_id ? 'var(--accent-bg)' : 'transparent',
-                                    color: t.id === active_thread_id ? 'var(--fg-0)' : 'var(--fg-2)',
+                                    background: t.id === conversationId ? 'var(--accent-bg)' : 'transparent',
+                                    color: t.id === conversationId ? 'var(--fg-0)' : 'var(--fg-2)',
                                 }}
                             >
                                 <div className="text-xs font-medium truncate">{t.title}</div>
@@ -1275,8 +1302,12 @@ export default function FoundryChat({
                         </button>
                         <BrandDiamond size={14} />
                         <div className="flex-1">
-                            <div className="text-sm font-medium" style={{ color: 'var(--fg-0)' }}>
-                                {active_thread?.title ?? (messages.length === 0 ? 'New thread' : 'Untitled thread')}
+                            <div
+                                className="text-sm font-medium"
+                                style={{ color: 'var(--fg-0)' }}
+                                data-testid="thread-title"
+                            >
+                                {currentTitle ?? (messages.length === 0 ? 'New thread' : 'Untitled thread')}
                             </div>
                             <div
                                 className="text-[10px] font-mono uppercase tracking-wider"
@@ -1344,7 +1375,7 @@ export default function FoundryChat({
                                 // paired preceding user message (the nearest user turn
                                 // above it).
                                 const pairedUser =
-                                    m.role === 'assistant' && m.error
+                                    m.role === 'assistant' && m.error && isRetryableFailure(m.errorCode)
                                         ? messages
                                               .slice(0, idx)
                                               .filter((x) => x.role === 'user')

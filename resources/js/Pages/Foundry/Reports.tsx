@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Head, Link, router } from '@inertiajs/react';
+import { Head, Link, router, usePage } from '@inertiajs/react';
 import { importWizardHref } from '@/lib/importWizardLink';
 import DocumentBody from '@/Components/Foundry/DocumentBody';
 import { PageHeader, Card, Pill, Stat, ProgressBar, EmptyState } from '@/Components/Foundry/primitives';
@@ -172,6 +172,14 @@ const TABS: Array<{ id: Tab; label: string }> = [
     { id: 'metadata', label: 'Metadata' },
 ];
 
+/** The `?section=` of an Inertia page url (path + query string), or null. */
+function sectionParam(url: string): string | null {
+    const at = url.indexOf('?');
+    if (at === -1) return null;
+    const value = new URLSearchParams(url.slice(at + 1)).get('section');
+    return value === null || value === '' ? null : value;
+}
+
 /** Props the detail pane owns — the only ones a selection change refetches. */
 const DETAIL_PROPS = [
     'selected_id',
@@ -217,11 +225,15 @@ export default function FoundryReports({
     // where N is the raw section_number ReportResolver::resolve() returned off
     // the citation's source_chunk_id. sectionsFor() normalises sections_text
     // (keyed "1", "2", "preamble", ...) into `sections[].heading` holding that
-    // same key, so a straight string match is exact. Read once on mount.
-    const [highlightSection] = useState<string | null>(() => {
-        if (typeof window === 'undefined') return null;
-        return new URLSearchParams(window.location.search).get('section');
-    });
+    // same key, so a straight string match is exact.
+    //
+    // Read from the CURRENT url on every render, not once on mount. This page is
+    // master-detail: picking another report is an Inertia visit that keeps this
+    // component (and any state in it), so a value read at mount stuck to the
+    // next report and outlined whichever of ITS sections carried the same number
+    // - a different document's section, drawn as though it were the citation.
+    const { url } = usePage();
+    const highlightSection = sectionParam(url);
 
     const selectedRow = reports.find((r) => r.report_id === selected_id) ?? null;
 
@@ -940,13 +952,13 @@ function SectionsTab({
     highlightHeading?: string | null;
 }) {
     const highlightRef = useRef<HTMLDivElement | null>(null);
+    // On mount for the deep-link landing, and again if the target moves (the url
+    // changed to another section, or another report's) while this stays mounted.
     useEffect(() => {
         if (highlightHeading && highlightRef.current) {
             highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        // Only run on mount for the deep-link landing.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [highlightHeading]);
 
     if (sections.length === 0) {
         return (

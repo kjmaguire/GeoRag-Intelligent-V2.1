@@ -35,6 +35,29 @@ export function normaliseValidationState(raw: unknown): ValidationState {
 }
 
 /**
+ * `failed`-frame codes for a project whose lifecycle state refuses queries
+ * (FastAPI hibernated / archived / past-due; Laravel re-broadcasts them as a
+ * `failed` frame with the code in `code`). The refusal is about the PROJECT,
+ * not the question, so asking again fails the same way until its state changes.
+ * Lower-cased, matched case-insensitively.
+ */
+const PROJECT_LIFECYCLE_CODES: ReadonlySet<string> = new Set([
+    'project_hibernated',
+    'project_archived',
+    'project_past_due',
+]);
+
+/**
+ * Whether a failed turn is worth offering "Retry" on. Everything is, except a
+ * project-lifecycle refusal (see above): a Retry there is a button that cannot
+ * work. Unknown and missing codes stay retryable - a network drop or a stalled
+ * stream carries none, and those are exactly what Retry is for.
+ */
+export function isRetryableFailure(code: string | null | undefined): boolean {
+    return !PROJECT_LIFECYCLE_CODES.has((code ?? '').trim().toLowerCase());
+}
+
+/**
  * CHAT-16 — a completed, non-refused answer with zero citations is an
  * upstream defect (every RAG claim must carry a source_chunk_id). It must
  * not render like a normal, checked answer.

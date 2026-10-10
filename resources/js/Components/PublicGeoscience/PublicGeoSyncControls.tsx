@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '@/Components/Foundry/ToastHost';
+import { csrfHeaders } from '@/lib/csrf';
 
 /**
  * Freshness line + admin-only "Sync now" for the Public Geo page.
@@ -28,10 +29,6 @@ interface SyncStatus {
 
 interface Props {
     isAdmin: boolean;
-}
-
-function getCsrf(): string | null {
-    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? null;
 }
 
 const JSON_HEADERS = { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' };
@@ -78,14 +75,13 @@ export default function PublicGeoSyncControls({ isAdmin }: Props) {
     const syncNow = useCallback(async () => {
         setSubmitting(true);
         try {
-            const csrf = getCsrf();
             const res = await fetch('/api/v1/public-geoscience/sync', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: {
                     ...JSON_HEADERS,
                     'Content-Type': 'application/json',
-                    ...(csrf ? { 'X-CSRF-TOKEN': csrf } : {}),
+                    ...csrfHeaders(),
                 },
                 body: JSON.stringify({}),
             });
