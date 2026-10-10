@@ -122,3 +122,9 @@ tests/test_dem_elevation_pg.py
 # puts the metre offsets onto it only runs here) and gold stereonet_x/y must be
 # the pole of the plane (an expression inside one INSERT ... SELECT).
 tests/test_promote_gis_pg.py
+
+# ── Coverage-density grid (GIS audit 2026-10) ───────────────────────────
+# silver.coverage_density is a plpgsql function, so cell size on the ground,
+# the intersects-not-contains counting and the 54000 refusal of an unbounded
+# extent only exist when it runs against a migrated PostGIS.
+tests/test_coverage_density_pg.py
