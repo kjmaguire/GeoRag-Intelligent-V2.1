@@ -203,6 +203,13 @@
             <!-- 2026-10-04: audit.compute_audit_hash() previous-hash lookup is two
                  index probes; the chain it writes is unchanged. -->
             <file>tests/Feature/Tenancy/AuditChainTriggerLookupTest.php</file>
+            <!-- 2026-10-10 database audit: georag_app may DELETE from
+                 audit.query_audit_log (retention_sweep); the hash trigger stamps
+                 created_at after the chain lock and takes no row lock; the ledger
+                 itself is append-only (UPDATE/DELETE revoked from georag_app + a
+                 raising trigger). Each fails on the previous state. All three run
+                 in a rolled-back transaction: the ledger cannot be cleaned up. -->
+            <file>tests/Feature/Tenancy/AuditQueryLogRetentionGrantTest.php</file>
             <!-- 2026-10-04 database audit: MV refresh CONCURRENTLY, hot-path and
                  FK indexes, SECURITY DEFINER ACL + search_path, role timeouts. -->
             <file>tests/Feature/Tenancy/DatabaseAuditHardeningMigrationsTest.php</file>
