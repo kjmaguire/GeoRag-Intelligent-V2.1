@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { LithologyStripColumn, type LithologyInterval } from '@/Components/Foundry/Charts';
+import {
+    LithologyStripColumn,
+    geologyDepth,
+    sharedDepthAxis,
+    type LithologyInterval,
+} from '@/Components/Foundry/Charts';
 
 interface HolePayload {
     hole_id: string;
@@ -142,10 +147,17 @@ export function SectionView({
         return { distanceM: d, azimuthDeg: bearing };
     }, [left, right]);
 
-    const sharedDepthMax = Math.max(
-        left.kind === 'ready' ? (left.payload.total_depth ?? 0) : 0,
-        right.kind === 'ready' ? (right.payload.total_depth ?? 0) : 0,
-        100,
+    // One depth axis for both columns — the whole point of a section is to
+    // read one hole against the other, so a 130 m hole must not be stretched
+    // to the height of a 400 m one. It reaches the deeper hole's total depth
+    // or deepest logged interval (the column used to ignore this value and fit
+    // each hole to itself, which is exactly the stretching).
+    const sharedDepthMax = sharedDepthAxis(
+        [left, right].flatMap((state) =>
+            state.kind === 'ready'
+                ? [state.payload.total_depth, geologyDepth({ intervals: state.payload.lithology_intervals })]
+                : [],
+        ),
     );
 
     return (

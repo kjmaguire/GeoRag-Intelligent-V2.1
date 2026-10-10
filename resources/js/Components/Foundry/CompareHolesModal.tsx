@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DownholeMultiLog, LithologyStripColumn, type LithologyInterval } from '@/Components/Foundry/Charts';
+import {
+    DownholeMultiLog,
+    LithologyStripColumn,
+    geologyDepth,
+    sharedDepthAxis,
+    type LithologyInterval,
+} from '@/Components/Foundry/Charts';
 import type { StripAlterationBand, StripMineralBand } from '@/lib/stripLog';
 import { formatU3O8Pct } from '@/lib/grade';
 import { Modal } from '@/Components/Foundry/primitives';
@@ -86,11 +92,27 @@ export function CompareHolesPanel({
         };
     }, [projectSlug, leftHole, rightHole]);
 
-    // Shared depth axis so both holes plot at the same scale.
-    const depthMax = Math.max(
-        left.kind === 'ready' ? left.payload.log_depth_max : 0,
-        right.kind === 'ready' ? right.payload.log_depth_max : 0,
-        600,
+    // Shared depth axis so both holes plot at the same scale, curves and
+    // geology alike: it reaches the deepest curve, logged interval or total
+    // depth of either hole. `log_depth_max` counts only when the hole has
+    // curves — the API reports a 600 m placeholder for one that has none, and
+    // the old fixed 600 m floor turned every shallow pair into a column of
+    // dead space (and, with the strip column now honouring the axis, would
+    // have squashed their geology into the top of it).
+    const depthMax = sharedDepthAxis(
+        [left, right].flatMap((state) => {
+            if (state.kind !== 'ready') return [];
+            const hole = state.payload;
+            return [
+                hole.log_tracks.length > 0 ? hole.log_depth_max : null,
+                hole.total_depth,
+                geologyDepth({
+                    intervals: hole.lithology_intervals,
+                    alteration: hole.alteration_intervals,
+                    mineralization: hole.mineralization_intervals,
+                }),
+            ];
+        }),
     );
 
     return (

@@ -153,6 +153,95 @@ export function RoseMini({ strikes, size = 200 }: { strikes?: number[]; size?: n
 }
 
 /* ============================================================
+   Shared depth geometry — one scale for every depth-indexed track
+   ============================================================ */
+
+/** Room above a depth track's plot for its title, px. The same for every track. */
+export const DEPTH_TRACK_TOP = 16;
+/** Room below the plot, px. */
+export const DEPTH_TRACK_BOTTOM = 4;
+
+/** Depth (m) to pixels for one depth-indexed track. */
+export interface DepthScale {
+    /** The depth (m) that lands on the bottom of the plot. */
+    max: number;
+    /** y (px) of the top of the plot, where depth 0 sits. */
+    top: number;
+    /** Plot height, px. */
+    plotHeight: number;
+    /** Height of the whole SVG, px: the plot plus the room above and below it. */
+    svgHeight: number;
+    /** Depth (m) to y (px). */
+    yOf: (depth: number) => number;
+}
+
+/**
+ * The vertical scale of a depth track.
+ *
+ * `plotHeight` is the height of the PLOT, and the plot starts DEPTH_TRACK_TOP
+ * below the top of the SVG. DownholeMultiLog and LithologyStripColumn both
+ * build their scale here, so two tracks given the same `plotHeight` and the
+ * same `depthMax` put every depth at the same y; they used to differ (16 px
+ * of top room against 32, and the strip column fitted its own deepest
+ * interval whatever `depthMax` it was given), so tracks drawn side by side
+ * disagreed about where a depth was.
+ */
+export function depthTrackScale(plotHeight: number, depthMax: number): DepthScale {
+    const max = depthMax > 0 ? depthMax : 1;
+    return {
+        max,
+        top: DEPTH_TRACK_TOP,
+        plotHeight,
+        svgHeight: DEPTH_TRACK_TOP + plotHeight + DEPTH_TRACK_BOTTOM,
+        yOf: (depth: number) => DEPTH_TRACK_TOP + (depth / max) * plotHeight,
+    };
+}
+
+/**
+ * Round a max-depth value UP to the nearest friendly tick so the depth
+ * axis never visually cuts off the bottom band and never leaves huge
+ * dead space below it.
+ *   < 100 m  → nearest 25 m
+ *   < 300 m  → nearest 50 m
+ *   else     → nearest 100 m
+ * The small additive constant guarantees we always round to the NEXT
+ * tick even when the data lands exactly on a tick.
+ */
+export function roundUpDepth(d: number): number {
+    if (d <= 0) return 50;
+    if (d < 100) return Math.ceil((d + 5) / 25) * 25;
+    if (d < 300) return Math.ceil((d + 10) / 50) * 50;
+    return Math.ceil((d + 15) / 100) * 100;
+}
+
+/**
+ * One depth axis for tracks drawn side by side: the deepest thing any of
+ * them reaches, rounded up to a friendly tick. Hand the result to every
+ * track as `depthMax` — the curve tracks and the geology column of one hole,
+ * or the columns of two holes being compared — so they share a scale.
+ * Non-numbers (a hole with no recorded total depth, curves that are not
+ * drawn) are ignored.
+ */
+export function sharedDepthAxis(depths: ReadonlyArray<number | null | undefined>): number {
+    const finite = depths.filter((d): d is number => typeof d === 'number' && Number.isFinite(d));
+    return roundUpDepth(Math.max(0, ...finite));
+}
+
+/** The deepest interval of a hole's geology tracks, m (0 when it has none). */
+export function geologyDepth(g: {
+    intervals?: ReadonlyArray<{ to: number }>;
+    alteration?: ReadonlyArray<{ to: number }>;
+    mineralization?: ReadonlyArray<{ to: number }>;
+}): number {
+    return Math.max(
+        0,
+        ...(g.intervals ?? []).map((b) => b.to),
+        ...(g.alteration ?? []).map((b) => b.to),
+        ...(g.mineralization ?? []).map((b) => b.to),
+    );
+}
+
+/* ============================================================
    DownholeMultiLog — gamma / resistivity / density tracks
    ============================================================ */
 
@@ -184,8 +273,9 @@ export function DownholeMultiLog({
         );
     }
     const width = data.length * (trackWidth + 6) + 40;
+    const scale = depthTrackScale(height, depthMax);
     return (
-        <svg width={width} height={height + 20} viewBox={`0 0 ${width} ${height + 20}`}>
+        <svg width={width} height={scale.svgHeight} viewBox={`0 0 ${width} ${scale.svgHeight}`}>
             {/* Depth axis */}
             <text x={4} y={12} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">
                 DEPTH (m)
@@ -194,15 +284,21 @@ export function DownholeMultiLog({
                 <g key={p}>
                     <line
                         x1={36}
-                        y1={p * height + 16}
+                        y1={scale.yOf(p * scale.max)}
                         x2={width}
-                        y2={p * height + 16}
+                        y2={scale.yOf(p * scale.max)}
                         stroke="var(--line-1)"
                         strokeDasharray="2 2"
                         strokeWidth="0.4"
                     />
-                    <text x={4} y={p * height + 20} fill="var(--fg-3)" fontSize="9" fontFamily="var(--font-mono)">
-                        {Math.round(p * depthMax)}
+                    <text
+                        x={4}
+                        y={scale.yOf(p * scale.max) + 4}
+                        fill="var(--fg-3)"
+                        fontSize="9"
+                        fontFamily="var(--font-mono)"
+                    >
+                        {Math.round(p * scale.max)}
                     </text>
                 </g>
             ))}
@@ -212,7 +308,7 @@ export function DownholeMultiLog({
                 const d = t.points
                     .map((p, j) => {
                         const x = x0 + ((p.value - t.min) / range) * trackWidth;
-                        const y = 16 + (p.depth / depthMax) * height;
+                        const y = scale.yOf(p.depth);
                         return `${j === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
                     })
                     .join(' ');
@@ -220,9 +316,9 @@ export function DownholeMultiLog({
                     <g key={i}>
                         <rect
                             x={x0}
-                            y={16}
+                            y={scale.top}
                             width={trackWidth}
-                            height={height}
+                            height={scale.plotHeight}
                             fill="var(--bg-2)"
                             stroke="var(--line-1)"
                             strokeWidth="0.5"
@@ -260,23 +356,6 @@ export interface LithologyInterval {
     detail?: LithologyDetail;
 }
 
-/**
- * Round a max-depth value UP to the nearest friendly tick so the depth
- * axis never visually cuts off the bottom band and never leaves huge
- * dead space below it.
- *   < 100 m  → nearest 25 m
- *   < 300 m  → nearest 50 m
- *   else     → nearest 100 m
- * The small additive constant guarantees we always round to the NEXT
- * tick even when the data lands exactly on a tick.
- */
-function roundUpDepth(d: number): number {
-    if (d <= 0) return 50;
-    if (d < 100) return Math.ceil((d + 5) / 25) * 25;
-    if (d < 300) return Math.ceil((d + 10) / 50) * 50;
-    return Math.ceil((d + 15) / 100) * 100;
-}
-
 const LITHO_SHORT: Record<string, string> = {
     'DERIVED-ORE': 'ORE',
     'DERIVED-SST': 'SST',
@@ -288,6 +367,7 @@ const LITHO_SHORT: Record<string, string> = {
 export function LithologyStripColumn({
     intervals,
     holeId,
+    depthMax,
     height = 520,
     width = 220,
     alteration = [],
@@ -296,7 +376,16 @@ export function LithologyStripColumn({
 }: {
     intervals: LithologyInterval[];
     holeId: string | null;
-    depthMax: number;
+    /**
+     * The depth (m) that lands on the bottom of the plot. Give every track
+     * drawn beside this one — the curve tracks of the same hole, the other
+     * hole's column — the SAME value (see `sharedDepthAxis`) and they share a
+     * scale. Omitted or 0: fit this hole's own data. A value shallower than
+     * the hole's deepest interval is raised to it rather than cutting the
+     * bottom of the log off.
+     */
+    depthMax?: number;
+    /** Height of the PLOT, px; the SVG adds DEPTH_TRACK_TOP and DEPTH_TRACK_BOTTOM. Same meaning as DownholeMultiLog's. */
     height?: number;
     width?: number;
     alteration?: StripAlterationBand[];
@@ -321,20 +410,18 @@ export function LithologyStripColumn({
             </div>
         );
     }
-    const padT = 32;
-    const padB = 14;
-    const usableH = height - padT - padB;
-    // Fit the depth axis to this hole's actual data + a small buffer,
-    // rounded up to a friendly tick. Without this a 130 m hole on a
-    // 300 m global axis leaves half the column visually empty.
-    const dataMax = Math.max(
-        1,
-        ...intervals.map((i) => i.to),
-        ...alteration.map((b) => b.to),
-        ...mineralization.map((b) => b.to),
-    );
-    const denom = roundUpDepth(dataMax);
-    const yOf = (d: number) => padT + (d / denom) * usableH;
+    const dataMax = Math.max(1, geologyDepth({ intervals, alteration, mineralization }));
+    // A depth axis the caller supplied is honoured EXACTLY: it is the number
+    // the curve tracks (or the other hole's column) are drawn to, and
+    // rounding it here would put this column out of step with them. This
+    // used to ignore `depthMax` altogether and fit the hole's own deepest
+    // interval, so tracks side by side did not share a scale. With none
+    // supplied, fit the data + a small buffer, rounded up to a friendly tick:
+    // without it a 130 m hole on a 300 m axis leaves half the column empty.
+    const axisMax = depthMax !== undefined && depthMax > 0 ? Math.max(depthMax, dataMax) : roundUpDepth(dataMax);
+    const scale = depthTrackScale(height, axisMax);
+    const yOf = scale.yOf;
+    const titleY = scale.top - 4;
     const derived = intervals.some((i) => i.code.startsWith('DERIVED-'));
     const oreCount = intervals.filter((i) => i.code.endsWith('-ORE')).length;
 
@@ -360,10 +447,10 @@ export function LithologyStripColumn({
         cursor += colW + gap;
     }
 
-    // Grid lines every 25m up to denom, capped at 12 lines to avoid clutter.
-    const gridStepM = denom > 600 ? 100 : denom > 300 ? 50 : 25;
+    // Grid lines every 25m up to the axis end, coarser on a deep axis to avoid clutter.
+    const gridStepM = axisMax > 600 ? 100 : axisMax > 300 ? 50 : 25;
     const gridLines: number[] = [];
-    for (let d = gridStepM; d < denom; d += gridStepM) {
+    for (let d = gridStepM; d < axisMax; d += gridStepM) {
         gridLines.push(d);
     }
 
@@ -426,8 +513,8 @@ export function LithologyStripColumn({
             </div>
             <svg
                 width={width}
-                height={height}
-                viewBox={`0 0 ${width} ${height}`}
+                height={scale.svgHeight}
+                viewBox={`0 0 ${width} ${scale.svgHeight}`}
                 style={{ display: 'block' }}
                 role="img"
                 aria-label="Lithology strip log"
@@ -435,7 +522,7 @@ export function LithologyStripColumn({
                 {/* Header */}
                 <text
                     x={axisW / 2}
-                    y={padT - 8}
+                    y={titleY}
                     textAnchor="middle"
                     fontSize="9"
                     fill="var(--fg-3)"
@@ -445,7 +532,7 @@ export function LithologyStripColumn({
                 </text>
                 <text
                     x={frames.lith.x + frames.lith.width / 2}
-                    y={padT - 8}
+                    y={titleY}
                     textAnchor="middle"
                     fontSize="9"
                     fill="var(--fg-3)"
@@ -456,7 +543,7 @@ export function LithologyStripColumn({
                 {frames.alt && (
                     <text
                         x={frames.alt.x + frames.alt.width / 2}
-                        y={padT - 8}
+                        y={titleY}
                         textAnchor="middle"
                         fontSize="9"
                         fill="var(--fg-3)"
@@ -468,7 +555,7 @@ export function LithologyStripColumn({
                 {frames.min && (
                     <text
                         x={frames.min.x + frames.min.width / 2}
-                        y={padT - 8}
+                        y={titleY}
                         textAnchor="middle"
                         fontSize="9"
                         fill="var(--fg-3)"

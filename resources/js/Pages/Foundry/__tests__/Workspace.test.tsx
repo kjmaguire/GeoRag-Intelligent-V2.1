@@ -208,6 +208,58 @@ describe('Foundry/Workspace', () => {
         expect(screen.getByRole('button', { name: /show a regional reference column/i })).toBeInTheDocument();
     });
 
+    describe('LOGS depth axis', () => {
+        const num = (el: Element, attr: string) => Number(el.getAttribute(attr));
+        const curve = {
+            curve: 'GAMMA',
+            group: 'gamma',
+            unit: 'cps',
+            label: 'GAMMA (cps)',
+            color: '#fff',
+            min: 0,
+            max: 10,
+            points: [
+                { depth: 0, value: 1 },
+                { depth: 180, value: 5 },
+            ],
+        };
+
+        it('gives the curve tracks and the geology column ONE axis, deeper than either alone', () => {
+            window.history.replaceState({}, '', '/projects/red-star/workspace?mode=logs');
+            const { container } = renderPage(
+                props({
+                    log_tracks: [curve],
+                    log_depth_max: 180,
+                    // The geology runs deeper than the curves.
+                    log_lithology_intervals: [
+                        { from: 0, to: 100, code: 'GRN', label: 'Granite', color: '#999' },
+                        { from: 100, to: 260, code: 'SST', label: 'Sandstone', color: '#c90' },
+                    ],
+                }),
+            );
+            const [curves, strip] = Array.from(container.querySelectorAll('svg')).filter(
+                (svg) => svg.getAttribute('role') === 'img' || svg.querySelector('text')?.textContent === 'DEPTH (m)',
+            );
+            // 260 m of geology -> a 300 m axis for BOTH tracks (the curve track
+            // used to end at its own 180 m, the column at its own 260).
+            expect(curves.textContent).toContain('300');
+            expect(curves.getAttribute('height')).toBe(strip.getAttribute('height'));
+            const sst = screen.getByLabelText('SST 100-260 m');
+            const plot = num(curves.querySelector('rect')!, 'height');
+            expect(num(sst, 'y') + num(sst, 'height')).toBeCloseTo(16 + (260 / 300) * plot, 5);
+        });
+
+        it("does not let the API's 600 m placeholder stretch a geology-only hole", () => {
+            window.history.replaceState({}, '', '/projects/red-star/workspace?mode=logs');
+            renderPage(props({ log_tracks: [], log_depth_max: 600 }));
+            // 10 m of granite fits a 25 m axis (the hole's own data, rounded up), not the
+            // placeholder's 600 m: 40% of the plot, not 1.7% of it.
+            const grn = screen.getByLabelText('GRN 0-10 m');
+            const plot = num(grn.closest('svg')!, 'height') - 16 - 4; // the SVG less its top and bottom room
+            expect(num(grn, 'height') / plot).toBeCloseTo(10 / 25, 5);
+        });
+    });
+
     it('derives quick prompts from the commodity (FE-25)', () => {
         renderPage(props());
         expect(screen.getByText('Which holes have the best Gold intervals?')).toBeInTheDocument();

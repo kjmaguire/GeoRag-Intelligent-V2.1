@@ -13,6 +13,8 @@ import {
     DownholeMultiLog,
     ChronoColumn,
     LithologyStripColumn,
+    geologyDepth,
+    sharedDepthAxis,
     type StratUnit,
     type LithologyInterval,
     type StereonetPole,
@@ -570,6 +572,20 @@ export default function FoundryWorkspace({
     // A hole can have a logged strip with no curves at all (a geology log and no LAS).
     const hasLogGeologyTracks = log_alteration_intervals.length > 0 || log_mineralization_intervals.length > 0;
     const hasLogGeology = log_lithology_intervals.length > 0 || hasLogGeologyTracks;
+    // ONE depth axis for the curve tracks and the geology column drawn beside
+    // them. `log_depth_max` is the deepest drawn CURVE — or the API's 600 m
+    // placeholder when no curve is drawn, which must not become the axis of a
+    // geology-only hole — and the geology can run deeper than the curves, so
+    // the axis is the deeper of the two. The column ignored it altogether
+    // before and fitted its own data, so the two tracks disagreed on depth.
+    const logDepthAxis = sharedDepthAxis([
+        log_tracks.length > 0 ? log_depth_max : null,
+        geologyDepth({
+            intervals: log_lithology_intervals,
+            alteration: log_alteration_intervals,
+            mineralization: log_mineralization_intervals,
+        }),
+    ]);
 
     function changeLogCurves(next: string[]) {
         router.get(
@@ -1385,7 +1401,7 @@ export default function FoundryWorkspace({
                                                         <div className="shrink-0">
                                                             <DownholeMultiLog
                                                                 tracks={log_tracks}
-                                                                depthMax={log_depth_max}
+                                                                depthMax={logDepthAxis}
                                                                 height={chartH}
                                                                 trackWidth={96}
                                                             />
@@ -1398,7 +1414,7 @@ export default function FoundryWorkspace({
                                                             mineralization={log_mineralization_intervals}
                                                             truncated={log_tracks_truncated}
                                                             holeId={log_hole_id}
-                                                            depthMax={log_depth_max}
+                                                            depthMax={logDepthAxis}
                                                             height={chartH}
                                                             width={hasLogGeologyTracks ? 520 : 380}
                                                         />
