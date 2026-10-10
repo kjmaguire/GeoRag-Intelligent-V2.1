@@ -771,8 +771,15 @@ jobs:
       # healthy. It was unset in this Terraform too, as was MARTIN_INTERNAL_URL
       # (-> http://martin:3000, a compose-only name). A plausible fallback is
       # harder to spot than an empty one.
-      - name: Service-to-service URLs resolve inside the VPC
+      #
+      # The Helm chart had the same three, plus FASTAPI_INTERNAL_URL missing on
+      # Horizon (where the chat job runs), and the checker only read Terraform.
+      # It reads the chart's committed renders too, so a chart edit has to be
+      # re-rendered (scripts/regenerate_k8s_manifests.sh) to be seen.
+      - name: Service-to-service URLs resolve inside the VPC and the cluster
         run: python scripts/check-internal-urls.py
+      - name: Discrimination tests for the internal-URL check
+        run: bash scripts/tests/internal_urls_test.sh
       # hatchet-worker probed with wget on an image that only has curl, so the
       # check could never pass — and essential=true means ECS replaces the task
       # forever. A probe that always fails is worse than no probe: the symptom
