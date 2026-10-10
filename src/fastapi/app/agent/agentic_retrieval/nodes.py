@@ -1202,6 +1202,44 @@ _AGGREGATE_FIELDS: frozenset[str] = frozenset({
 })
 
 
+#: Room kept for the "collars: showing k of N ..." line when fitting rows.
+_ROWS_HEADER_RESERVE = 120
+
+
+def _collar_summaries(collars: list[Any]) -> list[str]:
+    """The HIGH-CONFIDENCE SUMMARIES block for a COMPLETE set of collars.
+
+    The NUMERIC system prompt tells the model to quote a "HIGH-CONFIDENCE
+    SUMMARIES" block verbatim and do no arithmetic of its own, and the shared
+    preamble's rule 1 says the same of a "PRE-COMPUTED SUMMARY". Nothing on
+    the live path produced either: ``_build_collar_aggregates`` was only ever
+    called by ``context_builder._build_context``, which has no production
+    caller. So "what is the deepest hole" was answered, by a model told not to
+    compute, from the twelve alphabetical rows below (audit 2026-10 finding 23).
+
+    Only ever called for a result whose retrieved rows ARE every matching hole.
+    Over a LIMIT-capped sample, "deepest" or "average" describes the sample, and
+    Layer 3 would ground it all the same because the value is in the evidence.
+    Best-effort: a summary that cannot be computed is left out, never allowed
+    to fail the render.
+    """
+    from app.agent.tool_result_helpers import _build_collar_aggregates  # noqa: PLC0415
+
+    try:
+        aggregates = [line for line in _build_collar_aggregates(collars) if line]
+    except Exception:
+        logger.warning("agentic_retrieval.render: collar aggregates failed", exc_info=True)
+        return []
+    if not aggregates:
+        return []
+    return [
+        f"HIGH-CONFIDENCE SUMMARIES (computed in Python over all {len(collars)} "
+        f"matching holes, the complete set rather than only the rows listed "
+        f"below; quote these exact values, do no arithmetic of your own):",
+        *aggregates,
+    ]
+
+
 def _render_spatial_result(result: Any) -> str:
     """Header-first rendering of a SpatialQueryResult (audit item 3).
 
@@ -1210,25 +1248,58 @@ def _render_spatial_result(result: Any) -> str:
     "how many holes" with 50 on a 567-hole project, and Layer 3 grounded it
     because 50 was in the evidence. The matching total is stated first and
     the sample is labelled as a sample.
+
+    When the retrieved rows are every matching hole, the summaries computed
+    over all of them come next (finding 23): the rows listed below are capped at
+    a dozen, and a superlative or an average taken from a dozen of thirty is
+    wrong. When they are not, the block says plainly that no such figure exists
+    in the evidence.
     """
     collars = list(getattr(result, "collars", None) or [])
     returned = len(collars)
-    total = getattr(result, "total_count", None)
-    total = int(total) if total is not None else returned
+    reported = getattr(result, "total_count", None)
+    total = int(reported) if reported is not None else returned
     lines = [
         f"data_source={_short(getattr(result, 'data_source', ''))} "
         f"total_holes_matching={total}"
     ]
+    summarised = False
     if total > returned:
         lines.append(
             f"NOTE: the project has {total} matching holes; only {returned} "
             f"are retrieved (an alphabetical sample by hole id, not a "
-            f"ranking). State the total as {total}, never as {returned}."
+            f"ranking). State the total as {total}, never as {returned}. "
+            f"No deepest, shallowest, average, easternmost, westernmost, "
+            f"northernmost, southernmost or per-type figure is given, because "
+            f"none computed from a sample describes the project: say it "
+            f"cannot be determined from the retrieved sample rather than "
+            f"picking one from these rows."
         )
-    shown = collars[:_STRUCTURED_ROW_SAMPLE]
-    suffix = " (alphabetical sample)" if total > len(shown) else ""
-    lines.append(f"collars: showing {len(shown)} of {total}{suffix}")
-    lines.extend(f"  {_short(item, 400)}" for item in shown)
+    elif reported is not None and returned:
+        # Completeness is only known when the query reported its own total.
+        summary = _collar_summaries(collars)
+        lines.extend(summary)
+        summarised = bool(summary)
+    rows = [f"  {_short(item, 400)}" for item in collars[:_STRUCTURED_ROW_SAMPLE]]
+    # Whole rows only: with the summaries above, twelve rows no longer fit the
+    # cap, and a row cut off mid-number would be read as a value.
+    used = sum(len(line) + 1 for line in lines) + _ROWS_HEADER_RESERVE
+    kept = 0
+    for row in rows:
+        if used + len(row) + 1 > _STRUCTURED_CAP:
+            break
+        used += len(row) + 1
+        kept += 1
+    if total > returned or not summarised:
+        suffix = " (alphabetical sample)" if total > kept else ""
+    else:
+        suffix = (
+            f" (alphabetical listing; the summaries above cover all {total})"
+            if total > kept
+            else ""
+        )
+    lines.append(f"collars: showing {kept} of {total}{suffix}")
+    lines.extend(rows[:kept])
     return "\n".join(lines)[:_STRUCTURED_CAP]
 
 
