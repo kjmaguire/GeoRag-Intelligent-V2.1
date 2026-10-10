@@ -458,3 +458,154 @@ def test_the_end_time_check_catches_the_enrich_regression() -> None:
     assert usable <= start
     assert start + 180 > stop + 1440, "a 3 h budget from 21:45 must be caught"
     assert start + 120 <= stop + 1440, "the 2 h cap must clear the stop"
+
+
+# ---------------------------------------------------------------------------
+# pg_cron jobs inside RDS (AW-10, 2026-10-10)
+# ---------------------------------------------------------------------------
+# Hatchet is not the only scheduler that stops with the platform. bootstrap.sql
+# schedules partman's maintenance with pg_cron INSIDE the RDS instance, and the
+# instance is stopped for the same fifteen and a half hours. pg_cron does not
+# run a job it missed, so `0 3 * * *` -- 03:00 UTC, closed in both DST halves --
+# did not run late: it never ran, and nothing ever created or dropped a
+# partition through it. Every check above reads the Hatchet workflows, so none
+# of them could see it.
+
+BOOTSTRAP_SQL = REPO / "deploy" / "aws" / "bootstrap.sql"
+DATA_TF = REPO / "deploy" / "aws" / "terraform" / "data.tf"
+
+#: `cron.schedule('<name>', '<expression>', ...)`, and the _in_database form.
+_PG_CRON_CALL = re.compile(
+    r"cron\.schedule(?:_in_database)?\(\s*'([^']+)'\s*,\s*'([^']+)'", re.S,
+)
+
+
+def _without_sql_comments(sql: str) -> str:
+    """Drop `--` comments. bootstrap.sql carries the operator's copy-paste SQL
+    for an already-bootstrapped database in its comments, and a commented-out
+    cron.schedule() is not a job. (Naive on purpose: no job's command text
+    contains `--`.)"""
+    return "\n".join(line.split("--", 1)[0] for line in sql.splitlines())
+
+
+def pg_cron_daily_jobs(sql: str | None = None) -> list[tuple[str, str, int, int]]:
+    """(job name, expression, hour, minute) UTC for each fixed-hour pg_cron job.
+
+    Reads bootstrap.sql unless given SQL text. A job that fires many times a
+    day (``*/10 * * * *``) is exempt for the reason the Hatchet scan exempts
+    it, and so is pg_cron's ``30 seconds`` form. A fixed-hour expression this
+    cannot read as plain integers (a range, a step inside a list) FAILS rather
+    than being skipped: a job nobody can classify is exactly how this went
+    unseen.
+    """
+    text = _without_sql_comments(
+        BOOTSTRAP_SQL.read_text(encoding="utf-8") if sql is None else sql
+    )
+    found: list[tuple[str, str, int, int]] = []
+    for name, expression in _PG_CRON_CALL.findall(text):
+        fields = expression.split()
+        if len(fields) != 5:
+            continue
+        minute, hour = fields[0], fields[1]
+        if hour == "*" or hour.startswith("*/"):
+            continue
+        try:
+            hours = [int(h) for h in hour.split(",")]
+            minutes = [0] if minute.startswith("*") else [int(m) for m in minute.split(",")]
+        except ValueError:
+            raise AssertionError(
+                f"pg_cron job {name!r} has the expression {expression!r}, which "
+                "this test cannot place on the clock. Write the hour and minute "
+                "as plain numbers (or a comma list) so it can be checked against "
+                "the shutdown window."
+            ) from None
+        found.extend((name, expression, h, m) for h in hours for m in minutes)
+    return found
+
+
+def test_bootstrap_sql_schedules_partman_maintenance() -> None:
+    """Guards the guard: if this stops parsing, the window check below passes
+    vacuously over an empty list."""
+    names = [name for name, *_ in pg_cron_daily_jobs()]
+    assert "partman-maintenance" in names, (
+        f"bootstrap.sql schedules {names or 'no fixed-hour pg_cron jobs'}; the "
+        "partman-maintenance job is the one this section exists to watch. If it "
+        "moved or was renamed, update the parser rather than letting this "
+        "section check nothing."
+    )
+
+
+def test_no_pg_cron_job_fires_while_rds_is_stopped() -> None:
+    stop, usable = shutdown_window()
+
+    offenders = [
+        (name, expression, f"{hour:02d}:{minute:02d} UTC")
+        for name, expression, hour, minute in pg_cron_daily_jobs()
+        if stop <= hour * 60 + minute < usable
+    ]
+
+    assert not offenders, (
+        f"These pg_cron jobs fire between {_hhmm(stop)} and {_hhmm(usable)} "
+        "UTC, when shutdown-sweep.sh has stopped the RDS instance pg_cron lives "
+        "in, or when the startup sweep is still bringing it back. pg_cron does "
+        "not run a job it missed; it does not run:\n"
+        + "\n".join(
+            f"  {name:24s} {expression:16s} {when}"
+            for name, expression, when in sorted(offenders)
+        )
+        + f"\n\nMove them to {_hhmm(usable)} UTC or later, and put the SQL "
+          "an operator runs on an already-bootstrapped database next to the "
+          "change in bootstrap.sql: that file is applied once, by hand."
+    )
+
+
+def test_pg_cron_still_schedules_in_gmt() -> None:
+    """The expressions above are read as UTC because pg_cron's default zone is
+    GMT. Setting cron.timezone in the parameter group would move every job by
+    the zone's offset without touching bootstrap.sql, and the check above would
+    keep passing."""
+    text = "\n".join(
+        line for line in DATA_TF.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "cron.timezone" not in text, (
+        "data.tf sets cron.timezone. The pg_cron expressions in bootstrap.sql "
+        "are checked here as UTC; either drop the parameter or teach "
+        "pg_cron_daily_jobs() the zone."
+    )
+
+
+def test_the_pg_cron_check_catches_the_03_00_regression() -> None:
+    """The case AW-10 found, and the slot it moved to."""
+    stop, usable = shutdown_window()
+    job = "SELECT cron.schedule('partman-maintenance', '{}', $$CALL partman.run_maintenance_proc()$$);"
+
+    (_, _, hour, minute), = pg_cron_daily_jobs(job.format("0 3 * * *"))
+    assert stop <= hour * 60 + minute < usable, "03:00 UTC must be caught"
+
+    (_, _, hour, minute), = pg_cron_daily_jobs(job.format("45 18 * * *"))
+    assert not stop <= hour * 60 + minute < usable, "18:45 UTC must clear it"
+
+
+def test_the_pg_cron_scan_reads_only_live_statements() -> None:
+    sql = (
+        "-- SELECT cron.schedule('old', '0 3 * * *', $$SELECT 1$$);\n"
+        "--   SELECT cron.schedule('also-old', '0 4 * * *', $$SELECT 1$$);\n"
+        "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'x';\n"
+        "SELECT cron.schedule(\n"
+        "    'live',\n"
+        "    '10,40 19 * * *',\n"
+        "    $$SELECT 1$$\n"
+        ");\n"
+        "SELECT cron.schedule('often', '*/10 * * * *', $$SELECT 1$$);\n"
+        "SELECT cron.schedule('seconds', '30 seconds', $$SELECT 1$$);\n"
+    )
+    assert pg_cron_daily_jobs(sql) == [
+        ("live", "10,40 19 * * *", 19, 10),
+        ("live", "10,40 19 * * *", 19, 40),
+    ]
+
+
+def test_an_unreadable_pg_cron_hour_fails_instead_of_being_skipped() -> None:
+    with pytest.raises(AssertionError, match="cannot place"):
+        pg_cron_daily_jobs("SELECT cron.schedule('range', '0 1-4 * * *', $$SELECT 1$$);")

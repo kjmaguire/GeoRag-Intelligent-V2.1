@@ -117,10 +117,40 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 -- Idempotent: cron.schedule() upserts by job name as of pg_cron 1.4+, but
 -- unschedule-then-schedule works across the version range and reads
 -- unambiguously on a second run of this file.
+--
+-- WHEN IT RUNS. pg_cron schedules in GMT (data.tf does not set cron.timezone)
+-- and the instance is STOPPED 17:00-08:30 America/Vancouver (variables.tf):
+-- 00:00-15:30 UTC in PDT, 01:00-16:30 UTC in PST. This job was '0 3 * * *' --
+-- 03:00 UTC, inside that span in both halves of the year -- and pg_cron does
+-- not run a job it missed, so it never ran once. 18:45 UTC is 11:45 PDT /
+-- 10:45 PST: well after the startup sweep, clear of the daily backup window
+-- (17:00-17:30 UTC) and the Sunday maintenance window (18:00-18:30 UTC), and
+-- between the Hatchet crons that cluster on :00, :15 and :30. A test reads
+-- the statement below (src/fastapi/tests/test_crons_avoid_the_shutdown_window.py)
+-- and fails if it drifts back into the closed span.
+--
+-- A DATABASE BOOTSTRAPPED BEFORE THIS CHANGE still has the 03:00 job. Running
+-- this whole file moves it, but that needs all three password variables set,
+-- so this is the same fix on its own. As the master user, in the georag
+-- database (the cron.database_name target), pasted as-is:
+--
+--   SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
+--   SELECT cron.schedule('partman-maintenance', '45 18 * * *',
+--                        $$CALL partman.run_maintenance_proc()$$);
+--
+-- Check it with
+--
+--   SELECT jobid, schedule, active FROM cron.job WHERE jobname = 'partman-maintenance';
+--
+-- and, the day after, that it RAN:
+--
+--   SELECT status, start_time, return_message FROM cron.job_run_details
+--    WHERE jobid = (SELECT jobid FROM cron.job WHERE jobname = 'partman-maintenance')
+--    ORDER BY start_time DESC LIMIT 3;
 SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'partman-maintenance';
 SELECT cron.schedule(
     'partman-maintenance',
-    '0 3 * * *',
+    '45 18 * * *',
     $$CALL partman.run_maintenance_proc()$$
 );
 
