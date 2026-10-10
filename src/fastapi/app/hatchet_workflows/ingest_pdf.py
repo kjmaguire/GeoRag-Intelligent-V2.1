@@ -590,11 +590,22 @@ def _run_parser_subprocess(
             if isinstance(_w, dict) and _w.get("code") == "pdf_parse_mode_summary":
                 _engine_text_pages.update(int(x) for x in _w.get("engine_text_pages") or [])
         _page_image_warnings: list[dict] = []
+        # The parser's EXACT set of pages that produced text. Without it the
+        # `figures` scope infers one from the sections' page spans, which marks
+        # every page of a multi-page chunk as text (audit finding 14). Passed
+        # only when the result carries it, so a result/double without the
+        # field still stages the old way.
+        _exact_text_pages = getattr(result, "text_pages", None)
+        _exact_kwargs = (
+            {"text_pages": {int(p) for p in _exact_text_pages}}
+            if _exact_text_pages is not None else {}
+        )
         try:
             _page_images = stage_page_images(
                 cached_path, sha256, _sections_out,
                 engine_text_pages=_engine_text_pages,
                 warnings_out=_page_image_warnings,
+                **_exact_kwargs,
             )
         except Exception as _pi_exc:  # noqa: BLE001
             log.warning(
