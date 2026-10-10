@@ -618,7 +618,6 @@ class Settings(BaseSettings):
     # MMR_ENABLED=False to disable if the golden-set baseline shows MMR
     # hurts recall on your corpus.
     MMR_ENABLED: bool = True
-    MMR_LAMBDA: float = 0.7
 
 
     # P0 #1 — Qdrant project_id scoping for search_documents.
@@ -1427,7 +1426,8 @@ class Settings(BaseSettings):
     # downstream in the orchestrator with k=MAX_CONTEXT_DOC_CHUNKS."
     #
     # MMR DOES NOT RUN. `_mmr_select_chunks` is called from exactly one
-    # place, `context_builder._build_context`, and that function has no
+    # place, the retired `context_builder._build_context` (removed 2026-10-07),
+    # and that function had no
     # production caller — the live renderer is
     # `agentic_retrieval.nodes._render_tool_results_context`. So does
     # MAX_CONTEXT_DOC_CHUNKS, which is read only inside the same dead
@@ -1709,8 +1709,8 @@ class Settings(BaseSettings):
     # 5-10× to ground synthesis queries on the full corpus of retrieved data.
     #
     # Override individually in .env. An alternative is to bump the token
-    # budget and leave the per-category caps high — the _build_context
-    # function will still fit because token truncation is applied last.
+    # budget and leave the per-category caps high — the retired _build_context
+    # function would still fit because token truncation is applied last.
 
     # Overall prompt-side token budget for the CONTEXT block — BACKEND-AWARE.
     # Module 5 Chunk 2 (2026-04-21): model flip to qwen3-14b-awq MoE.
@@ -1781,11 +1781,6 @@ class Settings(BaseSettings):
         if self.LLM_BACKEND in ("bedrock", "cohere"):
             return self.MAX_CONTEXT_TOKENS_BEDROCK
         return self.MAX_CONTEXT_TOKENS
-
-    # Per-category row caps inside _build_context.
-    MAX_CONTEXT_COLLARS: int = 20
-    MAX_CONTEXT_DOC_CHUNKS: int = 5
-    MAX_CONTEXT_PG_RECORDS: int = 12
 
 
 # Module-level singleton — imported by all other modules as:

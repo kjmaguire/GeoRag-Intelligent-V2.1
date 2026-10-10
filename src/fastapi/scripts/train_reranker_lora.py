@@ -73,35 +73,6 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _build_input_examples(rows: list[dict[str, Any]]):
-    """Convert reranker_label_dataset rows into sentence-transformers
-    InputExamples for the cross-encoder training loop.
-
-    Each row in the dataset has:
-      query: str
-      positive_chunk_text: str
-      hard_negative_chunk_texts: list[str]   # 6 negatives per row
-      variant: 'literal' | 'paraphrase' | 'multi_hop'
-      query_group_id: str
-
-    We emit one (query, positive, label=1.0) and 6 (query, negative,
-    label=0.0) examples per row. Listwise InfoNCE is achieved by the
-    CrossEncoderTrainer's contrastive loss; the per-example labels are
-    just the supervision signal.
-    """
-    from sentence_transformers import InputExample  # deferred import
-
-    examples: list = []
-    for r in rows:
-        query = r["query"]
-        positive = r["positive_chunk_text"]
-        negatives = r.get("hard_negative_chunk_texts", []) or []
-        examples.append(InputExample(texts=[query, positive], label=1.0))
-        for neg in negatives:
-            examples.append(InputExample(texts=[query, neg], label=0.0))
-    return examples
-
-
 def main() -> int:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -326,9 +297,8 @@ def main() -> int:
     def _rows_to_pairs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Flatten one row into (1 positive + N negatives) pointwise pairs.
 
-        Matches the previous _build_input_examples semantics — same
-        supervision signal (label=1.0 for positives, 0.0 for negatives),
-        same listwise-via-pointwise approximation under BCE loss.
+        Supervision signal: label=1.0 for positives, 0.0 for negatives, the
+        listwise-via-pointwise approximation under BCE loss.
         """
         pairs: list[dict[str, Any]] = []
         for r in rows:

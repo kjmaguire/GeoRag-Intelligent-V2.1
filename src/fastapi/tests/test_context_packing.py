@@ -1,12 +1,12 @@
-"""B4 — context packing order + MMR diversity."""
+"""B4 — MMR diversity over retrieved chunks."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from app.agent.orchestrator import _build_context, _mmr_select_chunks
+from app.agent.orchestrator import _mmr_select_chunks
 
-# ── Fakes matching the ToolResult shapes _build_context discriminates on ──
+# ── Fake chunk shape for the MMR tests ──
 
 
 @dataclass
@@ -16,12 +16,6 @@ class _Chunk:
     section_title: str | None = None
     text: str = ""
     relevance_score: float = 0.0
-
-
-@dataclass
-class _FakeDocumentSearchResult:
-    chunks: list[_Chunk] = field(default_factory=list)
-    count: int = 0
 
 
 # ── MMR ──────────────────────────────────────────────────────────────────
@@ -64,42 +58,3 @@ def test_mmr_runs_on_small_result_sets():
     assert len(selected) == 2
     assert selected[0].document_title == "high"  # MMR seeds with top-relevance
     assert selected[1].document_title == "low"
-
-
-# ── _build_context ordering ──────────────────────────────────────────────
-
-
-def test_summaries_precede_records():
-    """
-    B4 invariant — the HIGH-CONFIDENCE SUMMARIES zone is emitted before the
-    RAW RECORDS zone, even though the spatial tool's own record listing is
-    appended first in dispatch order.
-    """
-    from app.agent.tools import CollarRecord, SpatialQueryResult
-
-    collar = CollarRecord(
-        hole_id="PLS-22-08",
-        collar_id="c1",
-        easting=1.0,
-        northing=2.0,
-        elevation=3.0,
-        total_depth=510.0,
-        hole_type="DD",
-        azimuth=0.0,
-        dip=-90.0,
-        status="completed",
-        drill_date=None,
-    )
-    spatial = SpatialQueryResult(collars=[collar, collar], count=2, data_source="test")
-
-    packed = _build_context([("query_spatial_collars", spatial)])
-
-    summary_pos = packed.find("=== HIGH-CONFIDENCE SUMMARIES")
-    records_pos = packed.find("Spatial query returned")
-    assert summary_pos >= 0, "summary zone missing"
-    assert records_pos >= 0, "records zone missing"
-    assert summary_pos < records_pos, "B4 invariant violated: records appeared before summaries"
-
-
-def test_empty_tool_results_returns_noop_marker():
-    assert _build_context([]) == "(no data retrieved)"

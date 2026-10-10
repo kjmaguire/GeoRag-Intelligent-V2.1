@@ -253,7 +253,7 @@ def assemble_response(
     sources_used: list[str] = []  # all chunk IDs involved (cited + retrieved)
 
     # Pre-assign citation_ids so that (a) PGEO results get one id per record,
-    # (b) the ids here are identical to what _build_context wrote into the
+    # (b) the ids here are identical to what the retired _build_context wrote into the
     # LLM prompt, and (c) the assembler is purely deterministic — no hidden
     # counter reset.
     id_bundles = assign_citation_ids(tool_results)

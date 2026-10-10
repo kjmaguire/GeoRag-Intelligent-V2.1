@@ -13,37 +13,6 @@
 repos:
   - repo: local
     hooks:
-      - id: no-legacy-ollama
-        name: Block reintroduction of Ollama as a live LLM provider
-        entry: scripts/check_no_legacy_ollama.sh
-        language: script
-        pass_filenames: false
-        stages: [pre-commit]
-        description: >
-          Ollama→vLLM cutover (2026-05-10): Ollama is no longer a supported
-          live LLM provider. The dead provider entry was deleted from
-          config/ai.php on 2026-05-18 and the runtime dispatch was narrowed
-          to ("vllm", "anthropic"). This hook blocks reintroduction via:
-          the 'ollama' => [ PHP provider block, env('OLLAMA_URL') reads,
-          os.environ['OLLAMA_*'] reads, or new case 'ollama' dispatch
-          branches. Historical compat (Literal["ollama", ...] type, comments,
-          docs) is unaffected.
-
-      - id: no-legacy-dashboard
-        name: Block reintroduction of pre-Foundry UI (resources/js/Pages/Dashboard/*)
-        entry: scripts/check_no_legacy_dashboard.sh
-        language: script
-        pass_filenames: false
-        stages: [pre-commit]
-        description: >
-          Foundry cutover (2026-05-18): the legacy pre-Foundry pages and
-          components under resources/js/Pages/Dashboard/ and
-          resources/js/Components/Dashboard/ were deleted in favour of
-          resources/js/Pages/Foundry/. This hook fails any commit that
-          reintroduces those paths or references them via Inertia::render
-          or the @/Components/Dashboard alias. Pages/Dashboards/ (plural,
-          the Customer Dashboards feature) is unaffected.
-
       - id: system-prompt-version-bump
         name: Enforce _SYSTEM_PROMPT_VERSION bump on prompt edits
         entry: scripts/check_prompt_version_bump.sh

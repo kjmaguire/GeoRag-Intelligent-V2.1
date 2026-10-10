@@ -225,24 +225,6 @@ def _json_dump(obj: Any) -> str:
     return json.dumps(obj, default=str)
 
 
-async def _bump_progress(
-    conn: asyncpg.Connection, run_id: UUID, *,
-    files_delta: int = 0, indexed_delta: int = 0, skipped_delta: int = 0,
-    bytes_delta: int = 0,
-) -> None:
-    await conn.execute(
-        """
-        UPDATE bronze.ingest_runs
-           SET files_seen = files_seen + $2,
-               files_indexed = files_indexed + $3,
-               files_skipped = files_skipped + $4,
-               bytes_seen = bytes_seen + $5
-         WHERE run_id = $1
-        """,
-        run_id, files_delta, indexed_delta, skipped_delta, bytes_delta,
-    )
-
-
 async def _insert_manifest_batch(
     conn: asyncpg.Connection, rows: list[dict],
 ) -> None:

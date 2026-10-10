@@ -450,17 +450,6 @@ def _verify_with_keys(
     return claims
 
 
-def invalidate_per_flow_key_cache(flow_name: str | None = None) -> None:
-    """Operator-facing — drop one flow's cache entry (or all). Called by
-    the rotation helper so a just-rotated key takes effect immediately
-    without waiting for the TTL."""
-    with _per_flow_lock:
-        if flow_name is None:
-            _per_flow_cache.clear()
-        else:
-            _per_flow_cache.pop(flow_name, None)
-
-
 __all__ = [
     "mint_flow_jwt",
     "averify_flow_jwt_token",

@@ -258,18 +258,6 @@ class TestWhatTheModelReads:
         text = _render_structured_result(SpatialQueryResult(collars=[clean], count=1, data_source="x"))
         assert "[position:" not in text
 
-    def test_the_older_prompt_path_says_the_same(self) -> None:
-        from app.agent.context_builder import _build_context
-
-        result = SpatialQueryResult(
-            collars=[_collar()], count=1, data_source="PostGIS silver.collars",
-            centre_crs="EPSG:4326 (longitude/latitude)",
-        )
-        text = _build_context([("query_spatial_collars", result)])
-        assert "not recorded per collar" in text
-        assert "search centre read as EPSG:4326" in text
-        assert "position: coordinate system was ASSUMED" in text
-
 
 # ---------------------------------------------------------------------------
 # Layer 3: a confidence or an uncertainty is not groundable content

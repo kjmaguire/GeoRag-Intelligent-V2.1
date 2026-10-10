@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Models\User;
-use App\Policies\DashboardPolicy;
 use App\Policies\WorkflowTriggerPolicy;
 use App\Services\Collars\CanonicalHoleIdIndex;
 use App\Support\Http\PooledHttpClient;
@@ -78,9 +77,6 @@ class AppServiceProvider extends ServiceProvider
             URL::forceScheme('https');
             URL::forceRootUrl(rtrim((string) config('app.url'), '/'));
         }
-
-        Gate::define('viewPortfolio', [DashboardPolicy::class, 'viewPortfolio']);
-        Gate::define('viewProject', [DashboardPolicy::class, 'viewProject']);
 
         // Global admin gate — guards write access to shared resources such as
         // vendor profiles and column mappings. Reads directly from the users

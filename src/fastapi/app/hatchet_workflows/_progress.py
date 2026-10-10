@@ -1387,33 +1387,6 @@ async def mark_timed_out(*, run_id: str, reason: str = "stale_heartbeat") -> boo
         return False
 
 
-async def mark_cancelled(*, run_id: str, reason: str = "user_cancelled") -> bool:
-    """Terminal write — sets status=cancelled. Used by the on_failure_task hook
-    when Hatchet cancels a workflow (concurrency expiry, explicit cancel)."""
-    sql = f"""
-        UPDATE silver.ingest_progress
-        SET status        = 'cancelled',
-            current_step  = 'failed',
-            failed_at     = now(),
-            updated_at    = now(),
-            error_text    = $2
-        WHERE run_id = $1::uuid
-          AND status NOT IN ({TERMINAL_STATUS_SQL})
-        RETURNING run_id
-    """
-    try:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(sql, run_id, reason[:2000])
-        return row is not None
-    except Exception as e:
-        log.warning(
-            "progress.mark_cancelled failed (run=%s): %s", run_id, e,
-            extra={"run_id": run_id},
-        )
-        return False
-
-
 async def lookup_active_run_id(
     *,
     workspace_id: str,
