@@ -943,8 +943,31 @@ async def test_support_packet_enqueues_its_notification_under_the_incidents_work
     assert out.dispatch_error is None
     assert out.dispatch_enqueued is True
     assert pool.enqueued == [
-        {"workspace_id": WORKSPACE, "scope": WORKSPACE, "key": "support_packet:INC-9"}
+        {"workspace_id": WORKSPACE, "scope": WORKSPACE, "key": f"support_packet:{WORKSPACE}:INC-9"}
     ]
+
+
+async def test_two_tenants_filing_the_same_incident_id_get_separate_notifications(
+    monkeypatch: pytest.MonkeyPatch, wrapper_hooks: SimpleNamespace
+) -> None:
+    """The key used to be ``support_packet:{incident_id}``. The unique index is
+    global and RLS hides the other tenant's pending row, so the second
+    tenant's enqueue hit ON CONFLICT DO NOTHING without either side knowing."""
+    from app.agents.phase0 import support_packet as sp
+
+    _fake_object_storage(monkeypatch)
+    monkeypatch.setattr(sp, "emit_audit", AsyncMock(return_value=None))
+    pool = _RlsPool()
+    _use_pool(monkeypatch, pool)  # type: ignore[arg-type]
+
+    for workspace in (WORKSPACE, OTHER_WORKSPACE):
+        await p0._run_support_packet.aio_mock_run(
+            p0.AgentRunInput(workspace_id=workspace, kwargs={"incident_id": "INC-9"})
+        )
+
+    keys = [row["key"] for row in pool.enqueued]
+    assert len(keys) == 2
+    assert len(set(keys)) == 2
 
 
 async def test_a_refused_enqueue_is_reported_without_undoing_the_packet(

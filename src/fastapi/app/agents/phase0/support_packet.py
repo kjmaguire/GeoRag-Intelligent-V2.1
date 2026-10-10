@@ -383,8 +383,12 @@ async def support_packet_assemble(
                     }),
                     # R2 idempotency — the agent is already idempotent on
                     # incident_id, so re-assembly of the same incident must not
-                    # produce a second notification.
-                    f"support_packet:{incident_id}",
+                    # produce a second notification. Scoped to the workspace:
+                    # the unique index is global on (target_store,
+                    # idempotency_key), and RLS hides another tenant's pending
+                    # row, so two tenants filing "INC-9" silently suppressed
+                    # each other's notification.
+                    f"support_packet:{ctx.workspace_id}:{incident_id}",
                 )
             dispatch_enqueued = True
         except Exception as exc:  # noqa: BLE001 — never fail assembly on notify
