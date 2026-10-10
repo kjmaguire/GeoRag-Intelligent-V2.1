@@ -327,6 +327,34 @@ async def test_pending_renders_are_deleted_only_after_the_transaction_commits() 
 
 
 @pytest.mark.asyncio
+async def test_the_page_copies_happen_before_any_database_transaction_opens() -> None:
+    """A 400-page report is 400 sequential S3 copies. Inside persist's single
+    transaction that held a database transaction open (and a pooled connection)
+    for the whole of them, on the Postgres that also runs the Hatchet queue
+    (Hatchet audit 2026-10, finding 13). They are S3-only, so they come first; a
+    rollback + retry copies again from the same untouched pending objects."""
+    from tests.test_pdf_run_outcome import _run_persist
+
+    events: list[str] = []
+    store = MagicMock()
+    store.copy.side_effect = lambda *a, **k: events.append("copy")
+
+    final, _diag, txn_events = await _run_persist(
+        {"sections": _SECTIONS, "text_page_coverage_pct": 1.0, "is_scanned": False,
+         "parser_used": "fitz", "page_image_manifest": _images([1, 2, 3])},
+        page_count=3, store=store, events=events,
+    )
+
+    assert txn_events is events
+    assert events.count("copy") == 3
+    assert "begin" in events
+    assert max(i for i, e in enumerate(events) if e == "copy") < events.index("begin"), (
+        f"a page was copied inside the transaction: {events}"
+    )
+    assert [w for w in final.run_warnings if w["code"] == "page_image_persist_failed"] == []
+
+
+@pytest.mark.asyncio
 async def test_a_failed_copy_keeps_its_pending_object_and_is_reported() -> None:
     from tests.test_pdf_run_outcome import _run_persist
 

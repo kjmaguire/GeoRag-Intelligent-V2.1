@@ -103,6 +103,13 @@ heavy fields into `ParseOut.heavy_gz_b64` and `persist` unpacks them
 rather than re-OCRing every page for the same failure. Raise it together with the
 Hatchet client's `HATCHET_CLIENT_GRPC_MAX_SEND/RECV_MESSAGE_LENGTH`.
 
+Page images in `persist`: the staged page renders are copied to their final keys
+BEFORE any database connection exists (S3 only; 400 pages is 400 sequential
+round trips), and only the rows are written inside the persist transaction. The
+staged objects are deleted after the commit, never before, so a rollback plus a
+Hatchet retry copies again from the same untouched sources, and a retry after a
+commit finds the final keys in place and counts those pages as finalised.
+
 Memory protection:
 - `_compute_parse_max_workers()` returns `min(os.cpu_count(), 4)` when
   `PARSE_SUBPROCESS_MAX_WORKERS` is empty.

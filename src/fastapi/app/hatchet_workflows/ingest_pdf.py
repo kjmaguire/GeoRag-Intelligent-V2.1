@@ -2281,6 +2281,96 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
     )
     ocr_review_pages = _ocr_review_pages(parsed)
 
+    # Page-image finalisation, step 1 of 2: copy each staged render to its final
+    # key. This is object-store work only, so it runs BEFORE any database
+    # connection exists. It used to run inside persist's single transaction,
+    # where a 400-page report (scope=all) held a database transaction and a
+    # pooled connection open across 400 sequential S3 round trips, on the same
+    # Postgres that runs the Hatchet queue (Hatchet audit 2026-10, finding 13).
+    # Step 2, the rows, is inside the transaction below.
+    #
+    # Retry correctness is unchanged. The copy is idempotent (same source, same
+    # destination); `_pending_page_keys` are deleted only AFTER the transaction
+    # commits, never before (persist has retries=2, and a rollback followed by a
+    # retry needs the pending object to still exist to copy again); and a retry
+    # after a commit finds the final keys already in place (below).
+    # `_image_failed_pages` are pages that lost their image, reported on the run.
+    #
+    # Fail-soft per page, deliberately: a page whose copy or insert fails is
+    # skipped with a warning rather than aborting the document. The text passages
+    # are the product; image passages are additive coverage, and losing one
+    # page's render must not cost the document its text.
+    _pending_page_keys: list[str] = []
+    _image_failed_pages: list[int] = []
+    _img_store = None
+    #: (page number, final key) for every render that is in place, in order.
+    _pages_to_record: list[tuple[int, str]] = []
+    _page_images = parsed.get("page_image_manifest") or []
+    if _page_images:
+        from app.services.ingest.page_image import (
+            final_key as _page_final_key,
+        )
+
+        # Deliberately NOT reusing a `store` name from elsewhere in this
+        # function: the one in the figure block is bound inside
+        # `if pending_manifest:`, and the figure manifest is unconditionally
+        # empty (docling removed 2026-07-29), so it is never actually assigned
+        # on any live run. Depending on it would NameError on the first
+        # document with page images.
+        _img_store = get_storage_client()
+        for entry in _page_images:
+            page_no = entry.get("page_number")
+            pending = entry.get("pending_key")
+            if not page_no or not pending:
+                continue
+            dest = _page_final_key(str(report_id), int(page_no))
+            try:
+                await asyncio.to_thread(
+                    _img_store.copy,
+                    Bucket.BRONZE_RASTER,
+                    pending,
+                    Bucket.BRONZE_RASTER,
+                    dest,
+                    metadata={
+                        "report_id": str(report_id),
+                        "page": str(page_no),
+                    },
+                    content_type="image/png",
+                )
+            except Exception as _copy_exc:  # noqa: BLE001
+                # A persist RETRY after a commit finds the pending object
+                # already deleted (it is removed post-commit), so EVERY copy
+                # fails even though every page is already in place under its
+                # final key - which used to be reported as
+                # page_image_persist_failed for the whole document. The
+                # destination existing IS the copy having happened.
+                _dest_present = False
+                try:
+                    _dest_present = bool(await asyncio.to_thread(
+                        _img_store.exists, Bucket.BRONZE_RASTER, dest,
+                    ))
+                except Exception as _exists_exc:  # noqa: BLE001
+                    log.warning(
+                        "ingest_pdf: page-image existence check failed "
+                        "page=%s key=%s err=%s", page_no, dest, _exists_exc,
+                    )
+                if not _dest_present:
+                    log.warning(
+                        "ingest_pdf: page-image copy failed page=%s "
+                        "key=%s err=%s", page_no, pending, _copy_exc,
+                    )
+                    _image_failed_pages.append(int(page_no))
+                    continue
+                log.info(
+                    "ingest_pdf: page-image copy failed (%s) but %s "
+                    "already exists - treating page %s as finalised "
+                    "(retry after commit)", _copy_exc, dest, page_no,
+                )
+            # The copy landed: the pending object has done its job. Deleted
+            # post-commit (see _pending_page_keys).
+            _pending_page_keys.append(pending)
+            _pages_to_record.append((int(page_no), dest))
+
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2, statement_cache_size=0)
     try:
         async with pool.acquire() as conn:
@@ -2298,15 +2388,9 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
             # (their Qdrant points are deleted after the transaction commits).
             current_text_hashes: list[str] = []
             stale_passage_rows: list = []
-            # Page-image bookkeeping. `_pending_page_keys` are the staged
-            # renders whose copy to the final key succeeded; they are deleted
-            # AFTER the transaction commits (never inside it: persist has
-            # retries=2, and a rollback followed by a retry needs the pending
-            # object to still exist to copy again). `_image_failed_pages` are
-            # pages that lost their image here, reported on the run.
-            _pending_page_keys: list[str] = []
-            _image_failed_pages: list[int] = []
-            _img_store = None
+            # (Page-image bookkeeping -- `_pending_page_keys`,
+            # `_image_failed_pages`, `_pages_to_record` -- is built before the
+            # connection exists; see the copy phase above.)
             # The run's verdict, built INSIDE the transaction (below) so it
             # commits with the passages it describes.
             run_warnings: list[dict] = []
@@ -2386,87 +2470,22 @@ async def _persist_body(input: IngestPdfInput, ctx: Context) -> IngestPdfFinalOu
                     if status.endswith(" 1"):
                         passages_written += 1
 
-                # Page-image passages. The renders were staged under
-                # _pending keys by the parse task (report_id wasn't known
-                # yet); rename each into place, then write its row.
-                #
-                # Fail-soft per page, deliberately: a page whose copy or
-                # insert fails is skipped with a warning rather than
-                # aborting the transaction. The text passages above are the
-                # product; image passages are additive coverage, and losing
-                # one page's render must not cost the document its text.
-                _page_images = parsed.get("page_image_manifest") or []
-                if _page_images:
-                    from app.services.ingest.page_image import (
-                        final_key as _page_final_key,
-                    )
+                # Page-image passages, step 2 of 2: the rows. The renders were
+                # staged under _pending keys by the parse task (report_id
+                # wasn't known yet) and copied into place BEFORE this
+                # transaction opened (see the copy phase above); each page
+                # that is in place gets its row. A page whose row insert
+                # fails is skipped with a warning rather than aborting the
+                # transaction, for the reason given there.
+                if _pages_to_record:
                     from app.services.ingest.page_image import (
                         placeholder_text as _page_placeholder_text,
                     )
 
-                    # Deliberately NOT reusing the `store` above: that name is
-                    # bound inside `if pending_manifest:`, and the figure
-                    # manifest is unconditionally empty (docling removed
-                    # 2026-07-29), so `store` is never actually assigned on
-                    # any live run. Depending on it would NameError on the
-                    # first document with page images.
-                    _img_store = get_storage_client()
                     _images_written = 0
-                    for entry in _page_images:
-                        page_no = entry.get("page_number")
-                        pending = entry.get("pending_key")
-                        if not page_no or not pending:
-                            continue
-                        dest = _page_final_key(str(report_id), int(page_no))
-                        try:
-                            await asyncio.to_thread(
-                                _img_store.copy,
-                                Bucket.BRONZE_RASTER,
-                                pending,
-                                Bucket.BRONZE_RASTER,
-                                dest,
-                                metadata={
-                                    "report_id": str(report_id),
-                                    "page": str(page_no),
-                                },
-                                content_type="image/png",
-                            )
-                        except Exception as _copy_exc:  # noqa: BLE001
-                            # A persist RETRY after a commit finds the pending
-                            # object already deleted (it is removed post-commit),
-                            # so EVERY copy fails even though every page is
-                            # already in place under its final key - which used
-                            # to be reported as page_image_persist_failed for
-                            # the whole document. The destination existing IS
-                            # the copy having happened.
-                            _dest_present = False
-                            try:
-                                _dest_present = bool(await asyncio.to_thread(
-                                    _img_store.exists, Bucket.BRONZE_RASTER, dest,
-                                ))
-                            except Exception as _exists_exc:  # noqa: BLE001
-                                log.warning(
-                                    "ingest_pdf: page-image existence check failed "
-                                    "page=%s key=%s err=%s", page_no, dest, _exists_exc,
-                                )
-                            if not _dest_present:
-                                log.warning(
-                                    "ingest_pdf: page-image copy failed page=%s "
-                                    "key=%s err=%s", page_no, pending, _copy_exc,
-                                )
-                                _image_failed_pages.append(int(page_no))
-                                continue
-                            log.info(
-                                "ingest_pdf: page-image copy failed (%s) but %s "
-                                "already exists - treating page %s as finalised "
-                                "(retry after commit)", _copy_exc, dest, page_no,
-                            )
-                        # The copy landed: the pending object has done its
-                        # job. Deleted post-commit (see _pending_page_keys).
-                        _pending_page_keys.append(pending)
-
+                    for page_no, dest in _pages_to_record:
                         _img_text = _page_placeholder_text(
-                            int(page_no), parsed.get("title"),
+                            page_no, parsed.get("title"),
                         )
                         # HAT-10 (2026-09-29): a SAVEPOINT per row. This
                         # loop runs inside persist's single transaction, and
