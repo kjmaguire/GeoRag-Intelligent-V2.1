@@ -51,9 +51,16 @@ spec:
               # queue jobs (no TTL) alongside cache and sessions (TTL'd).
               # allkeys-lru would evict queued jobs silently. See
               # deploy/aws/terraform/services.tf for the full argument.
+              #
+              # --save "" is explicit whenever AOF is on. Left out, Redis keeps
+              # its default RDB save points and forks to snapshot the same
+              # dataset the AOF already covers: a second copy-on-write fork
+              # against a memory limit sized for one, and a second durability
+              # mechanism nobody chose. Compose and the AWS task both say it.
               redis-server \
                 --requirepass "$REDIS_PASSWORD" \
                 --appendonly yes \
+                --save "" \
                 --dir /data \
                 --maxmemory {{ .Values.redis.maxmemory }} \
                 --maxmemory-policy {{ .Values.redis.maxmemoryPolicy }}

@@ -46,10 +46,11 @@ curl -sfL https://get.k3s.io | sh -
 # 2. Install GeoRAG
 helm install georag charts/georag/ \
   -f charts/georag/values-k3s.yaml \
-  --create-namespace --namespace georag \
+  --create-namespace --namespace georag --timeout 15m \
+  --set global.createNamespace=false \
   --set secrets.postgresPassword="$(openssl rand -base64 32)" \
   --set secrets.pgAppPassword="$(openssl rand -base64 32)" \
-  --set secrets.neo4jPassword="$(openssl rand -base64 32)" \
+  --set secrets.martinDbPassword="$(openssl rand -hex 32)" \
   --set secrets.redisPassword="$(openssl rand -base64 32)" \
   --set secrets.fastapiServiceKey="$(openssl rand -base64 48)" \
   --set secrets.laravelAppKey="base64:$(openssl rand -base64 32)"
@@ -57,8 +58,11 @@ helm install georag charts/georag/ \
 
 ### Vanilla
 
-Identical to K3s but with `-f charts/georag/values-vanilla.yaml` and
-your domain in `ingress.host`. Cert-manager annotations are pre-wired.
+Identical to K3s but with `-f charts/georag/values-vanilla.yaml`, your
+domain in `ingress.host`, and the two Reverb secrets (`secrets.reverbAppKey`,
+which must equal the `VITE_REVERB_APP_KEY` the laravel image was built with,
+and `secrets.reverbAppSecret`); see `charts/georag/README.md`, "Live chat
+(Reverb)". Cert-manager annotations are pre-wired.
 
 ## Install — pre-rendered manifests path
 
@@ -137,8 +141,10 @@ override file.
 
 ## Backup / restore on K8s
 
-The chart's nightly audit-chain-verify CronJob runs at 03:00. Backup
-of the data stores themselves is via the §11.1 Hatchet workflows,
+The audit hash chain is verified nightly by the Hatchet
+`audit_ledger_verify` cron on the worker (the chart's own audit-chain-verify
+CronJob was removed: its module had no entry point and always exited 0).
+Backup of the data stores themselves is via the §11.1 Hatchet workflows,
 which write to the SeaweedFS bucket the chart provisions. To restore
 into a fresh cluster, see `docs/RUNBOOK.md` §11.3.
 
@@ -152,8 +158,10 @@ helm diff upgrade georag charts/georag/ -f charts/georag/values-k3s.yaml
 helm upgrade georag charts/georag/ -f charts/georag/values-k3s.yaml
 ```
 
-The `pg-init` Job re-fires as a post-upgrade hook to pick up any new
-SQL migrations. All migrations are idempotent.
+The `pg-init` Job (database roles) and then the `schema` Job (`php artisan
+migrate` and `db:apply-raw`) re-fire as post-upgrade hooks to pick up any new
+migrations, and `helm upgrade` waits for them (use `--timeout`). Both are
+idempotent.
 
 ## Uninstall
 
@@ -189,5 +197,5 @@ under `networkPolicy.extraEgress`.
 ## Troubleshooting
 
 See `charts/georag/README.md` § "Troubleshooting" for the common
-gotchas (pg-init Job failures, vLLM pending Pods, multi-node PVC
-scheduling).
+gotchas (pg-init and schema Job failures, model-sidecar downloads,
+multi-node PVC scheduling).

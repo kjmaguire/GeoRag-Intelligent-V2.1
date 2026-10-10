@@ -28,7 +28,10 @@ only `sparse` runs as a container there. LLM chat is not a compose service:
 OpenAI-compatible endpoint you run yourself.
 
 Overlays, layered with `-f`: `docker-compose.demo.yml` (small-VM resource
-overlay), `docker-compose.smoke-isolation.yml` (second stack renamed
+overlay; also pass `docker-compose.demo.env` as a second `--env-file`, after
+`.env` — the Postgres and uvicorn sizing it needs is interpolated into
+`command:` at parse time and cannot be set from the overlay itself),
+`docker-compose.smoke-isolation.yml` (second stack renamed
 `smoke-*`), `docker/compose.redis-staging.yml` (3-instance Redis),
 `docker/compose.langfuse.yml` (opt-in Langfuse + ClickHouse). There is no
 WAL-archiving overlay: `docker/compose.wal-archiving.yml` was deleted

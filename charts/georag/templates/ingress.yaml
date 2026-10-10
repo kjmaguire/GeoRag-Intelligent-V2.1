@@ -30,6 +30,23 @@ spec:
           # /internal rule straight to FastAPI whose comment said "NOT
           # exposed by default". Neither may come back: tiles go through
           # /tiles/... on Laravel, and /internal is service-to-service only.
+          {{- if .Values.laravelReverb.enabled }}
+          # The one other front door: the browser's WebSocket to Reverb
+          # (/app/<key>), which streams every chat answer. Reverb is Laravel's
+          # own process, authenticates private channels through Laravel's
+          # /broadcasting/auth, and the HTTP publish API it also serves
+          # (/apps/<id>/events) stays unexposed: the publishers are in-cluster.
+          # A Prefix path matches whole segments, so this does not capture
+          # /application or /apple. Traefik and ingress-nginx both upgrade
+          # WebSockets without further annotations.
+          - path: /app
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-laravel-reverb
+                port:
+                  number: {{ .Values.laravelReverb.service.port }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

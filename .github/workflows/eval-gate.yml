@@ -152,6 +152,20 @@ jobs:
       EMBEDDING_SERVICE_URL: http://localhost:8899
       LLM_BACKEND: vllm
       VLLM_URL: http://localhost:8899/v1
+      # The reranker is the stub too (its /rerank route), through the
+      # sidecar-proxy branch, and the timeout budgets are ci.yml's E2E smoke
+      # job's, for the reasons its env block records. This block carried the
+      # embedding and LLM overrides and nothing else, so RERANKER_BACKEND
+      # fell to its code default, `bedrock`, which a runner with no AWS
+      # credentials cannot call. A reranker outage fails a document query
+      # closed (RETRIEVAL_UNAVAILABLE), so every golden question was refused
+      # at the reranker. Keep these in step with ci.yml's E2E smoke job.
+      RERANKER_BACKEND: cross_encoder
+      RERANKER_SERVICE_URL: http://localhost:8899
+      RERANKER_TORCH_THREADS: "4"
+      TIMEOUT_GATHER_S: "25"
+      TIMEOUT_RERANKER_S: "22"
+      TIMEOUT_QDRANT_S: "20"
 
     steps:
       - uses: actions/checkout@v7
@@ -277,6 +291,32 @@ jobs:
             --per-set "${{ github.event.inputs.per_set || '2' }}" \
             --label ci-nightly-harness-selfcheck \
             --output bench_results/ci_nightly.json
+
+      # The step above is "blocking" only against a crash of the CLI itself.
+      # run_golden_benchmark.py is best-effort per question by design: an
+      # evaluator exception is caught, written to the report as
+      # `failure_layer: "evaluator_crashed"`, and the process exits 0 unless
+      # --strict is passed. So an evaluator that crashed on every question
+      # left this job green — the bit-rot the header says this job exists to
+      # catch. --strict is still omitted (it also fails on any wrong answer,
+      # and the LLM is stubbed); this reads the report for the crash marker
+      # alone, and for a run that evaluated nothing.
+      - name: Fail on evaluator crashes (harness self-check)
+        working-directory: src/fastapi
+        run: |
+          report=bench_results/ci_nightly.json
+          total=$(jq '.results | length' "$report")
+          crashed=$(jq '[.results[] | select(.failure_layer == "evaluator_crashed")] | length' "$report")
+          echo "evaluated $total question(s); $crashed crashed the evaluator"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::the benchmark evaluated no questions - the harness ran and measured nothing"
+            exit 1
+          fi
+          if [ "$crashed" -gt 0 ]; then
+            jq -r '.results[] | select(.failure_layer == "evaluator_crashed") | "  \(.question_id): \(.failure_detail_first_200)"' "$report"
+            echo "::error::$crashed of $total golden question(s) crashed the evaluator (failure_layer evaluator_crashed)"
+            exit 1
+          fi
 
       # DISABLED 2026-08-21 — the comparison was worse than no comparison.
       #

@@ -19,9 +19,12 @@ SETS=(
     --set "secrets.postgresPassword=CHANGEME"
     --set "secrets.pgAppPassword=CHANGEME"
     --set "secrets.martinDbPassword=CHANGEME"
+    --set "secrets.hatchetDbPassword=CHANGEME"
     --set "secrets.redisPassword=CHANGEME"
     --set "secrets.fastapiServiceKey=CHANGEME-rotate-this-key-to-32plus-chars-from-prod-secret"
     --set "secrets.laravelAppKey=base64:CHANGEME"
+    --set "secrets.reverbAppKey=CHANGEME"
+    --set "secrets.reverbAppSecret=CHANGEME"
 )
 
 mkdir -p "$REPO_ROOT/kubernetes/manifests"

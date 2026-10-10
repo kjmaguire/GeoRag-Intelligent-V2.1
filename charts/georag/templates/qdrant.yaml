@@ -42,12 +42,20 @@ spec:
               name: http
             - containerPort: 6334
               name: grpc
+          {{- if .Values.secrets.qdrantApiKey }}
           env:
+            # Only when a key is set. An EMPTY QDRANT__SERVICE__API_KEY does not
+            # mean "no auth": Qdrant turns auth ON with an empty key expected
+            # (docker-compose.yml, Qdrant review #9), and every client that
+            # sends no `api-key:` header — all of them, while the clients' key
+            # is empty — is refused. This used to be injected unconditionally
+            # from a Secret key that defaults to "".
             - name: QDRANT__SERVICE__API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-secrets
                   key: QDRANT_API_KEY
+          {{- end }}
           resources: {{- toYaml .Values.qdrant.resources | nindent 12 }}
           volumeMounts:
             - name: storage

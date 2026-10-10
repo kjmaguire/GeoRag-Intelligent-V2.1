@@ -3,13 +3,14 @@ name: GeoRAG CI
 on:
   push:
     branches: [main, develop]
-    paths-ignore:
-      # Documentation that nothing in CI reads. A push touching ONLY these
-      # cannot fail any job here, so paying for 28 billable minutes to prove
-      # it is waste — and it was real waste: three of eight pushes on
-      # 2026-09-15 were documentation only and ran all 24 checks.
+    paths:
+      # Everything runs the workflow except documentation that nothing in CI
+      # reads. A push touching ONLY that cannot fail any job here, so paying
+      # for 28 billable minutes to prove it is waste — and it was real waste:
+      # three of eight pushes on 2026-09-15 were documentation only and ran
+      # all 24 checks.
       #
-      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      # FOUR DOCS ARE DELIBERATELY NOT IGNORED, because CI parses them as DATA:
       #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
       #                           key table, and aws-preflight.sh derives the
       #                           go-live key list from it. Editing that table
@@ -17,22 +18,36 @@ on:
       #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
       #                           fails when it names a schema.table no
       #                           migration creates.
-      # Neither is matched below — `*.md` is root-level only, and the
-      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
-      # build if that ever stops being true.
-      - 'docs/**'
-      - 'ops/runbooks/**'
-      - '*.md'
-      - 'LICENSE'
+      #   docs/architecture/manual/07-orchestration.md
+      #                           src/fastapi/tests/test_cron_doc_parity.py
+      #                           fails when its cron table drifts from the
+      #                           workflows' on_crons.
+      #   docs/adr/0014-workspace-lookup-and-pivot.md
+      #                           src/fastapi/tests/test_lookup_and_rescope.py
+      #                           fails when the ADR loses a required section.
+      # The first two are never matched by the ignores below (`*.md` is
+      # root-level only, and the architecture doc is .html). The last two
+      # sit under docs/**, which `paths-ignore` cannot carve out of — it has
+      # no negation — so this is a `paths` filter: `!` ignores, and a later
+      # positive pattern puts a file back. scripts/check-ci-path-filters.py
+      # fails the build if any of the four is ever skipped.
+      - '**'
+      - '!docs/**'
+      - '!ops/runbooks/**'
+      - '!*.md'
+      - '!LICENSE'
+      - 'docs/architecture/manual/07-orchestration.md'
+      - 'docs/adr/0014-workspace-lookup-and-pivot.md'
   pull_request:
     branches: [main]
-    paths-ignore:
-      # Documentation that nothing in CI reads. A push touching ONLY these
-      # cannot fail any job here, so paying for 28 billable minutes to prove
-      # it is waste — and it was real waste: three of eight pushes on
-      # 2026-09-15 were documentation only and ran all 24 checks.
+    paths:
+      # Everything runs the workflow except documentation that nothing in CI
+      # reads. A push touching ONLY that cannot fail any job here, so paying
+      # for 28 billable minutes to prove it is waste — and it was real waste:
+      # three of eight pushes on 2026-09-15 were documentation only and ran
+      # all 24 checks.
       #
-      # TWO DOCS ARE DELIBERATELY NOT HERE, because CI parses them as DATA:
+      # FOUR DOCS ARE DELIBERATELY NOT IGNORED, because CI parses them as DATA:
       #   deploy/aws/README.md    scripts/check-ecs-secret-keys.py reads its
       #                           key table, and aws-preflight.sh derives the
       #                           go-live key list from it. Editing that table
@@ -40,13 +55,26 @@ on:
       #   georag-architecture.html  tests/Unit/ArchitectureDocSchemaParityTest
       #                           fails when it names a schema.table no
       #                           migration creates.
-      # Neither is matched below — `*.md` is root-level only, and the
-      # architecture doc is .html. scripts/check-ci-path-filters.py fails the
-      # build if that ever stops being true.
-      - 'docs/**'
-      - 'ops/runbooks/**'
-      - '*.md'
-      - 'LICENSE'
+      #   docs/architecture/manual/07-orchestration.md
+      #                           src/fastapi/tests/test_cron_doc_parity.py
+      #                           fails when its cron table drifts from the
+      #                           workflows' on_crons.
+      #   docs/adr/0014-workspace-lookup-and-pivot.md
+      #                           src/fastapi/tests/test_lookup_and_rescope.py
+      #                           fails when the ADR loses a required section.
+      # The first two are never matched by the ignores below (`*.md` is
+      # root-level only, and the architecture doc is .html). The last two
+      # sit under docs/**, which `paths-ignore` cannot carve out of — it has
+      # no negation — so this is a `paths` filter: `!` ignores, and a later
+      # positive pattern puts a file back. scripts/check-ci-path-filters.py
+      # fails the build if any of the four is ever skipped.
+      - '**'
+      - '!docs/**'
+      - '!ops/runbooks/**'
+      - '!*.md'
+      - '!LICENSE'
+      - 'docs/architecture/manual/07-orchestration.md'
+      - 'docs/adr/0014-workspace-lookup-and-pivot.md'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -743,8 +771,15 @@ jobs:
       # healthy. It was unset in this Terraform too, as was MARTIN_INTERNAL_URL
       # (-> http://martin:3000, a compose-only name). A plausible fallback is
       # harder to spot than an empty one.
-      - name: Service-to-service URLs resolve inside the VPC
+      #
+      # The Helm chart had the same three, plus FASTAPI_INTERNAL_URL missing on
+      # Horizon (where the chat job runs), and the checker only read Terraform.
+      # It reads the chart's committed renders too, so a chart edit has to be
+      # re-rendered (scripts/regenerate_k8s_manifests.sh) to be seen.
+      - name: Service-to-service URLs resolve inside the VPC and the cluster
         run: python scripts/check-internal-urls.py
+      - name: Discrimination tests for the internal-URL check
+        run: bash scripts/tests/internal_urls_test.sh
       # hatchet-worker probed with wget on an image that only has curl, so the
       # check could never pass — and essential=true means ECS replaces the task
       # forever. A probe that always fails is worse than no probe: the symptom
@@ -765,6 +800,30 @@ jobs:
       # percentage rather than failing.
       - name: Clover merge is a union, not a last-write-wins
         run: bash scripts/tests/merge_clover_test.sh
+      # Two scripts that existed to be run by CI and were run by nothing. The
+      # embedding one guards the 384-vs-1024 landmine: a compose default that
+      # names a 384-dim model writes 384-dim vectors into the 1024-dim
+      # georag_chunks collection the moment a deploy loses its .env, and
+      # Qdrant answers with an opaque HTTP 400. The compose file is not
+      # reachable from pytest (the FastAPI test container mounts only
+      # src/fastapi), which is why this is a shell gate and why it has to be
+      # wired somewhere that has the whole tree.
+      - name: Embedding model defaults match the 1024-dim collection
+        run: bash scripts/ci/embedding_dimension_check.sh
+      # The go-live gate (aws-preflight.sh) is itself a checker, so what
+      # proves it can still say no is these discrimination tests -- fixture
+      # trees built in each shape it exists to reject. They pass against the
+      # tree they were written on, which demonstrates nothing; they only count
+      # while something runs them. Nothing did.
+      - name: AWS preflight gate rejects the shapes it exists to reject
+        run: bash scripts/tests/aws_preflight_test.sh
+      # The air-gap path (bundler -> verifier -> install.sh) has no cluster to
+      # run on here, but its failures were all about NAMES: install.sh rebuilt
+      # image references from tarball names with a lossy rule, so the first
+      # `ctr image tag` failed and every install aborted. docker, helm, k3s and
+      # kubectl are stubs; the names, the secrets and the helm arguments are not.
+      - name: Air-gap bundle and installer, end to end against stubs
+        run: bash scripts/tests/airgap_test.sh
 
   # ─── Schema/Qdrant drift smoke gate ───────────────────────────────────
   # 2026-08-04 incident: two schema-drift bugs shipped straight through

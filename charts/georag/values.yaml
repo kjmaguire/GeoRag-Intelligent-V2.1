@@ -21,6 +21,11 @@ global:
   namespace: georag
   createNamespace: true
 
+  # false = the chart renders no Secret and you supply `<release>-secrets`
+  # yourself (SealedSecrets, ExternalSecrets) with every key
+  # templates/secrets.yaml lists; the `secrets:` block below is then unused.
+  createSecrets: true
+
   # Registry override. Set this when air-gapped to point at a private
   # registry. Empty string = use upstream public registries.
   imageRegistry: ""
@@ -45,11 +50,28 @@ secrets:
   pgAppPassword: ""              # for the georag_app role (RLS user) — Laravel, FastAPI, Hatchet worker
   martinDbPassword: ""           # for martin_readonly (tiles) — hex only, it is embedded in a URL
   redisPassword: ""              # CHANGEME
-  qdrantApiKey: ""               # optional; empty disables auth
+  qdrantApiKey: ""               # optional; empty disables auth (QDRANT__SERVICE__API_KEY is then not set at all)
   fastapiServiceKey: ""          # 32+ char shared HMAC for /internal/*
   laravelAppKey: ""              # `php artisan key:generate --show`
-  hatchetClientToken: ""         # output of `hatchet token create`
+  hatchetClientToken: ""         # empty on the first install; see charts/georag/README.md "Hatchet token"
   cohereApiKey: ""               # optional; chat + Cohere Parse OCR. Empty = no key (air-gapped / tesseract)
+  # The password of the `hatchet` role that owns the engine's own database.
+  # pg-init creates the role and the database if they are absent and sets the
+  # password to this value on every install/upgrade, so a changed value takes
+  # effect at the next hook run (until then the engine restarts on auth
+  # failures). Hex only: it is embedded in the engine's DATABASE_URL.
+  # Empty derives one (sha256, hex) from postgresPassword, so there is no
+  # well-known default and nothing extra to mint; set your own to rotate it
+  # independently (`openssl rand -hex 32`).
+  hatchetDbPassword: ""
+  # Reverb (the WebSocket server chat answers stream over). Needed only while
+  # laravelReverb.enabled. The id is an identifier; the key is public by design
+  # (the browser receives it) and MUST equal the VITE_REVERB_APP_KEY baked into
+  # the laravel image; the secret signs private-channel auth, so it must be
+  # random: `openssl rand -base64 32`.
+  reverbAppId: "georag-app"
+  reverbAppKey: ""
+  reverbAppSecret: ""
 
 # ─────────────────────────────────────────────────────────────────────
 # PostgreSQL 18.3 + PostGIS 3.6.3 — owned image (per ADR-0002).
@@ -192,6 +214,21 @@ fastapi:
   service:
     port: 8000
   replicas: 2
+  # uvicorn processes per pod. The image default is 6, sized for a 32-thread
+  # workstation; here it is 3, as docker-compose.yml runs it and as the AWS
+  # task does on this same 2 CPU / 4Gi shape. Every process holds its own
+  # copy of whatever the app loads in-process and opens its own asyncpg pool,
+  # so the count multiplies against the memory limit below and against
+  # PostgreSQL's connection budget (times the HPA's replica count).
+  uvicornWorkers: 3
+  # Extra environment for the fastapi container, appended last (so a name
+  # given here wins over one the chart sets). Plain Kubernetes EnvVar entries,
+  # e.g. LLM_BACKEND=vllm with VLLM_URL for an OpenAI-compatible endpoint you
+  # host, or COHERE_BASE_URL behind a proxy:
+  #   extraEnv:
+  #     - { name: LLM_BACKEND, value: vllm }
+  #     - { name: VLLM_URL, value: "http://vllm.llm.svc:8000/v1" }
+  extraEnv: []
   autoscaling:
     enabled: true
     minReplicas: 2
@@ -200,6 +237,76 @@ fastapi:
   resources:
     requests: { cpu: "500m", memory: "1Gi" }
     limits:   { cpu: "2",    memory: "4Gi" }
+
+# ─────────────────────────────────────────────────────────────────────
+# Model sidecars — ONE copy of each local model, shared by every uvicorn
+# process and by the Hatchet worker. They run the fastapi image with a
+# different command (app.embedding_service / app.reranker_service /
+# app.sparse_service), the same three docker-compose.yml runs. Never fold
+# them back into the FastAPI pods: six uvicorn workers each loading their
+# own ~2.4 GiB embedding copy OOM-killed the container mid-stream
+# (2026-06-24), and with EMBEDDING_SERVICE_URL / RERANKER_SERVICE_URL /
+# SPARSE_SERVICE_URL unset the chart's fastapi pods would do exactly that.
+#
+# CPU only, no GPU node needed. Their weights are NOT all in the image:
+#   sparse     SPLADE++ is baked into the fastapi image — no download.
+#   embedding  Qwen3-Embedding-0.6B and
+#   reranker   Qwen3-Reranker-0.6B are fetched from huggingface.co on first
+#              start into a PVC (so a restart does not fetch them again). An
+#              air-gapped site must seed that PVC first (see the README), or
+#              the pod never becomes Ready.
+# Every sidecar checks X-Service-Key against the fastapi service key.
+# ─────────────────────────────────────────────────────────────────────
+modelSidecars:
+  # true = the embedding and reranker sidecars use only what is already in
+  # their cache PVC (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE) and fail at once
+  # with a clear "not in cache" error instead of retrying huggingface.co.
+  # For a cluster with no route to the internet (values-airgap.yaml sets it);
+  # the PVCs must be seeded first — airgap/README.md, "Model weights".
+  offline: false
+  embedding:
+    enabled: true
+    service:
+      port: 8000
+    # Must be the SAME model on the sidecar, the fastapi pods and the worker:
+    # a mismatch writes one vector space and queries another, and the
+    # collection is 1024-dim. The chart sets these on all three from here.
+    model: "Qwen/Qwen3-Embedding-0.6B"
+    revision: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
+    # Keep at or under resources.limits.cpu (OMP/torch oversubscription).
+    threads: 2
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests: { cpu: "500m", memory: "2Gi" }
+      limits:   { cpu: "2",    memory: "4Gi" }
+  sparse:
+    enabled: true
+    service:
+      port: 8000
+    threads: 2
+    resources:
+      requests: { cpu: "250m", memory: "1Gi" }
+      limits:   { cpu: "2",    memory: "3Gi" }
+  reranker:
+    enabled: true
+    service:
+      port: 8000
+    # cross_encoder = Qwen3-Reranker-0.6B on CPU. docker-compose.yml runs the
+    # sidecar as qwen3_causal on the dev workstation's GPU; that path is far
+    # too slow on CPU and would blow TIMEOUT_RERANKER_S. The fastapi pods and
+    # the worker are given the same value: anything but `bedrock` makes them
+    # use RERANKER_SERVICE_URL, and the code default is `bedrock`, which an
+    # on-prem install cannot call (it fails the query closed).
+    backend: cross_encoder
+    threads: 2
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      requests: { cpu: "500m", memory: "2Gi" }
+      limits:   { cpu: "2",    memory: "5Gi" }
 
 # ─────────────────────────────────────────────────────────────────────
 # Laravel Octane (Swoole) — main webapp + Inertia + admin cockpit.
@@ -211,6 +318,12 @@ laravelOctane:
     repository: ghcr.io/anthropics/georag/laravel
     tag: "v1.0.0"
   service:
+    # The Service port, which the Ingress and every in-cluster caller use.
+    # The CONTAINER listens on 80 — the image's `octane:start --port=80`,
+    # which this chart does not override — and the Service reaches it by
+    # port name, so this number is free. (The container port, the probe and
+    # the Service all used to say 8000, where nothing listens: the pod never
+    # became Ready.)
     port: 8000
   replicas: 2
   autoscaling:
@@ -230,12 +343,26 @@ laravelHorizon:
     requests: { cpu: "250m", memory: "512Mi" }
     limits:   { cpu: "1",    memory: "2Gi" }
 
-# Laravel Reverb (WebSocket server)
+# Laravel Reverb (WebSocket server). The chat answer streams to the browser
+# over it, so with it off no query ever shows a token. The Ingress routes
+# /app to it (templates/ingress.yaml); needs secrets.reverbAppKey and
+# secrets.reverbAppSecret.
 laravelReverb:
   enabled: true
   replicas: 1
   service:
     port: 8080
+  # WebSocket Origin allowlist (REVERB_ALLOWED_ORIGINS): bare hosts, comma
+  # separated, no scheme and no port — Reverb matches the host parsed out of
+  # the browser's Origin header. Empty = ingress.host. Unset, Reverb falls
+  # back to a localhost/georag.local list and rejects the real site.
+  allowedOrigins: ""
+  # Both default to 10000 bytes in config/reverb.php, far below a completed
+  # LLM answer frame, and Reverb silently drops an oversized payload: the
+  # `completed` frame with the answer and its citations never arrives and the
+  # stream stalls on the last token. Raise the two together.
+  maxRequestSize: 1000000
+  maxMessageSize: 1000000
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
     limits:   { cpu: "500m", memory: "1Gi" }
@@ -260,7 +387,19 @@ hatchet:
       tag: "v0.91.2@sha256:00705eb1e9ea653aaa9473703fd24df7350eacca1a1a0b5e9a7dece0f8d27c70"
     service:
       grpcPort: 7077
-      apiPort: 8080
+      # Web UI + REST API. hatchet-lite serves them on 8888 (compose maps
+      # 8889 -> 8888; the AWS health check hits :8888/api/ready); this said
+      # 8080, where nothing listens.
+      apiPort: 8888
+    # Where the dashboard is reached from, for the links and cookies the engine
+    # generates (SERVER_URL, SERVER_AUTH_COOKIE_DOMAIN). The Ingress does not
+    # expose it — `kubectl -n <ns> port-forward statefulset/<release>-hatchet
+    # 8888:8888` — so the default is that forward. Set both if you front it.
+    serverUrl: "http://localhost:8888"
+    cookieDomain: "localhost"
+    # The engine writes its generated encryption keyset to /config; this volume
+    # keeps it. Without one every restart generates a new keyset and every
+    # client token (secrets.hatchetClientToken) stops validating.
     persistence:
       enabled: true
       size: 5Gi
@@ -271,6 +410,9 @@ hatchet:
     enabled: true
     replicas: 2
     pool: all   # ingestion | ai | all
+    # Extra environment for the worker container, appended last. See
+    # fastapi.extraEnv.
+    extraEnv: []
     resources:
       requests: { cpu: "500m", memory: "1Gi" }
       limits:   { cpu: "2",    memory: "4Gi" }
@@ -304,18 +446,35 @@ ingress:
   annotations: {}
 
 # ─────────────────────────────────────────────────────────────────────
-# Cron-style jobs — pg-init runs the bundled SQL migrations on first
-# install; audit-chain-verify is a nightly CronJob.
+# Install/upgrade hooks. Two post-install,post-upgrade Jobs run in order:
+# pg-init (the runtime database roles), then schema (the migrations).
+# `helm install` waits for both, so give it a generous --timeout (the
+# schema job runs every migration on a fresh database): --timeout 15m.
+#
+# There is no audit-chain-verify CronJob any more. It ran
+# `python -m app.audit.chain_verify`, a module with no entry point, so it
+# imported and exited 0 every night without verifying anything. The nightly
+# check is the Hatchet `audit_ledger_verify` cron on the hatchet-worker.
 # ─────────────────────────────────────────────────────────────────────
 jobs:
+  # Creates (or re-passwords) georag_app, martin_readonly and the hatchet
+  # role, and fails if a runtime role could bypass RLS. Needs psql, which the
+  # fastapi image carries and the laravel image does not.
   pgInit:
     enabled: true
     image:
       repository: ghcr.io/anthropics/georag/fastapi
       tag: "v1.0.0"
-  auditChainVerify:
+  # `php artisan migrate` then `db:apply-raw`, as the owner role, from the
+  # laravel image — the same two commands, in the same order, as the AWS
+  # schema task (deploy/aws/terraform/services.tf). database/raw/phase0 is NOT
+  # applied by globbing the directory: those files assume tables the
+  # migrations create, and a lexical glob runs `100-` before `20-`. The
+  # manifest-driven db:apply-raw is how ops/runbooks/raw-sql-layer.md applies
+  # them. Off = you run both commands yourself, with the `georag` credentials
+  # and --database=pgsql_migrations, before the app is usable.
+  schema:
     enabled: true
-    schedule: "0 3 * * *"
 
 # ─────────────────────────────────────────────────────────────────────
 # Hardening — NetworkPolicy, PodDisruptionBudget.
