@@ -122,7 +122,7 @@ staggers (audit verify, then the shadow aggregate 15 minutes behind it, and
 so on) are the part that carries meaning; the absolute hours have moved
 three times and will move again.
 
-**Ingestion list (13)**
+**Ingestion list (14)**
 
 | Workflow | Cron | Role |
 |---|---|---|
@@ -131,7 +131,7 @@ three times and will move again.
 | `tiff_normalize` | — | Lossless TIFF → PDF, then routes into `ingest_pdf` (ADR-0005) |
 | `ingest_zip_archive` | — | Extracts and fans out by extension |
 | `ingest_spatial`, `ingest_tabular`, `ingest_well_logs`, `ingest_geophysics` | — | Vector, drill CSV/XLSX (+ geochronology tables), LAS, Geosoft XYZ + DCIP2D (2026-09-29) ingest ([Ch 04 §4](04-ingestion-flow.md#4-the-other-ingest-workflows)); `ingest_tabular` dispatches `promote_silver_to_gold` per project |
-| `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `queued`/`started` past 15 min: completes finished-but-unmarked embeds, re-dispatches a dead run from any stage except the two embed stages (`queued` included — a run lost behind the per-workspace cap or before preflight recorded a stage was closed with no retry until 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, times out the rest and logs the rule that declined each retry |
+| `stale_run_detector` | `*/15 * * * *` | Recovers `silver.ingest_progress` rows stuck in `queued`/`started` past 15 min: completes finished-but-unmarked embeds, re-dispatches a dead run from any stage except the two embed stages (`queued` included — a run lost behind the per-workspace cap or before preflight recorded a stage was closed with no retry until 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, times out the rest and logs the rule that declined each retry. The re-dispatched input replays what the upload declared (`source_epsg`, `column_map`, `source_crs_wkt`, `feature_type`, `hole_id`, ...) from `silver.ingest_progress.dispatch_params`; a run whose parameters were never recorded is left `timed_out` (rule `dispatch_params_unrecorded`) rather than re-read with defaults |
 | `nightly_ingestion_integrity` | `0 17 * * *`, `0 19 * * *` | Four-tier orphan sweep; Tier 1 re-dispatches bronze objects with no silver row **over HTTP** to `FASTAPI_INTERNAL_URL` (§7, finding 5); sweeps `promote_silver_to_gold` |
 | `reliability_metrics_publisher` | `* * * * *` | Refreshes in-process Prometheus gauges that nothing scrapes in production ([Ch 12](12-observability.md)) |
 | `storage_tiering_run` | `0 18 * * *` | Phase 0 agent |
@@ -148,11 +148,11 @@ three times and will move again.
 | `mv_refresh_silver` | `0 18 * * *` | `REFRESH MATERIALIZED VIEW` on the silver fact-source views |
 | `public_geo_sync` | `30 18 * * 0` | Weekly ArcGIS refresh of `public_geo` (the live owner since the Dagster pull went) |
 | `flow_jwt_key_reaper` | `0 19 * * *` | Expires `workflow.flow_jwt_keys` rows |
-| `cold_tier_archive` | `0 19 * * *` | Writes-only cold-tier archive; pruning is operator-gated |
+| `cold_tier_archive` | `0 19 * * *` | Writes-only cold-tier archive; pruning is operator-gated. Archives the rows since the last completed run's `cutoff_before` (the watermark, read from its audit anchor), verifying each workspace's hash chain separately and each chain's first row against the row before the window; a failed check logs `AUDIT_LEDGER_CHAIN_BREAK` and fails the run |
 | `idempotency_keys_cleanup`, `pg_partman_maintenance` | `15 19 * * *` | TTL purge of `workspace.idempotency_keys`; advance the monthly partitions |
 | `retention_sweep` | `45 19 * * *` | `audit.query_audit_log` 180 d, terminal `silver.ingest_progress` 90 d |
 | `model_upgrade_watch_run` | `0 20 * * *` | Phase 0 agent |
-| `embed_pending_passages` | `45 20 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`) |
+| `embed_pending_passages` | `45 20 * * *`, `*/10 * * * *` | Dense + sparse embed of unembedded `silver.document_passages` into Qdrant; per-workspace singleton (`max_runs=1`). The cron fan-out's concurrency key is the literal `'cron'`, which does not serialise against an inline run keyed by workspace id, so each project (and each workspace's orphan pass) is also taken under a session advisory lock on a direct connection: the second run for a project skips it (`projects_skipped_busy`) instead of embedding, and paying for, the same passages twice. A lock that cannot be taken fails open |
 | `verbalize_page_images` | `20 * * * *` | Inert unless `IMAGE_VERBALIZATION_ENABLED`; returns before touching Postgres |
 | `qdrant_payload_audit` | `0 * * * *` | Guard 2 payload-shape audit; fail-open when Qdrant is unreachable (§7) |
 | `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
@@ -166,9 +166,10 @@ three times and will move again.
 | `external_notification`, `public_geoscience_pull` | — | The two rows in `workflow.flow_registry`, reachable through the integrations endpoint (§2.3); no caller since Kestra went |
 | `phase2_smoke` | — | Placeholder |
 | `generate_report`, `score_targets` | — | Report Builder and Target Recommendation graphs; `execution_timeout="24h"` on a 20-slot single-replica worker. Started by a project member through the workflow trigger endpoint (§2.3). `score_targets` cannot be a cron: every run needs a user, an AOI and candidate zones |
-| `what_changed_detector`, `train_target_model`, `train_source_trust` | — | Learning-loop workflows; all three are only ever run inline (§2.4) |
+| `what_changed_detector` | — | Learning-loop workflow; only ever run inline (§2.4) |
+| `train_target_model`, `train_source_trust` | — | **Manual only** (Hatchet UI, `retries=0`). Their one caller, `routers/ml_training.py`, was removed 2026-10-06; nothing schedules them and the trigger endpoint does not list them. A failure fails the run: the body re-raises after the best-effort admin-surface failure broadcast, where it used to return `success=False`, which Hatchet records as a completed task. `train_target_model` writes the new `target_model_versions` row and the "only one active" flip in one transaction. `train_source_trust` counts a report's citations through `answer_citation_items.passage_id` → `document_passages.document_id` = `reports.report_id`; it used to compare `evidence_id` with `report_id`, which never matched, so every source was skipped as low signal |
 | `field_outcome_learning` | — | **Manual only** (Hatchet UI). Not scheduled, not triggerable: nothing writes `targeting.target_outcomes`, and each run appends a fresh `target_backtests` row (plus a lesson row) for every outcome in the project, so repeating it duplicates. `continuous_learning_loop` does not call it |
-| `support_replay`, `restore_workspace`, `workspace_export` | — | Diagnosis replay (dispatched `dry_run=true` only), manifest-backed restore (own-workspace `s3://workspace-exports/<ws>/` manifests only; a live restore needs `confirm_workspace_id`), per-workspace JSONL.gz export. Admin-triggered through §2.3 |
+| `support_replay`, `restore_workspace`, `workspace_export` | — | Diagnosis replay (dispatched `dry_run=true` only; a dry run writes nothing to the ticket — its own `ops.support_replay_runs` row and `support.replay.completed` anchor aside — and is idempotent on `replay_request_id`; the trigger route puts the authorised `workspace_id` in the input so the worker, which is NOBYPASSRLS on AWS, never rediscovers it under the default tenant), manifest-backed restore (own-workspace `s3://<exports bucket>/workspace-exports/<ws>/` manifests only, where the bucket is `AWS_BUCKET_EXPORTS`; a live restore needs `confirm_workspace_id`), per-workspace JSONL.gz export written to that bucket under the `workspace-exports/<ws>/` key prefix (it used to be a bucket of its own, which Terraform never creates). `cold_tier_archive` likewise writes under the `audit-cold-tier/` prefix of the `AWS_BUCKET_BACKUPS` bucket. Admin-triggered through §2.3 |
 | `lineage_walk`, `llm_incident_diagnosis_run`, `support_packet_assemble` | — | On-demand Phase 0 agents, admin-triggered through §2.3 (`llm_incident_diagnosis_run` platform-wide, the other two workspace-scoped). `routers/phase0_ops.py` also runs the last two inline, with no Laravel caller |
 
 `graph_tenant_audit` (`30 17 * * *`, a Phase 0 auditor for the Neo4j
@@ -187,7 +188,7 @@ predates the 2026-08-23 and 2026-08-28 deletions.
 |---|---|---|
 | **Upload trigger endpoints** | `POST /internal/v1/shadow/{ingest_pdf \| tiff_normalize \| ingest_zip_archive \| ingest_spatial \| ingest_tabular \| ingest_well_logs}/trigger` in `app/routers/shadow_trigger.py` (plus `ingest_geophysics`, 2026-09-29) → `_claim_and_dispatch`: under a per-file advisory lock it writes the `queued` `silver.ingest_progress` row BEFORE `workflow.aio_run_no_wait(payload)`, and answers `200 dispatched:false` when a non-terminal run for the key (or the caller's `run_id`) already exists, so Laravel's `retry(3, 500)` cannot double-dispatch (HAT-6/HAT-12, 2026-09-29). ZIP members get the same row-before-dispatch treatment inside `ingest_zip_archive` (HAT-4) | Laravel `UploadController` (the `ShadowRouter` is retired), gated per workspace by `app/Services/Ingestion/HatchetDispatchThrottle.php` after the 2026-06-01 burst that lost 529 files to queue-expiry cancellations |
 | **Integrations endpoint** | `POST /internal/v1/integrations/{flow}/trigger` in `app/routers/integrations_trigger.py`; per-flow JWT only (`Authorization: Bearer`, `scope=flow:<name>`), keys in `workflow.flow_registry` decrypted with `AUDIT_ENCRYPTION_KEY` | Designed for Kestra. No caller exists; the endpoint and its key machinery (`flow_jwt.py`, `flow_jwt_key_reaper`) remain live |
-| **Workflow trigger endpoint** | `POST /internal/v1/workflows/{workflow}/trigger` in `app/routers/workflow_trigger.py` (HAT-13, 2026-09-29): validates the input against the workflow's own model, then, under `scoped_connection`, refuses (404/422) any project, ticket, audit entry, workflow run or manifest prefix outside the authorised workspace before `aio_run_no_wait` | Laravel `WorkflowTriggerController`, gated by `WorkflowTriggerPolicy`: project members for `generate_report` / `score_targets` (`POST /api/v1/projects/{project}/workflows/{workflow}`); admins who belong to the workspace for `workspace_export`, `restore_workspace`, `lineage_walk`, `support_packet_assemble`, `support_replay` (`POST /api/v1/admin/workspaces/{workspace}/workflows/{workflow}`); admins for `llm_incident_diagnosis_run` (`POST /api/v1/admin/workflows/{workflow}`). 429 on an identical request within 60 s |
+| **Workflow trigger endpoint** | `POST /internal/v1/workflows/{workflow}/trigger` in `app/routers/workflow_trigger.py` (HAT-13, 2026-09-29): validates the input against the workflow's own model, then, under `scoped_connection`, refuses (404/422) any project, ticket, audit entry, workflow run or manifest prefix outside the authorised workspace before `aio_run_no_wait`. Idempotent on the request id Laravel mints per click (`export_request_id`, `score_request_id`, `restore_request_id`, `replay_request_id`): claimed in Redis with `SET NX` (1 h) first, so a repeat returns the first run's id, and a claimed id whose dispatch raised stays claimed (409) rather than risk a second run | Laravel `WorkflowTriggerController`, gated by `WorkflowTriggerPolicy`: project members for `generate_report` / `score_targets` (`POST /api/v1/projects/{project}/workflows/{workflow}`); admins who belong to the workspace for `workspace_export`, `restore_workspace`, `lineage_walk`, `support_packet_assemble`, `support_replay` (`POST /api/v1/admin/workspaces/{workspace}/workflows/{workflow}`); admins for `llm_incident_diagnosis_run` (`POST /api/v1/admin/workflows/{workflow}`). 429 on an identical request within 60 s. The POST is re-sent only when the cURL errno proves it never left (6, 7); a read timeout is not retried and keeps the 60 s claim, because the run may have started |
 | **In-process dispatch** | `aio_run_no_wait` from inside another workflow | `ingest_pdf` → `embed_pending_passages`; `stale_run_detector` → the owning `ingest_*`; `ingest_tabular` → `promote_silver_to_gold` |
 | **Engine crons** | `on_crons=` on the workflow decorator; the engine sends an empty input, so cron-fired workflows must default every field and their CEL concurrency keys must use `has()` (fixed 2026-08-21) | 27 workflows |
 | **Operator** | Hatchet UI on 8889 / `hatchet-cc`, or `hatchet-admin` | ad hoc |
@@ -202,6 +203,15 @@ bearer from `app/Services/FastApiJwtMinter.php` (signed with the same
   ranges from 2 minutes to 24 hours. `on_failure` hooks exist on
   `ingest_pdf`, `ingest_zip_archive`, `tiff_normalize` and
   `stale_run_detector` only.
+- **Hatchet retries immediately unless a task sets `backoff_factor`.**
+  `ingest_pdf`'s `preflight`, `parse`, `persist` and `embed_verify` and
+  `tiff_normalize.normalize` (the tasks that call S3, Postgres, Cohere or the
+  embed dispatch) set `backoff_factor=8.0, backoff_max_seconds=60`: about 1-8 s
+  before the first retry, up to a minute before the second. Before this a
+  transient outage spent the whole budget in milliseconds. A
+  `TiffNormalizeError` (the input is unusable) is raised as a
+  `NonRetryableException`, so `normalize` fails once instead of downloading and
+  decoding the same bytes twice.
 - **Cross-workspace sweeps run once per workspace with the scope bound**
   (`app/db/workspace_sweep.py`, HAT-1, 2026-09-29). On AWS the worker is
   `georag_app` (NOBYPASSRLS), and an unscoped read of a fail-closed table
@@ -218,13 +228,28 @@ bearer from `app/Services/FastApiJwtMinter.php` (signed with the same
   2026-09-29 `promote_silver_to_gold` at 1, among them).
   The `HatchetDispatchThrottle` docstring still says `ingest_pdf` is
   `max_runs=1`; it was raised to 2 on 2026-08-07.
-- **Three call sites bypass the engine.** `routers/ml_training.py`
-  (`train_target_model`, `train_source_trust`) and
+- **Call sites that bypass the engine.**
   `services/report_builder/whatchanged_integration.py`
-  (`what_changed_detector`) call `aio_mock_run`, the SDK's test helper:
-  the task body runs inline with no run record, retry or durability. Their
-  registration on the worker is decorative. (`what_changed_weekly` was
+  (`what_changed_detector`) calls `aio_mock_run`, the SDK's test helper:
+  the task body runs inline with no run record, retry or durability. Its
+  registration on the worker is decorative. (`routers/ml_training.py`, which
+  ran `train_target_model` and `train_source_trust` the same way, was removed
+  2026-10-06; they are Hatchet-UI-only now. `what_changed_weekly` was
   fixed after the review.)
+- **A workflow reports failure by raising.** A returned value is a completed
+  task as far as Hatchet is concerned: no failed run, no retry, nothing for
+  `stale_run_detector` or an operator to see. `continuous_learning_loop`,
+  `field_outcome_learning`, `train_source_trust` and `train_target_model`
+  used to catch everything and return `success=False`, and
+  `external_notification` logged a failed audit write and reported the
+  notification as recorded (`audit_id=None`); all five re-raise now (the
+  audit row is the only record of a notification, and its `retries=1`
+  re-attempt is safe because `_already_recorded` runs first). Because a
+  failure now retries or gets re-run, `field_outcome_learning` writes its
+  backtest rows and lesson in one transaction. (`restore_workspace` still
+  returns `success=False` with a `failure_stage` for a restore it refused or
+  could not complete: that is its documented output, and Hatchet shows such a
+  run as completed.)
 
 ### 2.5 The outbox
 
@@ -233,7 +258,15 @@ every minute by `outbox_dispatcher` (`FOR UPDATE SKIP LOCKED`, per-target
 semaphores `qdrant=10`, `neo4j=4`, `seaweedfs=8`, `external_webhook`
 default 4). After `dead_letter_after_attempts` (3) transient failures a
 row is dead-lettered and a `silver.store_reconciliation_findings` row is
-written for `store_reconciliation_run`.
+written for `store_reconciliation_run`. A platform row (`workspace_id` NULL,
+i.e. the tenant-isolation auditor's `security_critical` escalation) has no
+workspace of its own to file under: its finding goes to the platform workspace,
+and the dispatcher logs `OUTBOX_PLATFORM_DEAD_LETTER` ([Ch 12 §1.3](12-observability.md))
+after the commit. **Needs a decision:** nothing in AWS provisions that channel
+(`EXTERNAL_WEBHOOK_URL_SECURITY_CRITICAL` or `_DEFAULT`, and
+`EXTERNAL_WEBHOOK_HMAC_SECRET`, are absent from `deploy/aws/terraform/config.tf`),
+so such a row dead-letters on its first attempt and the alarm is the only
+signal.
 
 As built, **only two writers enqueue rows**: the tenant-isolation auditor
 and the support-packet agent. Ingestion does not use the outbox — passage
@@ -439,7 +472,7 @@ own dashboard. [Ch 12](12-observability.md) covers the rest.
 |---|---|---|
 | Horizon job | `tries` on the class (1 for the two long jobs, 3 for the debounce) | `failed_jobs` table; Horizon UI |
 | Hatchet task | `retries=` per task (mostly 0 or 1) | Run marked failed in the engine; `on_failure` hook only on the four ingestion workflows |
-| `ingest_*` runs left `started` | `stale_run_detector` re-dispatches deaths in any non-embed stage (`queued` included since 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, then `timed_out` with the declining rule logged | `silver.ingest_progress` |
+| `ingest_*` runs left `started` | `stale_run_detector` re-dispatches deaths in any non-embed stage (`queued` included since 2026-10-04) up to `RECOVERY_MAX_ATTEMPTS`, then `timed_out` with the declining rule logged. The dispatch comes before any Laravel push and the loop is time-boxed (7 min of a 10 min `execution_timeout`; rows not reached wait for the next tick) | `silver.ingest_progress` |
 | Outbox row | 3 transient failures | `dead_lettered` + `silver.store_reconciliation_findings` |
 | Cron missed while Postgres is stopped | none — not backfilled | nothing records it |
 

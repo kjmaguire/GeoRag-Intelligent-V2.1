@@ -62,7 +62,7 @@ The recipe is implemented in **four places** that must stay in lockstep:
 |---|---|
 | `audit.compute_audit_hash()` PL/pgSQL trigger | Computes the hash on every INSERT. Source of truth for live writes. |
 | `audit.recompute_hash(...)` SQL function | Pure-SQL mirror used by the verifier. |
-| `audit.verify_hash_chain(start, end)` SQL function | Walks rows in (workspace_id, created_at, id) order, calls `recompute_hash`, returns mismatches. |
+| `audit.verify_hash_chain(start, end)` SQL function | Walks rows in (workspace_id, created_at, id) order, calls `recompute_hash`, returns mismatches. The first in-window row of each chain is checked against the newest row of that chain before `start` (not against NULL), so a 24 h window over a clean ledger returns nothing; a chain with no earlier row still expects a NULL `previous_hash`. |
 | This document | Human-readable canonical reference. |
 
 Any change to one **must** be reflected in the other three. The smoke test (`scripts/phase0_audit_outbox_smoke.sh`) inserts a synthetic chain and runs the verifier; it fails fast if the trigger and the verifier drift apart.

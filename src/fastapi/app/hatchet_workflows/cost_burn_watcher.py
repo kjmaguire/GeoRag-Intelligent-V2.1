@@ -92,6 +92,11 @@ class CostBurnWatcherOutput(BaseModel):
     workspaces_over_threshold: int
     alerts_emitted: int
     alerts_suppressed_idempotent: int
+    #: Workspaces this run newly suspended (§35.1 hard stop).
+    workspaces_suspended: int = 0
+    #: Workspaces at 2x their threshold that the hard stop COULD NOT be applied
+    #: to, because they have no usage.workspace_cost_ceilings row to suspend.
+    hard_stop_unenforceable: int = 0
     window_minutes: int
     sampled_at: datetime
 
@@ -194,6 +199,8 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
     over_threshold = 0
     alerts_emitted = 0
     alerts_suppressed = 0
+    suspended = 0
+    hard_stop_unenforceable = 0
     try:
         # Per-workspace hourly cost in the trailing window. NULL workspace
         # rows skipped (system-level LLM calls aren't workspace-scoped).
@@ -237,55 +244,58 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
                 )
             if already_alerted:
                 alerts_suppressed += 1
-                continue
+            else:
+                await emit_audit(
+                    conn,
+                    action_type="cost.burn.alert",
+                    workspace_id=ws_id,
+                    actor_id=None,
+                    actor_kind="workflow",
+                    target_schema="usage",
+                    target_table="usage_events",
+                    target_id=ws_id,
+                    payload={
+                        "severity":          "high",
+                        "spent_usd":         round(spent, 4),
+                        "threshold_usd":     round(threshold, 4),
+                        "window_minutes":    input.window_minutes,
+                        "event_count":       int(r["event_count"]),
+                        "watcher_sampled":   sampled_at.isoformat(),
+                        "source":            (
+                            "workspace_cost_ceilings"
+                            if threshold != env_default
+                            else "env_default"
+                        ),
+                    },
+                )
+                alerts_emitted += 1
 
-            await emit_audit(
-                conn,
-                action_type="cost.burn.alert",
-                workspace_id=ws_id,
-                actor_id=None,
-                actor_kind="workflow",
-                target_schema="usage",
-                target_table="usage_events",
-                target_id=ws_id,
-                payload={
-                    "severity":          "high",
-                    "spent_usd":         round(spent, 4),
-                    "threshold_usd":     round(threshold, 4),
-                    "window_minutes":    input.window_minutes,
-                    "event_count":       int(r["event_count"]),
-                    "watcher_sampled":   sampled_at.isoformat(),
-                    "source":            (
-                        "workspace_cost_ceilings"
-                        if threshold != env_default
-                        else "env_default"
-                    ),
-                },
-            )
-            alerts_emitted += 1
-
-            # The ledger row above reaches nobody on its own: it surfaces
-            # on an admin screen a human has to already be looking at.
-            # This line is the egress. Log Analytics matches the marker
-            # and `georag-alerts-ag` turns it into email — the same shape
-            # answer_quality_watch uses, and the only outbound path the
-            # platform actually has. (services/dispatchers/pagerduty.py
-            # looked like a second one; it was never wired, and was
-            # deleted 2026-08-28.)
-            #
-            # No workspace name, no query text: a workspace id, two
-            # dollar figures and a window. Enough to act on, nothing that
-            # should not sit in a 30-day log store.
-            log.error(
-                "%s workspace=%s spent_usd=%.4f threshold_usd=%.4f "
-                "window_minutes=%d events=%d",
-                COST_BURN_ALERT_MARKER,
-                ws_id,
-                round(spent, 4),
-                round(threshold, 4),
-                input.window_minutes,
-                int(r["event_count"]),
-            )
+                # The ledger row above reaches nobody on its own: it surfaces
+                # on an admin screen a human has to already be looking at.
+                # This line is the egress. Log Analytics matches the marker
+                # and `georag-alerts-ag` turns it into email — the same shape
+                # answer_quality_watch uses, and the only outbound path the
+                # platform actually has. (services/dispatchers/pagerduty.py
+                # looked like a second one; it was never wired, and was
+                # deleted 2026-08-28.)
+                #
+                # No workspace name, no query text: a workspace id, two
+                # dollar figures and a window. Enough to act on, nothing that
+                # should not sit in a 30-day log store.
+                log.error(
+                    "%s workspace=%s spent_usd=%.4f threshold_usd=%.4f "
+                    "window_minutes=%d events=%d",
+                    COST_BURN_ALERT_MARKER,
+                    ws_id,
+                    round(spent, 4),
+                    round(threshold, 4),
+                    input.window_minutes,
+                    int(r["event_count"]),
+                )
+                log.warning(
+                    "cost.burn.alert ws=%s spent=$%.4f threshold=$%.4f window=%dmin",
+                    ws_id, spent, threshold, input.window_minutes,
+                )
 
             # Hard-stop §35.1: when hourly spend is 2× the threshold —
             # i.e. the workspace has been burning past the cap for at
@@ -294,17 +304,30 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
             # The 2× factor is a guard against transient bursts; a
             # single big query that puts a workspace 5% over does NOT
             # trigger suspension, only sustained overrun.
+            #
+            # Evaluated on EVERY tick that finds the workspace over 2×,
+            # whether or not this tick raised the alert. It used to sit
+            # after the `already_alerted` early-continue, so the first
+            # over-threshold reading (say 1.2×) wrote the alert and, until
+            # somebody acknowledged it, both the alert and the suspension
+            # were suppressed: a workspace could climb from 1.2× to 10× with
+            # the hard stop unreachable. `_suspend_workspace` is idempotent
+            # (it only updates a row that is not already suspended and has
+            # no admin override), so re-checking each tick costs one UPDATE
+            # that matches nothing.
             if spent >= threshold * 2.0:
                 async with _in_workspace(conn, ws_id):
-                    await _suspend_workspace(conn, ws_id, spent, threshold)
-            log.warning(
-                "cost.burn.alert ws=%s spent=$%.4f threshold=$%.4f window=%dmin",
-                ws_id, spent, threshold, input.window_minutes,
-            )
+                    outcome = await _suspend_workspace(conn, ws_id, spent, threshold)
+                if outcome == _SUSPENDED:
+                    suspended += 1
+                elif outcome == _NO_CEILING_ROW:
+                    hard_stop_unenforceable += 1
 
         log.info(
-            "cost_burn_watcher checked=%d over=%d emitted=%d suppressed=%d",
+            "cost_burn_watcher checked=%d over=%d emitted=%d suppressed=%d "
+            "suspended=%d hard_stop_unenforceable=%d",
             workspaces_checked, over_threshold, alerts_emitted, alerts_suppressed,
+            suspended, hard_stop_unenforceable,
         )
 
         # Phase 3 — admin.llm-cost surface. cost_burn_watcher writes audit
@@ -336,6 +359,8 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
             workspaces_over_threshold=over_threshold,
             alerts_emitted=alerts_emitted,
             alerts_suppressed_idempotent=alerts_suppressed,
+            workspaces_suspended=suspended,
+            hard_stop_unenforceable=hard_stop_unenforceable,
             window_minutes=input.window_minutes,
             sampled_at=sampled_at,
         )
@@ -343,17 +368,44 @@ async def run_watch(input: CostBurnWatcherInput, ctx: Context) -> CostBurnWatche
         await conn.close()
 
 
+#: What `_suspend_workspace` did. Strings, not a bool: "nothing to do" has two
+#: very different meanings.
+_SUSPENDED = "suspended"
+_ALREADY_SUSPENDED = "already_suspended_or_override"
+_NO_CEILING_ROW = "no_ceiling_row"
+
+#: Log marker for a workspace that is past its hard stop and cannot be stopped.
+HARD_STOP_UNENFORCEABLE_MARKER = "COST_BURN_HARD_STOP_UNENFORCEABLE"
+
+
 async def _suspend_workspace(
     conn: asyncpg.Connection,
     workspace_id: str,
     spent_usd: float,
     threshold_usd: float,
-) -> None:
+) -> str:
     """Hard-stop §35.1 — set suspended_at and write the Redis flag.
 
     The DB row is source-of-truth; Redis is the fast-path cache that
     the pre-LLM-call check reads. If Redis is unavailable, the check
     falls back to a DB read (slower but still correct).
+
+    Returns ``_SUSPENDED`` when this call suspended the workspace,
+    ``_ALREADY_SUSPENDED`` when the row is already suspended or an admin
+    override is active (both mean: nothing to do), and ``_NO_CEILING_ROW``
+    when the workspace has no ``usage.workspace_cost_ceilings`` row at all.
+
+    That last case used to be indistinguishable from the second: the UPDATE
+    matched nothing and the function returned silently. A hard stop is
+    configured per workspace (``hard_stop_threshold_pct``), so a workspace
+    that is only measured against the env-default threshold has nothing to
+    suspend. Creating a ceiling row for it here would put a monthly cap on a
+    customer -- ``COST_BURN_THRESHOLD_USD_PER_HOUR`` x 720, a figure nobody
+    set (``monthly_ceiling_usd`` is NOT NULL) -- and stop their chat when
+    they pass it, which is a policy decision rather than a repair. It is not
+    made here; the gap is made loud instead (``HARD_STOP_UNENFORCEABLE_MARKER``
+    and the run's ``hard_stop_unenforceable`` count). The alert for the same
+    overrun has already gone out.
     """
     row = await conn.fetchrow(
         """
@@ -369,8 +421,22 @@ async def _suspend_workspace(
         f"hourly_spend ${spent_usd:.4f} >= 2x threshold ${threshold_usd:.4f}",
     )
     if row is None:
-        # Either already suspended or admin override is active.
-        return
+        has_row = await conn.fetchval(
+            "SELECT 1 FROM usage.workspace_cost_ceilings WHERE workspace_id = $1::uuid",
+            workspace_id,
+        )
+        if has_row is None:
+            log.error(
+                "%s workspace=%s spent_usd=%.4f threshold_usd=%.4f -- the hard "
+                "stop was NOT applied: the workspace has no "
+                "usage.workspace_cost_ceilings row to suspend, so it is "
+                "measured against the env-default threshold only. Create a "
+                "ceiling for it if it should be stoppable.",
+                HARD_STOP_UNENFORCEABLE_MARKER, workspace_id, spent_usd, threshold_usd,
+            )
+            return _NO_CEILING_ROW
+        # Already suspended, or an admin override is active.
+        return _ALREADY_SUSPENDED
     log.error(
         "cost_burn_watcher: SUSPENDING workspace=%s "
         "spent=$%.4f threshold=$%.4f (admin_override clears)",
@@ -384,6 +450,7 @@ async def _suspend_workspace(
             "workspace=%s — DB row is authoritative",
             workspace_id, exc_info=True,
         )
+    return _SUSPENDED
 
 
 async def _write_redis_suspension_flag(workspace_id: str) -> None:

@@ -43,10 +43,10 @@ from uuid import UUID
 
 import asyncpg
 
-from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
-from app.db import bind_workspace_scope
+from app.db import BareConnectionError
 from app.db.dsn import build_dsn
+from app.services.support_cockpit._scope import ticket_connection
 
 log = logging.getLogger("georag.support_cockpit.escalation_routing")
 
@@ -139,6 +139,8 @@ async def route_escalation(
     actor_user_id: int,
     assign_to_user_id: int | None = None,
     pool: asyncpg.Pool | None = None,
+    workspace_id: UUID | str | None = None,
+    dry_run: bool = False,
 ) -> EscalationOutcome:
     """Make an escalation routing decision for the ticket.
 
@@ -149,6 +151,11 @@ async def route_escalation(
             the agent writes it to `assigned_to_user_id`. If None,
             the row's existing assignment (if any) is preserved.
         pool: optional asyncpg pool to reuse.
+        workspace_id: the workspace the caller has already authorised the
+            ticket for; scopes the connection directly instead of discovering
+            it under the default tenant (see ``_scope``).
+        dry_run: compute and return the decision without assigning the ticket
+            or emitting the audit anchor (READ ONLY transaction, no row lock).
 
     Returns:
         EscalationOutcome with the routing decision + rationale.
@@ -165,90 +172,80 @@ async def route_escalation(
         )
 
     try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                # Block-3 RLS — default-workspace-then-realign pattern.
-                # Audit 2026-06-28: use SET LOCAL (bind_workspace_scope,
-                # transaction-scoped) NOT session set_config(is_local=false).
-                # This often runs on a CALLER-SUPPLIED pool connection (owns_pool
-                # False), so a session GUC would leak back to the pool after
-                # COMMIT and bleed this tenant into the next pooled client (C2
-                # class). SET LOCAL is discarded at COMMIT.
-                await bind_workspace_scope(
-                    conn,
-                    workspace_id=LEGACY_DEFAULT_TENANT_UUID,
-                    site="support_cockpit.escalation_routing.bootstrap",
-                )
-                # 1. Load ticket.
-                ticket = await conn.fetchrow(
+        # Block-3 RLS. ticket_connection runs the whole body in ONE
+        # transaction with the workspace bound by SET LOCAL (discarded at
+        # COMMIT), so a CALLER-SUPPLIED pool connection (owns_pool False) never
+        # carries this tenant's GUC back to the pool (audit 2026-06-28, C2
+        # class). With workspace_id it binds that workspace directly; without
+        # it, it is the default-tenant-then-realign pattern (ADR-0014) -- see
+        # _scope for why a NOBYPASSRLS role needs the former.
+        async with ticket_connection(
+            pool,
+            ticket_id=ticket_str,
+            lookup_sql=f"""
+                SELECT ticket_id::text AS ticket_id,
+                       workspace_id::text AS workspace_id,
+                       severity, category, status,
+                       assigned_to_user_id, customer_visible_response
+                  FROM ops.support_tickets
+                 WHERE ticket_id = $1::uuid
+                   {"" if dry_run else "FOR UPDATE"}
+                """,
+            site="support_cockpit.escalation_routing",
+            bootstrap_reason="support_cockpit.elevated_lookup",
+            workspace_id=workspace_id,
+            read_only=dry_run,
+        ) as (conn, ticket):
+            # 2. Detect prior chain state from audit ledger.
+            triage_count = await conn.fetchval(
+                """
+                SELECT count(*) FROM audit.audit_ledger
+                 WHERE action_type = 'support.ticket.triaged'
+                   AND target_id = $1
+                """,
+                ticket_str,
+            )
+            investigation_count = await conn.fetchval(
+                """
+                SELECT count(*) FROM audit.audit_ledger
+                 WHERE action_type = 'support.ticket.investigated'
+                   AND target_id = $1
+                """,
+                ticket_str,
+            )
+
+            has_triage = (triage_count or 0) > 0
+            has_investigation = (investigation_count or 0) > 0
+            has_response_draft = ticket["customer_visible_response"] is not None
+
+            # 3. Route.
+            decision, rationale = _synthetic_router(
+                severity=ticket["severity"],
+                category=ticket["category"],
+                has_triage=has_triage,
+                has_investigation=has_investigation,
+                has_response_draft=has_response_draft,
+            )
+
+            # 4. Optionally write assignment.
+            if assign_to_user_id is not None and not dry_run:
+                await conn.execute(
                     """
-                    SELECT ticket_id::text AS ticket_id,
-                           workspace_id::text AS workspace_id,
-                           severity, category, status,
-                           assigned_to_user_id, customer_visible_response
-                      FROM ops.support_tickets
-                     WHERE ticket_id = $1::uuid
-                       FOR UPDATE
+                    UPDATE ops.support_tickets
+                       SET assigned_to_user_id = $1
+                     WHERE ticket_id = $2::uuid
                     """,
-                    ticket_str,
-                )
-                if ticket is None:
-                    raise ValueError(f"ticket not found: {ticket_str}")
-                await bind_workspace_scope(
-                    conn,
-                    workspace_id=ticket["workspace_id"],
-                    site="support_cockpit.escalation_routing.rescope",
+                    assign_to_user_id, ticket_str,
                 )
 
-                # 2. Detect prior chain state from audit ledger.
-                triage_count = await conn.fetchval(
-                    """
-                    SELECT count(*) FROM audit.audit_ledger
-                     WHERE action_type = 'support.ticket.triaged'
-                       AND target_id = $1
-                    """,
-                    ticket_str,
-                )
-                investigation_count = await conn.fetchval(
-                    """
-                    SELECT count(*) FROM audit.audit_ledger
-                     WHERE action_type = 'support.ticket.investigated'
-                       AND target_id = $1
-                    """,
-                    ticket_str,
-                )
+            final_assignee = (
+                assign_to_user_id
+                if assign_to_user_id is not None
+                else ticket["assigned_to_user_id"]
+            )
 
-                has_triage = (triage_count or 0) > 0
-                has_investigation = (investigation_count or 0) > 0
-                has_response_draft = ticket["customer_visible_response"] is not None
-
-                # 3. Route.
-                decision, rationale = _synthetic_router(
-                    severity=ticket["severity"],
-                    category=ticket["category"],
-                    has_triage=has_triage,
-                    has_investigation=has_investigation,
-                    has_response_draft=has_response_draft,
-                )
-
-                # 4. Optionally write assignment.
-                if assign_to_user_id is not None:
-                    await conn.execute(
-                        """
-                        UPDATE ops.support_tickets
-                           SET assigned_to_user_id = $1
-                         WHERE ticket_id = $2::uuid
-                        """,
-                        assign_to_user_id, ticket_str,
-                    )
-
-                final_assignee = (
-                    assign_to_user_id
-                    if assign_to_user_id is not None
-                    else ticket["assigned_to_user_id"]
-                )
-
-                # 5. Audit anchor.
+            # 5. Audit anchor.
+            if not dry_run:
                 await emit_audit(
                     conn,
                     action_type="support.ticket.escalation_routed",
@@ -272,25 +269,30 @@ async def route_escalation(
                     },
                 )
 
-                log.info(
-                    "escalation_routing.completed ticket=%s decision=%s "
-                    "severity=%s category=%s assignee=%s",
-                    ticket_str, decision, ticket["severity"],
-                    ticket["category"], final_assignee,
-                )
+            log.info(
+                "escalation_routing.%s ticket=%s decision=%s "
+                "severity=%s category=%s assignee=%s",
+                "dry_run_nothing_written" if dry_run else "completed",
+                ticket_str, decision, ticket["severity"],
+                ticket["category"], final_assignee,
+            )
 
-                return EscalationOutcome(
-                    ticket_id=UUID(ticket_str),
-                    decision=decision,
-                    rationale=rationale,
-                    assigned_to_user_id=final_assignee,
-                    severity=ticket["severity"],
-                    category=ticket["category"],
-                    has_triage=has_triage,
-                    has_investigation=has_investigation,
-                    has_response_draft=has_response_draft,
-                    routing_method="synthetic_stub",
-                )
+            return EscalationOutcome(
+                ticket_id=UUID(ticket_str),
+                decision=decision,
+                rationale=rationale,
+                assigned_to_user_id=final_assignee,
+                severity=ticket["severity"],
+                category=ticket["category"],
+                has_triage=has_triage,
+                has_investigation=has_investigation,
+                has_response_draft=has_response_draft,
+                routing_method="synthetic_stub",
+            )
+    except BareConnectionError as exc:
+        if "lookup_sql returned no rows" in str(exc):
+            raise ValueError(f"ticket not found: {ticket_str}") from exc
+        raise
     finally:
         if owns_pool and pool is not None:
             await pool.close()

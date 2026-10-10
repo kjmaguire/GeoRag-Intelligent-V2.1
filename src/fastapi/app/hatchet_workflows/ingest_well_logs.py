@@ -442,7 +442,11 @@ async def run_ingest_well_logs(
                 )
 
     except Exception as exc:
-        if run_id:
+        # Close the row HERE only when Hatchet will not run this task again
+        # (see _progress.is_final_attempt): a row marked 'failed' on the first
+        # attempt is terminal, so a retry that succeeds could neither complete
+        # it nor fire the completion broadcast.
+        if run_id and _progress.is_final_attempt(ctx, exc):
             # The kwarg is `error`, not `error_text`. Passing the wrong
             # name raised TypeError *inside* the handler, so the real
             # failure was replaced by the TypeError and the progress row

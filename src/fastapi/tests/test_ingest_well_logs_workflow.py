@@ -163,7 +163,12 @@ class Harness:
         )
 
 
-async def run(harness: Harness, **input_overrides: Any):
+async def run(harness: Harness, *, retry_count: int = 0, **input_overrides: Any):
+    """Run the task as Hatchet would on attempt ``retry_count + 1``.
+
+    The task has ``retries=1``, so ``retry_count=1`` is the LAST attempt -- the
+    only one on which a failure may close the progress row.
+    """
     payload = dict(
         workspace_id=WS, project_id=PROJECT,
         minio_key="uploads/eagle/EAGLE_PT_1.las", run_id=RUN,
@@ -178,7 +183,7 @@ async def run(harness: Harness, **input_overrides: Any):
         # real path. The obvious alternative, ``run_ingest_well_logs.fn``,
         # warns that ``fn`` is internal and goes away in SDK v2.
         return await run_ingest_well_logs.aio_mock_run(
-            IngestWellLogsInput(**payload),
+            IngestWellLogsInput(**payload), retry_count=retry_count,
         )
     finally:
         for ctx_manager in reversed(contexts):
@@ -485,11 +490,14 @@ class TestOrphanedFixture:
 
 
 class TestFailingFixture:
+    # The task has retries=1: a failure closes the progress row only on the
+    # LAST attempt (retry_count=1). An earlier attempt must leave it open so
+    # the retry can complete it -- see tests/test_ingest_retry_keeps_run_open.py.
     async def test_a_parse_failure_marks_the_row_failed_and_reraises(self) -> None:
         harness = Harness(parse=ValueError("malformed ~A section at line 88"))
 
         with pytest.raises(ValueError, match="malformed"):
-            await run(harness)
+            await run(harness, retry_count=1)
 
         assert harness.failed.await_count == 1
         assert harness.completed.await_count == 0
@@ -501,7 +509,7 @@ class TestFailingFixture:
         harness = Harness(parse=ValueError("malformed ~A section at line 88"))
 
         with pytest.raises(ValueError):
-            await run(harness)
+            await run(harness, retry_count=1)
 
         recorded = harness.failed.await_args.kwargs["error"]
         assert "malformed ~A section at line 88" in recorded
@@ -513,7 +521,7 @@ class TestFailingFixture:
         harness = Harness(parse=ValueError("x" * 5000))
 
         with pytest.raises(ValueError):
-            await run(harness)
+            await run(harness, retry_count=1)
 
         assert len(harness.failed.await_args.kwargs["error"]) <= 1000
 
@@ -525,9 +533,24 @@ class TestFailingFixture:
         harness = Harness(parse=las_result(), conn=Exploding())
 
         with pytest.raises(RuntimeError, match="deadlock"):
-            await run(harness)
+            await run(harness, retry_count=1)
 
         assert harness.failed.await_count == 1
+
+    async def test_a_first_attempt_failure_leaves_the_row_open_for_the_retry(self) -> None:
+        """Attempt 1 of 2 must not make the row terminal.
+
+        'failed' is immutable, so a row closed here made a SUCCESSFUL retry a
+        no-op against it: the run stayed 'failed' and the completion
+        broadcast never fired.
+        """
+        harness = Harness(parse=ValueError("malformed ~A section at line 88"))
+
+        with pytest.raises(ValueError, match="malformed"):
+            await run(harness, retry_count=0)
+
+        assert harness.failed.await_count == 0
+        assert harness.completed.await_count == 0
 
     async def test_an_unsupported_extension_is_refused_before_any_work(
         self,

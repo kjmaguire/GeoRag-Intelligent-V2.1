@@ -447,6 +447,12 @@ async def _dispatch_member(
         minio_key=payload.minio_key,
         triggered_by="upload",
         run_id=progress_run_id,
+        # The CRS / column map / hole id this member was dispatched with, so a
+        # stale-sweep recovery of THIS row replays them (the member's key is
+        # its own, but its parameters came from the archive's upload).
+        dispatch_params=ingest_progress.dispatch_params_for(
+            getattr(workflow, "name", ""), payload,
+        ),
     )
     try:
         ref = await workflow.aio_run_no_wait(payload)

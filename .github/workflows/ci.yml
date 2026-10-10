@@ -1705,7 +1705,8 @@ jobs:
             tests/test_rls_after_raw.py \
             tests/test_workspace_settings_rls_integration.py \
             tests/test_cross_workspace_audit.py \
-            tests/test_tool_gateway.py
+            tests/test_tool_gateway.py \
+            tests/test_support_replay_workspace_scope.py
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:

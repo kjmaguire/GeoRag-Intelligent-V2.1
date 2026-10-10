@@ -40,8 +40,9 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
-from app.db import BareConnectionError, lookup_and_rescope
+from app.db import BareConnectionError
 from app.db.dsn import build_dsn
+from app.services.support_cockpit._scope import ticket_connection
 
 log = logging.getLogger("georag.support_cockpit.support_packet")
 
@@ -55,7 +56,9 @@ class SupportPacket(NamedTuple):
     investigation_anchors: list[dict[str, Any]]
     related_decisions: list[dict[str, Any]]
     trace_links: list[dict[str, Any]]
-    packet_anchor_id: UUID  # the support.packet.assembled audit ledger id
+    # The support.packet.assembled audit ledger id. None on a dry run: no
+    # anchor is written, so there is no id to return.
+    packet_anchor_id: UUID | None
     summary: str
 
 
@@ -91,12 +94,20 @@ async def build_support_packet(
     *,
     ticket_id: UUID | str,
     pool: asyncpg.Pool | None = None,
+    workspace_id: UUID | str | None = None,
+    dry_run: bool = False,
 ) -> SupportPacket:
     """Assemble a complete support packet for one ticket.
 
     Args:
         ticket_id: UUID of the ops.support_tickets row.
         pool: optional asyncpg pool to reuse.
+        workspace_id: the workspace the caller has already authorised the
+            ticket for; scopes the connection directly instead of discovering
+            it under the default tenant (see ``_scope``).
+        dry_run: assemble and return the packet without emitting the
+            ``support.packet.assembled`` anchor (READ ONLY transaction);
+            ``packet_anchor_id`` is then None.
 
     Returns:
         SupportPacket with full ticket info + anchor chain + decision
@@ -114,9 +125,11 @@ async def build_support_packet(
         )
 
     try:
-        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py.
-        async with lookup_and_rescope(
+        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py —
+        # unless the caller already knows the workspace (see _scope).
+        async with ticket_connection(
             pool,
+            ticket_id=ticket_str,
             lookup_sql="""
                 SELECT ticket_id::text AS ticket_id,
                        workspace_id::text AS workspace_id,
@@ -128,9 +141,10 @@ async def build_support_packet(
                   FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
                 """,
-            lookup_args=(ticket_str,),
             site="support_cockpit.support_packet",
             bootstrap_reason="support_cockpit.elevated_lookup",
+            workspace_id=workspace_id,
+            read_only=dry_run,
         ) as (conn, ticket_row):
             ticket_dict = _record_to_dict(ticket_row)
 
@@ -205,33 +219,37 @@ async def build_support_packet(
                 f"{len(decision_dicts)} related decisions"
             )
 
-            # 6. Emit the packet anchor.
-            ledger = await emit_audit(
-                conn,
-                action_type="support.packet.assembled",
-                workspace_id=ticket_dict.get("workspace_id"),
-                actor_kind="agent",
-                target_schema="ops",
-                target_table="support_tickets",
-                target_id=ticket_str,
-                payload={
-                    "evaluator": "support_packet_v1",
-                    "doc_phase": 140,
-                    "summary": summary[:500],
-                    "ticket_category": ticket_dict["category"],
-                    "ticket_severity": ticket_dict["severity"],
-                    "ticket_status": ticket_dict["status"],
-                    "triage_count": len(triage_dicts),
-                    "investigation_count": len(investigation_dicts),
-                    "trace_link_count": len(trace_dicts),
-                    "decision_count": len(decision_dicts),
-                },
-            )
+            # 6. Emit the packet anchor (not on a dry run).
+            anchor_id: UUID | None = None
+            if not dry_run:
+                ledger = await emit_audit(
+                    conn,
+                    action_type="support.packet.assembled",
+                    workspace_id=ticket_dict.get("workspace_id"),
+                    actor_kind="agent",
+                    target_schema="ops",
+                    target_table="support_tickets",
+                    target_id=ticket_str,
+                    payload={
+                        "evaluator": "support_packet_v1",
+                        "doc_phase": 140,
+                        "summary": summary[:500],
+                        "ticket_category": ticket_dict["category"],
+                        "ticket_severity": ticket_dict["severity"],
+                        "ticket_status": ticket_dict["status"],
+                        "triage_count": len(triage_dicts),
+                        "investigation_count": len(investigation_dicts),
+                        "trace_link_count": len(trace_dicts),
+                        "decision_count": len(decision_dicts),
+                    },
+                )
+                anchor_id = ledger.id
 
             log.info(
-                "support_packet.assembled ticket=%s anchor=%s triage=%d "
+                "support_packet.%s ticket=%s anchor=%s triage=%d "
                 "investigations=%d traces=%d decisions=%d",
-                ticket_str, ledger.id, len(triage_dicts),
+                "dry_run_nothing_written" if dry_run else "assembled",
+                ticket_str, anchor_id, len(triage_dicts),
                 len(investigation_dicts), len(trace_dicts),
                 len(decision_dicts),
             )
@@ -243,7 +261,7 @@ async def build_support_packet(
                 investigation_anchors=investigation_dicts,
                 related_decisions=decision_dicts,
                 trace_links=trace_dicts,
-                packet_anchor_id=ledger.id,
+                packet_anchor_id=anchor_id,
                 summary=summary,
             )
     except BareConnectionError as exc:

@@ -10,13 +10,16 @@ when a check refuses.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import settings
@@ -28,9 +31,16 @@ _PROJECT = "b1000000-0000-0000-0000-000000000010"
 _TICKET = "c1000000-0000-0000-0000-000000000020"
 _AUDIT = "d1000000-0000-0000-0000-000000000030"
 _UUID = "e1000000-0000-0000-0000-000000000040"
+#: What deploy/aws/terraform/config.tf sets as AWS_BUCKET_EXPORTS.
+_EXPORTS = "georag-exports-123456789012"
 
 REPO = Path(__file__).resolve().parents[3]
 POLICY = REPO / "app" / "Policies" / "WorkflowTriggerPolicy.php"
+
+
+@pytest.fixture(autouse=True)
+def _exports_bucket(monkeypatch) -> None:
+    monkeypatch.setenv("AWS_BUCKET_EXPORTS", _EXPORTS)
 
 
 class _FakeConn:
@@ -50,12 +60,15 @@ def harness(monkeypatch):
     db: dict[str, Any] = {"exists": True, "scopes": [], "conn": None}
 
     class _Ref:
-        workflow_run_id = "run-123"
+        def __init__(self, n: int) -> None:
+            # The first run keeps the historical id; later ones are distinct, so
+            # a test can tell a repeated dispatch from a repeated answer.
+            self.workflow_run_id = f"run-{122 + n}"
 
     for name, spec in T.TRIGGERS.items():
         async def _run_no_wait(inp: Any, _name: str = name) -> _Ref:
             dispatched.append((_name, inp))
-            return _Ref()
+            return _Ref(len(dispatched))
 
         monkeypatch.setattr(spec.workflow, "aio_run_no_wait", _run_no_wait)
 
@@ -183,13 +196,25 @@ def test_workspace_export_dispatches_for_an_existing_workspace(harness) -> None:
     r = _post(client, "workspace_export", {"workspace_id": _WS, "input": {"workspace_id": _WS}})
     assert r.status_code == 202, r.text
     assert "silver.workspaces" in db["conn"].calls[0][0]
-    assert dispatched[0][1].bucket == T.EXPORT_BUCKET
+    # Pinned to the configured EXPORTS bucket (AWS_BUCKET_EXPORTS), which is the
+    # one Terraform creates and the task role is granted, not "workspace-exports".
+    assert dispatched[0][1].bucket == _EXPORTS
 
 
-def test_workspace_export_refuses_another_bucket(harness) -> None:
+def test_workspace_export_accepts_the_configured_bucket_by_name(harness) -> None:
     client, dispatched, _ = harness
     r = _post(client, "workspace_export", {
-        "workspace_id": _WS, "input": {"workspace_id": _WS, "bucket": "reports"},
+        "workspace_id": _WS, "input": {"workspace_id": _WS, "bucket": _EXPORTS},
+    })
+    assert r.status_code == 202, r.text
+    assert dispatched[0][1].bucket == _EXPORTS
+
+
+@pytest.mark.parametrize("bucket", ["reports", "workspace-exports", "georag-backups-123456789012"])
+def test_workspace_export_refuses_another_bucket(harness, bucket: str) -> None:
+    client, dispatched, _ = harness
+    r = _post(client, "workspace_export", {
+        "workspace_id": _WS, "input": {"workspace_id": _WS, "bucket": bucket},
     })
     assert r.status_code == 422
     assert dispatched == []
@@ -197,10 +222,13 @@ def test_workspace_export_refuses_another_bucket(harness) -> None:
 
 @pytest.mark.parametrize("uri", [
     f"file:///etc/{_WS}/x.jsonl.gz",
-    f"s3://workspace-exports/{_OTHER_WS}/2026-09-29T000000-r.jsonl.gz",
-    f"s3://reports/{_WS}/x.jsonl.gz",
-    f"s3://workspace-exports/{_WS}/../{_OTHER_WS}/x.jsonl.gz",
-    f"s3://workspace-exports/{_WS}/",
+    f"s3://{_EXPORTS}/workspace-exports/{_OTHER_WS}/2026-09-29T000000-r.jsonl.gz",
+    f"s3://reports/workspace-exports/{_WS}/x.jsonl.gz",
+    f"s3://{_EXPORTS}/workspace-exports/{_WS}/../{_OTHER_WS}/x.jsonl.gz",
+    f"s3://{_EXPORTS}/workspace-exports/{_WS}/",
+    # The layout before 2026-10-10: a bucket of its own, and no key prefix.
+    f"s3://workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz",
+    f"s3://{_EXPORTS}/{_WS}/2026-09-29T000000-r.jsonl.gz",
 ])
 def test_restore_refuses_a_manifest_outside_the_workspace(harness, uri: str) -> None:
     client, dispatched, _ = harness
@@ -214,7 +242,7 @@ def test_restore_refuses_a_manifest_outside_the_workspace(harness, uri: str) -> 
 
 def test_restore_dispatches_an_own_workspace_manifest(harness) -> None:
     client, dispatched, _ = harness
-    uri = f"s3://workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
+    uri = f"s3://{_EXPORTS}/workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
     r = _post(client, "restore_workspace", {"workspace_id": _WS, "input": {
         "workspace_id": _WS, "snapshot_manifest_uri": uri,
         "initiated_by_user_id": 7, "restore_request_id": _UUID, "dry_run": False,
@@ -253,6 +281,31 @@ def test_support_replay_checks_the_ticket_is_in_the_workspace(harness) -> None:
     db["exists"] = True
     assert _post(client, "support_replay", {"workspace_id": _WS, "input": _replay()}).status_code == 202
     assert dispatched[0][1].dry_run is True
+
+
+def test_support_replay_is_handed_the_workspace_it_was_authorised_for(harness) -> None:
+    """The route checks the ticket belongs to the workspace. The worker must not
+    rediscover that workspace under the default tenant: ops.support_* is STRICT
+    RLS, so as georag_app it could see only a default-tenant ticket and a replay
+    for any other workspace died after this route had accepted it (finding 22)."""
+    client, dispatched, _ = harness
+    r = _post(client, "support_replay", {"workspace_id": _OTHER_WS, "input": _replay()})
+    assert r.status_code == 202
+    assert str(dispatched[0][1].workspace_id) == _OTHER_WS
+
+
+def test_support_replay_input_naming_another_workspace_is_refused(harness) -> None:
+    client, dispatched, db = harness
+    r = _post(client, "support_replay", {
+        "workspace_id": _WS, "input": _replay(workspace_id=_OTHER_WS),
+    })
+    assert r.status_code == 422
+    assert dispatched == [] and db["scopes"] == []
+
+    # Naming the authorised workspace itself is fine.
+    ok = _post(client, "support_replay", {"workspace_id": _WS, "input": _replay(workspace_id=_WS)})
+    assert ok.status_code == 202
+    assert str(dispatched[0][1].workspace_id) == _WS
 
 
 # ---------------------------------------------------------------------------
@@ -342,3 +395,188 @@ def test_incident_diagnosis_bounds_the_window(harness) -> None:
     }})
     assert r.status_code == 422
     assert dispatched == []
+
+
+# ---------------------------------------------------------------------------
+# Request-id dedupe (2026-10 Hatchet audit, finding 8)
+# ---------------------------------------------------------------------------
+class _FakeRedis:
+    """The three calls the route makes, with SET NX and TTL semantics."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.ttls: dict[str, int | None] = {}
+        self.down = False
+
+    async def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        if self.down:
+            raise ConnectionError("redis is down")
+        if nx and key in self.store:
+            return None
+        self.store[key], self.ttls[key] = value, ex
+        return True
+
+    async def get(self, key: str) -> str | None:
+        if self.down:
+            raise ConnectionError("redis is down")
+        return self.store.get(key)
+
+
+@pytest.fixture
+def deduping(harness):
+    """(client, dispatched, db, redis): the harness with a fake Redis attached."""
+    client, dispatched, db = harness
+    redis = _FakeRedis()
+    client.app.state.redis_client = redis
+    return client, dispatched, db, redis
+
+
+def _report(request_id: str = _UUID, **over: Any) -> dict[str, Any]:
+    return {"workspace_id": _WS, "input": _report_input(export_request_id=request_id, **over)}
+
+
+def test_a_repeated_request_id_returns_the_first_run_and_dispatches_once(deduping) -> None:
+    client, dispatched, _, redis = deduping
+
+    first = _post(client, "generate_report", _report())
+    second = _post(client, "generate_report", _report())
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["workflow_run_id"] == "run-123"
+    assert second.json() == first.json(), "the repeat gets the run the first request started"
+    assert len(dispatched) == 1
+    (key,) = redis.store
+    assert key == f"workflow_trigger:generate_report:{_WS}:{_UUID}"
+    assert redis.store[key] == "run-123" and redis.ttls[key] == T.DEDUPE_TTL_SECONDS == 3600
+
+
+def test_a_new_request_id_is_a_new_run(deduping) -> None:
+    client, dispatched, _, _ = deduping
+
+    a = _post(client, "generate_report", _report(_UUID))
+    b = _post(client, "generate_report", _report("e1000000-0000-0000-0000-000000000041"))
+
+    assert len(dispatched) == 2
+    assert a.json()["workflow_run_id"] != b.json()["workflow_run_id"]
+
+
+def test_the_same_request_id_in_another_workspace_is_another_request(deduping) -> None:
+    """The workspace is part of the key, so one tenant's request id can never
+    be answered with a run reference that belongs to another."""
+    client, dispatched, _, _ = deduping
+
+    _post(client, "generate_report", _report())
+    other = _post(client, "generate_report", {
+        "workspace_id": _OTHER_WS, "input": _report_input(workspace_id=_OTHER_WS),
+    })
+
+    assert other.status_code == 202
+    assert len(dispatched) == 2
+
+
+def test_each_deduped_workflow_names_a_real_input_field() -> None:
+    for workflow, field in T.REQUEST_ID_FIELDS.items():
+        assert field in T.TRIGGERS[workflow].input_model.model_fields, workflow
+
+
+def test_support_replay_and_restore_are_deduped_too(deduping) -> None:
+    client, dispatched, _, _ = deduping
+    uri = f"s3://{_EXPORTS}/workspace-exports/{_WS}/2026-09-29T000000-r.jsonl.gz"
+    restore = {"workspace_id": _WS, "input": {
+        "workspace_id": _WS, "snapshot_manifest_uri": uri,
+        "initiated_by_user_id": 7, "restore_request_id": _UUID,
+    }}
+
+    for workflow, body in (
+        ("support_replay", {"workspace_id": _WS, "input": _replay()}),
+        ("restore_workspace", restore),
+    ):
+        before = len(dispatched)
+        first = _post(client, workflow, body)
+        second = _post(client, workflow, body)
+        assert second.json() == first.json(), workflow
+        assert len(dispatched) == before + 1, workflow
+
+
+def test_a_workflow_with_no_request_id_is_never_deduped(deduping) -> None:
+    client, dispatched, _, redis = deduping
+    body = {"workspace_id": _WS, "input": {"workspace_id": _WS}}
+
+    _post(client, "workspace_export", body)
+    _post(client, "workspace_export", body)
+
+    assert len(dispatched) == 2
+    assert redis.store == {}
+
+
+def test_a_request_the_scope_check_refused_does_not_claim_its_id(deduping) -> None:
+    client, dispatched, db, redis = deduping
+    db["exists"] = False
+    assert _post(client, "generate_report", _report()).status_code == 404
+    assert redis.store == {}
+
+    db["exists"] = True
+    assert _post(client, "generate_report", _report()).status_code == 202
+    assert len(dispatched) == 1
+
+
+def test_a_request_id_still_being_dispatched_is_409_not_a_second_run(deduping) -> None:
+    client, dispatched, _, redis = deduping
+    redis.store[f"workflow_trigger:generate_report:{_WS}:{_UUID}"] = T._IN_PROGRESS
+
+    r = _post(client, "generate_report", _report())
+
+    assert r.status_code == 409
+    assert dispatched == []
+
+
+def test_a_dispatch_that_raises_keeps_the_id_claimed(deduping, monkeypatch) -> None:
+    """Whether the engine started the run is unknown after an error (a deadline
+    can expire after it did). Releasing the id would let a retry start a second
+    run, the one outcome the claim exists to prevent."""
+    client, dispatched, _, redis = deduping
+
+    async def _boom(_inp: Any) -> None:
+        raise RuntimeError("engine deadline exceeded")
+
+    monkeypatch.setattr(T.TRIGGERS["generate_report"].workflow, "aio_run_no_wait", _boom)
+    with pytest.raises(RuntimeError, match="deadline"):
+        _post(client, "generate_report", _report())
+    assert list(redis.store.values()) == [T._IN_PROGRESS]
+
+    r = _post(client, "generate_report", _report())
+    assert r.status_code == 409
+    assert dispatched == []
+
+
+def test_redis_down_still_dispatches(deduping) -> None:
+    """The dedupe is a safety net under the Laravel cooldown, not a gate."""
+    client, dispatched, _, redis = deduping
+    redis.down = True
+
+    r = _post(client, "generate_report", _report())
+
+    assert r.status_code == 202
+    assert len(dispatched) == 1
+
+
+def test_no_redis_client_at_all_still_dispatches(harness) -> None:
+    client, dispatched, _ = harness  # the plain harness has no redis_client
+
+    assert _post(client, "generate_report", _report()).status_code == 202
+    assert len(dispatched) == 1
+
+
+async def test_of_two_concurrent_claims_exactly_one_wins() -> None:
+    redis = _FakeRedis()
+    validated = SimpleNamespace(export_request_id=UUID(_UUID))
+
+    results = await asyncio.gather(
+        T._claim_request_id(redis, "generate_report", _WS, validated),
+        T._claim_request_id(redis, "generate_report", _WS, validated),
+        return_exceptions=True,
+    )
+
+    owners = [r for r in results if isinstance(r, str)]
+    refused = [r for r in results if isinstance(r, HTTPException)]
+    assert len(owners) == 1 and len(refused) == 1 and refused[0].status_code == 409

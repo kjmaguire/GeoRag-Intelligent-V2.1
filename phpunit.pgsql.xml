@@ -232,6 +232,10 @@
             <file>tests/Feature/Tenancy/AuditQueryLogRetentionGrantTest.php</file>
             <file>tests/Feature/Tenancy/AuditHashTriggerCreatedAtTest.php</file>
             <file>tests/Feature/Tenancy/AuditLedgerAppendOnlyTest.php</file>
+            <!-- 2026-10-10: audit.verify_hash_chain() checks the first in-window
+                 row of each chain against the row before the window instead of
+                 reporting it as a break (2026_10_10_100400). -->
+            <file>tests/Feature/Tenancy/AuditVerifyHashChainWindowTest.php</file>
             <!-- 2026-10-04 database audit: MV refresh CONCURRENTLY, hot-path and
                  FK indexes, SECURITY DEFINER ACL + search_path, role timeouts. -->
             <file>tests/Feature/Tenancy/DatabaseAuditHardeningMigrationsTest.php</file>

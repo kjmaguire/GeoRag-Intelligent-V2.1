@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import asyncpg
@@ -118,6 +118,15 @@ def test_recency_factor_no_date_is_neutral() -> None:
 
 def test_recency_factor_just_now_is_one() -> None:
     assert _recency_factor(datetime.now(UTC)) == pytest.approx(1.0, abs=0.01)
+
+
+def test_recency_factor_accepts_a_date() -> None:
+    """silver.reports.filing_date is a DATE; asyncpg hands it back as a
+    datetime.date, which has no tzinfo and cannot be subtracted from a datetime.
+    It raised AttributeError, but only once the citation join matched anything."""
+    assert _recency_factor(date.today()) == pytest.approx(1.0, abs=0.01)
+    ten_years = _recency_factor(date.today() - timedelta(days=3652))
+    assert ten_years == pytest.approx(0.25, abs=0.02)  # two half-lives of five years
 
 
 # ──────────────── train_target_model end-to-end (live DB) ──────────────

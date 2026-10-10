@@ -35,8 +35,9 @@ import asyncpg
 
 from app.agent.workspace_context import LEGACY_DEFAULT_TENANT_UUID
 from app.audit import emit_audit
-from app.db import BareConnectionError, lookup_and_rescope, scoped_connection
+from app.db import BareConnectionError, scoped_connection
 from app.db.dsn import build_dsn
+from app.services.support_cockpit._scope import ticket_connection
 
 log = logging.getLogger("georag.support_cockpit.ticket_triage")
 
@@ -130,6 +131,8 @@ async def triage_ticket(
     *,
     ticket_id: UUID | str,
     pool: asyncpg.Pool | None = None,
+    workspace_id: UUID | str | None = None,
+    dry_run: bool = False,
 ) -> TriageOutcome:
     """Triage one ticket: classify severity + category, transition to
     investigating, emit audit anchor.
@@ -137,6 +140,14 @@ async def triage_ticket(
     Args:
         ticket_id: UUID of the row in ops.support_tickets.
         pool: optional asyncpg pool to reuse.
+        workspace_id: the workspace the caller has already authorised the
+            ticket for. Given, the connection is scoped straight to it; omitted,
+            the workspace is discovered under the default tenant, which a
+            NOBYPASSRLS role cannot do for any other workspace's ticket (see
+            ``_scope``).
+        dry_run: compute the outcome and return it, writing nothing -- no
+            UPDATE, no audit anchor, no row lock, and a READ ONLY transaction
+            as the backstop.
 
     Returns:
         TriageOutcome with prior + new severity/category.
@@ -153,19 +164,22 @@ async def triage_ticket(
         )
 
     try:
-        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py.
-        async with lookup_and_rescope(
+        # ADR-0014 lookup_and_rescope — see customer_response_drafting.py —
+        # unless the caller already knows the workspace (see _scope).
+        async with ticket_connection(
             pool,
-            lookup_sql="""
+            ticket_id=ticket_str,
+            lookup_sql=f"""
                 SELECT ticket_id, workspace_id, description,
                        severity, category, status
                   FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
-                   FOR UPDATE
+                   {"" if dry_run else "FOR UPDATE"}
                 """,
-            lookup_args=(ticket_str,),
             site="support_cockpit.ticket_triage",
             bootstrap_reason="support_cockpit.elevated_lookup",
+            workspace_id=workspace_id,
+            read_only=dry_run,
         ) as (conn, row):
             if row["status"] in ("resolved", "closed"):
                 raise ValueError(
@@ -181,40 +195,42 @@ async def triage_ticket(
             )
             new_status = "investigating"
 
-            # 3. Apply.
-            await conn.execute(
-                """
-                UPDATE ops.support_tickets
-                   SET severity = $1,
-                       category = $2,
-                       status = $3
-                 WHERE ticket_id = $4::uuid
-                """,
-                new_severity, new_category, new_status, ticket_str,
-            )
+            if not dry_run:
+                # 3. Apply.
+                await conn.execute(
+                    """
+                    UPDATE ops.support_tickets
+                       SET severity = $1,
+                           category = $2,
+                           status = $3
+                     WHERE ticket_id = $4::uuid
+                    """,
+                    new_severity, new_category, new_status, ticket_str,
+                )
 
-            # 4. Audit anchor.
-            await emit_audit(
-                conn,
-                action_type="support.ticket.triaged",
-                workspace_id=row["workspace_id"],
-                actor_kind="agent",
-                target_schema="ops",
-                target_table="support_tickets",
-                target_id=ticket_str,
-                payload={
-                    "evaluator": "synthetic_stub",
-                    "doc_phase": 136,
-                    "prior_severity": prior_severity,
-                    "prior_category": prior_category,
-                    "new_severity": new_severity,
-                    "new_category": new_category,
-                    "new_status": new_status,
-                },
-            )
+                # 4. Audit anchor.
+                await emit_audit(
+                    conn,
+                    action_type="support.ticket.triaged",
+                    workspace_id=row["workspace_id"],
+                    actor_kind="agent",
+                    target_schema="ops",
+                    target_table="support_tickets",
+                    target_id=ticket_str,
+                    payload={
+                        "evaluator": "synthetic_stub",
+                        "doc_phase": 136,
+                        "prior_severity": prior_severity,
+                        "prior_category": prior_category,
+                        "new_severity": new_severity,
+                        "new_category": new_category,
+                        "new_status": new_status,
+                    },
+                )
 
             log.info(
-                "ticket_triage.completed ticket=%s sev=%s→%s cat=%s→%s",
+                "ticket_triage.%s ticket=%s sev=%s→%s cat=%s→%s",
+                "dry_run_nothing_written" if dry_run else "completed",
                 ticket_str, prior_severity, new_severity,
                 prior_category, new_category,
             )

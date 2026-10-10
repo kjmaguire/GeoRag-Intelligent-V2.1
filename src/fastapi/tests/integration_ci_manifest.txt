@@ -45,22 +45,55 @@
 # real defects (a swallowed terminal-write failure, a test whose FK could
 # never be satisfied, and a staleness window the test never caught up with).
 tests/test_ingest_progress_state_machine.py
+# A failed first attempt must leave the run open: a retry that succeeds has to
+# be able to complete it (2026-10-10; the body closed it 'failed' on EVERY attempt).
+tests/test_ingest_retry_keeps_run_open.py
+# A recovered run replays what the upload declared (CRS, column map, ...) from
+# silver.ingest_progress.dispatch_params, and is declined when it was never
+# recorded (2026-10-10).
+tests/test_recovery_replays_upload_params.py
 tests/test_stale_run_detector.py
 tests/test_orphan_sweep.py
 tests/test_mv_refresh.py
 tests/test_reliability_metrics.py
 tests/test_embed_pending_completion_sweep.py
+# The per-project advisory lease that stops a cron tick and an inline dispatch
+# embedding (and paying for) the same project at once; the lock needs a real
+# Postgres (2026-10-10).
+tests/test_embed_pending_lease.py
 tests/test_phase8_embed_verify.py
 
 # ── Audit / tenancy ───────────────────────────────────────────────────
 tests/test_support_access_audit.py
+# The nightly hash-chain verifier: first in-window row vs the row before the
+# window, and the AUDIT_LEDGER_CHAIN_BREAK marker (2026-10-10).
+tests/test_audit_verify_window_seed.py
+# The §35.1 hard stop must not wait on the alert (2026-10-10).
+tests/test_cost_burn_hard_stop.py
+# A platform (no-workspace) outbox row that dead-letters is logged and filed, not
+# silent (2026-10-10).
+tests/test_outbox_platform_dead_letter.py
+# The cold-tier archive against the real ledger: one hash chain per workspace,
+# the watermark window continuing each chain, and the asyncpg cursor/snapshot
+# plumbing (2026-10-10).
+tests/test_cold_tier_archive_pg.py
 tests/test_workspace_export_rls_scope.py
+# The restore half: exact per-table counts through run_export -> archive ->
+# restore, idempotent re-run, a rejected row reported, and the same under a
+# NOBYPASSRLS role. Added 2026-10-10 after the restore was found to insert no
+# rows while reporting success -- the file's integration tests had never run.
+tests/test_workspace_export_restore.py
 # test_citation_feedback_integration.py (PG-7) runs in the cron-sweeps-app-role
 # job instead: it needs db:apply-raw (source_trust_features.workspace_id is
 # added by raw phase0/97), which this job does not apply.
 
 # ── Support + operations surfaces ─────────────────────────────────────
 tests/test_support_packet.py
+# A dry run writes nothing to the ticket, a repeated replay_request_id runs the
+# chain once, and a row is never left 'running' (2026-10-10, finding 7).
+# test_support_replay_workspace_scope.py (finding 22) runs in the
+# cron-sweeps-app-role job instead: it needs the strict ops.support_* policies
+# from db:apply-raw and a NOBYPASSRLS role, which this job has neither of.
 tests/test_support_replay_workflow.py
 tests/test_escalation_routing.py
 tests/test_root_cause_investigation.py
@@ -72,6 +105,10 @@ tests/test_decision_summary.py
 tests/test_continuous_learning_loop.py
 tests/test_field_outcome_learning_workflow.py
 tests/test_train_models.py
+# train_source_trust joins citations to reports through the passage (it compared an
+# evidence id to a report id and scored nothing); a join, so it needs a database
+# (2026-10-10).
+tests/test_train_source_trust_citation_join.py
 
 # ── Domain surfaces ───────────────────────────────────────────────────
 tests/test_hypothesis_generator.py

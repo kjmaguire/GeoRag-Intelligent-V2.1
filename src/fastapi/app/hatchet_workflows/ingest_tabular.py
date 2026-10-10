@@ -4628,7 +4628,14 @@ async def run_ingest_tabular(
                 )
 
     except Exception as exc:
-        if run_id:
+        # Close the row HERE only when Hatchet will not run this task again.
+        # This used to be unconditional: the first attempt marked the row
+        # 'failed' (terminal, immutable), the retry then did all its work
+        # against a row whose start_run / mark_stage_started /
+        # mark_completed_by_run were no-ops, and a retry that SUCCEEDED stayed
+        # 'failed' with no completion broadcast and no gold promotion. The
+        # failure hook below closes the row if the last attempt cannot.
+        if run_id and _progress.is_final_attempt(ctx, exc):
             # The kwarg is `error`, not `error_text`. Passing the wrong
             # name raised TypeError *inside* the handler, so the real
             # failure was replaced by the TypeError and the progress row
