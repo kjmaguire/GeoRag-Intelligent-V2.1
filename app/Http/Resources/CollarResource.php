@@ -162,7 +162,7 @@ class CollarResource extends JsonResource
             // one, so the curve track could not render. Depths are metres, on
             // the same axis as the intervals; show() leaves out legacy rows
             // whose depth unit was never recorded, which cannot be placed.
-            'well_log_curves' => $this->whenLoaded('wellLogCurves', fn () => $this->wellLogCurves
+            'well_log_curves' => $this->whenLoaded('wellLogCurves', fn ($curves) => $curves
                 ->map(fn (WellLogCurve $curve): array => self::curvePayload($curve))
                 ->values(),
             ),

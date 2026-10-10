@@ -178,7 +178,7 @@ class ProjectController extends Controller
         $owned = $user->is_admin
             ? $workspacesOf($memberships)
             : $workspacesOf($memberships->filter(
-                fn ($project): bool => in_array($project->pivot->role, StoreProjectRequest::CREATOR_ROLES, true),
+                fn ($project): bool => in_array(data_get($project, 'pivot.role'), StoreProjectRequest::CREATOR_ROLES, true),
             ));
 
         $requested = $request->string('workspace_id')->trim()->value();
@@ -466,6 +466,18 @@ class ProjectController extends Controller
     }
 
     /**
+     * The 422 for a project_code already used in the workspace
+     * (silver_projects_workspace_code_idx), in the field-error shape the
+     * New Project form shows against the field.
+     */
+    private function duplicateProjectCode(): JsonResponse
+    {
+        $message = 'This project code is already used in your workspace.';
+
+        return response()->json(['message' => $message, 'errors' => ['project_code' => [$message]]], 422);
+    }
+
+    /**
      * Fire a WorkspaceActivityBroadcast for project mutations.
      *
      * Best-effort — wrapped in try/catch so a broadcasting outage cannot
@@ -475,13 +487,6 @@ class ProjectController extends Controller
      *
      * @param 'created'|'updated'|'deleted' $verb
      */
-    private function duplicateProjectCode(): JsonResponse
-    {
-        $message = 'This project code is already used in your workspace.';
-
-        return response()->json(['message' => $message, 'errors' => ['project_code' => [$message]]], 422);
-    }
-
     private function broadcastProjectMutation(string $workspaceId, string $verb, string $projectId): void
     {
         try {

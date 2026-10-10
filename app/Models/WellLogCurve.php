@@ -8,6 +8,15 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * Columns added by raw ALTER TABLE statements, which Larastan's migration
+ * scan does not read. depths/values arrive as pdo_pgsql's float8[] text;
+ * floatArray() reads either shape.
+ *
+ * @property string|list<float>|null $depths
+ * @property string|list<float>|null $values
+ * @property string|null $depth_unit
+ */
 class WellLogCurve extends Model
 {
     use HasUuids;

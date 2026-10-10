@@ -14,6 +14,14 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * Set only on rows selected through CollarExportQuery, which projects
+ * geom_4326 into the export CRS; null on every other Collar.
+ *
+ * @property-read float|null $export_easting
+ * @property-read float|null $export_northing
+ * @property-read int|null $export_epsg
+ */
 class Collar extends Model
 {
     /** @use HasFactory<CollarFactory> */
