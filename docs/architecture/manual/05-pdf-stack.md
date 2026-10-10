@@ -1,11 +1,20 @@
 # Chapter 05 — PDF Stack §04p
 
-> **Reconciled 2026-09-07** against `src/fastapi/app/services/pdf_extract.py`,
+> **Reconciled 2026-09-07** against `src/fastapi/app/services/ingest/pdf_report.py`,
 > `services/ingest/`, `src/fastapi/pyproject.toml` and `docker-compose.yml`.
 > The pipeline description was current through ADR-0019; what was stale was
 > the library stack (PyMuPDF was removed on licence grounds), the vision
 > stage (vLLM), the container name and the parser table, which pointed into
 > the deleted `src/dagster/` tree.
+>
+> **Corrected 2026-10-10.** This chapter cited `services/pdf_extract.py` and
+> `services/pdf_coordinates.py` for native text, tables and citation
+> coordinates. Neither exists: both were deleted 2026-10-06 with the other
+> §04p Stage-3 services that read cache tables no migration creates
+> (`silver.pdf_text_blocks`, `silver.pdf_coordinates`). Native text and tables
+> are extracted inside `services/ingest/pdf_report.py`, and there is no
+> bbox/coordinate stage today: a passage records `page_first` / `page_last`,
+> not a bounding box.
 
 In-process replacement for the deleted RAGFlow service ([ADR-0002](../../adr/)).
 Everything runs inside the single `hatchet-worker` container (and
@@ -60,18 +69,19 @@ body_bytes
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 2 — FAST-PATH NATIVE TEXT   pdf_extract.py → pdfminer.six         │
-│   per-page text blocks with bboxes + font metadata                      │
-│   reading-order recovery via blocks                                     │
-│   PER_PAGE_MIN_CHARS gate: < N chars → mark page "image-only"           │
+│ Stage 2 — NATIVE TEXT    pdf_report.py::_parse_with_fitz (pypdfium2)    │
+│   per-page text in reading order; PER_PAGE_MIN_CHARS (80) gate and a    │
+│   native-text quality screen: a short or garbled page is queued for OCR │
+│   pdfplumber (pdfminer.six) runs only if pdfium fails on the whole file:│
+│   pdf_report.py::_parse_with_pdfplumber                                 │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Stage 3 — TABLES        pdf_extract.py → pdfplumber (parallel)          │
-│   diverse table-probe over pdfplumber + camelot strategies              │
-│   one-pass page traversal — caches PDF body in memory                   │
-│   each table goes through OCR-skip probe                                │
-│   silver.table_extraction_quality row written                           │
+│ Stage 3 — TABLES        pdf_report.py → pdfplumber                      │
+│   _extract_resource_tables (resource / reserve pages) and               │
+│   _extract_all_tables_as_sections (every page: bordered tables by the   │
+│   lines strategy, borderless by the text strategy); each surviving table│
+│   becomes a section, so it is chunked and embedded like prose           │
 └───────────────────────┬─────────────────────────────────────────────────┘
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -100,11 +110,12 @@ body_bytes
                         ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Stage 7 — PERSIST     ingest_pdf.persist                                │
-│   silver.reports, silver.report_pages, silver.report_figures            │
-│   silver.report_tables, silver.parser_run_artifacts                     │
-│   bronze.provenance rows (trigger auto-fills workspace_id)              │
-│   outbox.pending_propagations for Qdrant fan-out                        │
-│   workspace.data_version bump                                           │
+│   silver.reports (lineage on the row: source_object_key,                │
+│   source_file_sha256, parser_used), silver.document_passages,           │
+│   silver.shadow_runs, audit.audit_ledger,                               │
+│   silver.review_queue (OCR pages the router sends to review)            │
+│   No bronze.provenance row: source_row / source_col_map mean nothing    │
+│   for a PDF (tests/test_provenance_coverage.py)                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -113,10 +124,10 @@ body_bytes
 | Stage | File | Key functions |
 |---|---|---|
 | Preflight | [src/fastapi/app/hatchet_workflows/ingest_pdf.py](../../../src/fastapi/app/hatchet_workflows/ingest_pdf.py) | `preflight()` — sha256, magic bytes, pikepdf open, page count, password-protected rejection |
-| Native text | [`services/pdf_extract.py`](../../../src/fastapi/app/services/pdf_extract.py) | text blocks with bboxes and font metadata via **pdfminer.six**, in a `ProcessPoolExecutor` |
-| Tables | [`services/pdf_extract.py`](../../../src/fastapi/app/services/pdf_extract.py) | cell-level bboxes via **pdfplumber** `find_tables()`. There is no `pdf_layout.py` and camelot is not a dependency |
+| Native text | [`services/ingest/pdf_report.py`](../../../src/fastapi/app/services/ingest/pdf_report.py) | `_parse_with_fitz()` — per-page text from **pypdfium2** (PDFium; the `fitz` name is a stable wire label, PyMuPDF is gone), the `PER_PAGE_MIN_CHARS` gate and native-text screen that route a page to OCR; `_parse_with_pdfplumber()` (**pdfplumber** / pdfminer.six) only when pdfium fails on the whole file. Runs inside the parse subprocess pool |
+| Tables | [`services/ingest/pdf_report.py`](../../../src/fastapi/app/services/ingest/pdf_report.py) | `_extract_resource_tables()` and `_extract_all_tables_as_sections()` — **pdfplumber** `find_tables()` with the lines / text strategies; each table becomes a section. There is no `pdf_layout.py` and camelot is not a dependency |
 | OCR | [src/fastapi/app/services/ingest/pdf_report.py](../../../src/fastapi/app/services/ingest/pdf_report.py) + [cohere_parse_client.py](../../../src/fastapi/app/services/ingest/cohere_parse_client.py) + [html_table.py](../../../src/fastapi/app/services/ingest/html_table.py) | Cohere Parse v5 primary (one page image per request, HTML tables → grids), Tesseract fallback |
-| Coordinates | [src/fastapi/app/services/pdf_coordinates.py](../../../src/fastapi/app/services/pdf_coordinates.py) | Maps OCR text → page-relative bboxes for citation span resolver |
+| Page attribution | [`services/ingest/pdf_report.py`](../../../src/fastapi/app/services/ingest/pdf_report.py) | `_build_page_index()` maps each chunk's character span to `page_first` / `page_last`; `text_pages` / `text_page_coverage_pct` on the result say which pages produced text. `pdf_coordinates.py` (page-relative bboxes for a citation span resolver) was deleted 2026-10-06 — the `bbox_*` columns on `silver.document_passages` are not filled |
 | Rendering | [`services/pdf_render.py`](../../../src/fastapi/app/services/pdf_render.py) | renders page PNGs into the bronze raster prefix — SeaweedFS in dev, S3 in production, behind the one `STORAGE_BACKEND` switch ([Ch 02 §4](02-data-stores.md)) |
 | Page verbalization | [`services/ingest/page_verbalizer.py`](../../../src/fastapi/app/services/ingest/page_verbalizer.py) + [`page_vision_client.py`](../../../src/fastapi/app/services/ingest/page_vision_client.py) | a vision model describes the page; the description becomes the passage text. **`BEDROCK_VISION_MODEL_ID` has no default and the feature refuses to run without one** — Bedrock has no equivalent of the retired `gpt-5-mini`, and guessing a substitute would silently change what every image passage says (ADR-0022). `services/pdf_vl.py` still exists and is constructed in the FastAPI lifespan, but its docstring describes an Ollama/vLLM backend that is gone — the live path is the verbalizer |
 | Figure linking | [src/fastapi/app/agent/figure_extractor.py](../../../src/fastapi/app/agent/figure_extractor.py) | Figure → caption nearest-text linking v1 |
@@ -126,7 +137,7 @@ body_bytes
 
 [project_parse_perf_2026_05_22](../notes/INDEX.md#project_parse_perf_2026_05_22):
 
-1. ~~PyMuPDF promoted to primary native-text parser~~ — **reversed.** PyMuPDF was removed in the 2026-05-27 licence audit (AGPL-3.0); pdfminer.six is the native-text parser.
+1. ~~PyMuPDF promoted to primary native-text parser~~ — **reversed.** PyMuPDF was removed in the 2026-05-27 licence audit (AGPL-3.0); **pypdfium2** (Apache-2.0) is the native-text parser now, with pdfplumber / pdfminer.six as the whole-file fallback and the table extractor.
 2. Parallel pdfplumber for tables.
 3. Diverse table-probe (multiple pdfplumber strategies).
 4. OCR-skip probe — skips OCR for pages already covered by native text.
@@ -176,12 +187,19 @@ instability on image-only PDFs — flagged separately.
 
 ## 9. Quality tables
 
-Every parse writes quality telemetry:
+These tables exist (migrations `2026_05_12_1800xx`) but **no code under
+`src/fastapi/app` writes them today** (checked 2026-10-10); they were the
+target of the deleted Stage-3 services:
 - [silver.parser_run_artifacts](03-schemas.md) — per-stage artifact list with sizes/durations.
 - `silver.ocr_page_quality` — per-page confidence + char count.
 - `silver.table_extraction_quality` — per-table cells / strategy / score.
 - `silver.document_ingestion_quality` — overall summary row.
 - `silver.low_confidence_page_reviews` — pages routed to human review.
+
+What a parse records instead: the `ocr_quality_assessment` warning per OCR'd
+page on the parse result, `silver.review_queue` rows for pages the router
+sends to review, and `text_page_coverage_pct` on `silver.reports` (over the
+document's real page count).
 
 ## 10. Env knobs
 

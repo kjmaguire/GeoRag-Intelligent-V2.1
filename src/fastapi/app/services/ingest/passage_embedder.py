@@ -40,10 +40,18 @@ Collection schema (post 2026-06-03 Qwen3-Embedding swap):
   Re-create via scripts/init_qdrant.py with GEORAG_VECTOR_SIZE=1024.
 
 Section fields:
-  Passages from PDFs/XLSX don't carry true §15 section structure, so
-  we use:
-    section_number = ordinal (passage index within document)
-    section_title  = parent report.title
+  PDF passages DO come from a section-aware chunker (pdf_report._split_into_
+  sections detects NI 43-101 headings and numbers them per chunk), but
+  silver.document_passages has no section columns, so what the parser detected
+  is kept only in silver.reports.sections_text and is NOT available here.
+  The payload therefore carries:
+    section_number = ordinal (passage index within the document) - an
+                     ORDINAL, not the report's section number ("14")
+    section_title  = parent report.title - the REPORT's title, not the
+                     heading of the section the passage sits in
+  Anything that reads these as the report's own section reads the wrong thing;
+  persisting the real number and title takes new document_passages columns and
+  a re-embed (audit finding 22, a recorded decision, not implemented).
 
 This matches the orchestrator's payload-extraction logic in
 `tools.search_documents`.
