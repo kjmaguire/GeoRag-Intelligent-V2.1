@@ -1129,30 +1129,9 @@ class WorkspaceController extends Controller
                 ->orderBy('depth')
                 ->limit(5000)
                 ->get(['collar_id', 'strike_deg', 'dip_deg', 'structure_type', 'depth', 'trend_deg', 'plunge_deg', 'dip_direction_deg'])
-                ->map(function ($r) {
-                    // Pole-to-plane: trend = (dip_direction + 180) mod 360,
-                    // plunge = 90 - dip. Fallback because the gold asset
-                    // doesn't currently populate trend_deg / plunge_deg, but
-                    // it does populate dip_direction_deg + dip_deg.
-                    $dip = $r->dip_deg !== null ? (float) $r->dip_deg : 0.0;
-                    $dipDir = $r->dip_direction_deg !== null ? (float) $r->dip_direction_deg : null;
-                    $trend = $r->trend_deg !== null ? (float) $r->trend_deg
-                        : ($dipDir !== null ? fmod($dipDir + 180.0, 360.0) : 0.0);
-                    $plunge = $r->plunge_deg !== null ? (float) $r->plunge_deg : (90.0 - $dip);
-
-                    return [
-                        'collar_id' => (string) $r->collar_id,
-                        'strike_deg' => $r->strike_deg !== null ? (float) $r->strike_deg : 0.0,
-                        'dip_deg' => $dip,
-                        'measurement_kind' => (string) $r->structure_type,
-                        'depth_m' => $r->depth !== null ? (float) $r->depth : null,
-                        'pole_trend_deg' => $trend,
-                        'pole_plunge_deg' => $plunge,
-                        'display_color' => null,
-                        'display_symbol' => null,
-                        'confidence' => null,
-                    ];
-                })
+                ->map(fn ($r) => self::structureDiscRow($r))
+                // A measurement with no orientation is dropped, not drawn.
+                ->filter()
                 ->values()
                 ->all();
             $this->releaseSavepoint($sp);
@@ -1248,6 +1227,51 @@ class WorkspaceController extends Controller
             'commodity_samples_3d' => $commoditySamples,
             'commodity_keys_3d' => $commodityKeys,
             'survey_holes_downsampled' => $surveyHolesDownsampled,
+        ];
+    }
+
+    /**
+     * One structure-disc row from gold.structure_measurements_visual, or null
+     * when the measurement has no orientation to draw.
+     *
+     * Pole-to-plane: trend = (dip_direction + 180) mod 360, plunge = 90 - dip.
+     * A fallback, because the gold asset does not populate trend_deg /
+     * plunge_deg, but it does populate dip_direction_deg + dip_deg.
+     *
+     * A NULL dip or dip direction used to be coerced to 0, which sent a
+     * structure with NO orientation to the 3D discs as a flat plane (dip 0,
+     * strike 0) and to the stereonet as a horizontal bed at the centre of the
+     * net: an invented population of flat-lying structures (GIS audit
+     * 2026-10). promote_silver_to_gold writes NULL dip / dip direction for an
+     * out-of-range or missing angle precisely so that nothing is invented
+     * downstream. Never substitute 0.
+     *
+     * @return array{collar_id: string, strike_deg: float, dip_deg: float, measurement_kind: string, depth_m: float|null, pole_trend_deg: float, pole_plunge_deg: float, display_color: null, display_symbol: null, confidence: null}|null
+     */
+    public static function structureDiscRow(object $r): ?array
+    {
+        $dip = $r->dip_deg !== null ? (float) $r->dip_deg : null;
+        $dipDir = $r->dip_direction_deg !== null ? (float) $r->dip_direction_deg : null;
+        if ($dip === null || $dipDir === null) {
+            return null;
+        }
+
+        $trend = $r->trend_deg !== null ? (float) $r->trend_deg : fmod($dipDir + 180.0, 360.0);
+        $plunge = $r->plunge_deg !== null ? (float) $r->plunge_deg : (90.0 - $dip);
+        // Right-hand rule, from the same dip direction the pole came from.
+        $strike = $r->strike_deg !== null ? (float) $r->strike_deg : fmod($dipDir - 90.0 + 360.0, 360.0);
+
+        return [
+            'collar_id' => (string) $r->collar_id,
+            'strike_deg' => $strike,
+            'dip_deg' => $dip,
+            'measurement_kind' => (string) $r->structure_type,
+            'depth_m' => $r->depth !== null ? (float) $r->depth : null,
+            'pole_trend_deg' => $trend,
+            'pole_plunge_deg' => $plunge,
+            'display_color' => null,
+            'display_symbol' => null,
+            'confidence' => null,
         ];
     }
 

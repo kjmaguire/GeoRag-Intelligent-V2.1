@@ -2257,6 +2257,7 @@ def _build_chat_card_payloads(
                         "image_base64": result.image_base64,
                         "projection": result.projection,
                         "structure_count": result.count,
+                        "unoriented_count": result.unoriented_count,
                         "points": stereo_points,
                         "project_id": result.project_id,
                     },

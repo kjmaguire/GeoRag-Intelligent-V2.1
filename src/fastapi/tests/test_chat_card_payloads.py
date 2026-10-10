@@ -374,6 +374,18 @@ def test_stereonet_meta_carries_image_base64_and_points():
     assert meta["projection"] == "Schmidt"
 
 
+def test_stereonet_meta_reports_measurements_left_off_for_want_of_an_orientation():
+    """GIS audit 2026-10: the card says how many were not plotted."""
+    result = _stereonet(count=3)
+    result.unoriented_count = 4
+    _, viz = _build_chat_card_payloads(
+        intent="synthesis", tool_results=[("query_stereonet", result)],
+    )
+    meta = viz.plotly_layout["meta"]
+    assert meta["unoriented_count"] == 4
+    assert meta["structure_count"] == 3, "the count is of what is plotted"
+
+
 def test_stereonet_count_zero_falls_through():
     """No points → no card."""
     _, viz = _build_chat_card_payloads(

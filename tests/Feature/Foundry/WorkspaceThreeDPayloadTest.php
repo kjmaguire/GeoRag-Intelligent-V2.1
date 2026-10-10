@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Foundry;
 
+use App\Http\Controllers\Foundry\WorkspaceController;
 use App\Models\Project;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -180,6 +181,64 @@ final class WorkspaceThreeDPayloadTest extends TestCase
                     ->has('commodity_keys_3d')
                     ->has('survey_holes_downsampled')),
         );
+    }
+
+    /**
+     * GIS audit 2026-10 (finding 10): a structure with no orientation was sent
+     * to the discs as dip 0 / strike 0 / trend 0 - a flat plane - and to the
+     * Workspace stereonet as a horizontal bed at the centre of the net. A NULL
+     * is not a 0; the row is dropped.
+     */
+    public function test_structure_discs_drop_measurements_without_an_orientation(): void
+    {
+        ['user' => $user, 'project' => $project] = $this->seedProjectWithCollars(1);
+        $collar = DB::table('silver.collars')->where('project_id', $project->project_id)->first();
+
+        $insert = function (float $depth, ?float $dip, ?float $dipDir, ?float $strike) use ($collar, $project): void {
+            DB::statement(
+                "INSERT INTO gold.structure_measurements_visual (
+                    collar_id, workspace_id, project_id, depth, structure_type,
+                    strike_deg, dip_deg, dip_direction_deg, projection
+                 ) VALUES (?::uuid, ?::uuid, ?::uuid, ?, 'bedding', ?, ?, ?, 'equal_area')",
+                [$collar->collar_id, $collar->workspace_id, $project->project_id, $depth, $strike, $dip, $dipDir],
+            );
+        };
+        $insert(10.0, 30.0, 120.0, 30.0);   // fully oriented
+        $insert(20.0, null, null, null);    // no orientation at all
+        $insert(30.0, 45.0, null, null);    // a dip with no dip direction
+        $insert(40.0, 0.0, 90.0, 0.0);      // genuinely horizontal: dip 0 is a value, not a gap
+
+        $this->actingAs($user)
+            ->get('/projects/'.$project->slug.'/workspace')
+            ->assertInertia(fn (AssertableInertia $page) => $page->loadDeferredProps('viz3d', fn (AssertableInertia $reload) => $reload
+                ->has('structures_visual_3d', 2)
+                ->where('structures_visual_3d.0.depth_m', 10)
+                ->where('structures_visual_3d.0.dip_deg', 30)
+                ->where('structures_visual_3d.0.pole_trend_deg', 300)
+                ->where('structures_visual_3d.0.pole_plunge_deg', 60)
+                ->where('structures_visual_3d.1.depth_m', 40)
+                ->where('structures_visual_3d.1.dip_deg', 0)
+                ->where('structures_visual_3d.1.pole_plunge_deg', 90)));
+    }
+
+    public function test_structure_disc_row_keeps_a_zero_dip_and_drops_a_null_one(): void
+    {
+        $row = static fn (?float $dip, ?float $dipDir, ?float $strike = null): object => (object) [
+            'collar_id' => 'c', 'structure_type' => 'joint', 'depth' => 5.0,
+            'dip_deg' => $dip, 'dip_direction_deg' => $dipDir, 'strike_deg' => $strike,
+            'trend_deg' => null, 'plunge_deg' => null,
+        ];
+
+        $flat = WorkspaceController::structureDiscRow($row(0.0, 0.0));
+        $this->assertNotNull($flat, 'a horizontal bed is a measurement');
+        $this->assertSame(0.0, $flat['dip_deg']);
+        $this->assertSame(90.0, $flat['pole_plunge_deg']);
+        $this->assertSame(180.0, $flat['pole_trend_deg']);
+        $this->assertSame(270.0, $flat['strike_deg'], 'right-hand rule: dip direction - 90');
+
+        $this->assertNull(WorkspaceController::structureDiscRow($row(null, 120.0)));
+        $this->assertNull(WorkspaceController::structureDiscRow($row(30.0, null)));
+        $this->assertNull(WorkspaceController::structureDiscRow($row(null, null)));
     }
 
     /**

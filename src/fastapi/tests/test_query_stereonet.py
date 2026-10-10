@@ -217,6 +217,55 @@ class TestQueryStereonet:
         )
         assert result.count == _STEREONET_MAX_POINTS
 
+    @pytest.mark.asyncio
+    async def test_a_measurement_with_no_orientation_is_dropped_not_plotted_at_the_centre(self) -> None:
+        """GIS audit 2026-10: NULL stereonet x/y became 0.0 - a horizontal bed's pole."""
+        no_orientation = {
+            **_row(source_row_id="v-null", strike=None, dip=None),
+            "stereonet_x": None,
+            "stereonet_y": None,
+        }
+        rows = [
+            _row(source_row_id="v1", strike=45.0, dip=30.0),
+            no_orientation,
+            # A bed that really is horizontal sits at (0, 0) and must be KEPT.
+            {**_row(source_row_id="v-flat", strike=0.0, dip=0.0), "stereonet_x": 0.0, "stereonet_y": 0.0},
+        ]
+        result = await query_stereonet(
+            deps=_make_deps(pg_pool=_make_pool(rows)),
+            workspace_id="ws",
+            project_id="proj",
+        )
+
+        assert [p.source_row_id for p in result.points] == ["v1", "v-flat"]
+        assert result.count == 2
+        assert result.unoriented_count == 1
+        flat = next(p for p in result.points if p.source_row_id == "v-flat")
+        assert (flat.stereonet_x, flat.stereonet_y) == (0.0, 0.0)
+
+    @pytest.mark.asyncio
+    async def test_unoriented_rows_do_not_spend_the_downsample_cap(self) -> None:
+        rows = [
+            {**_row(source_row_id=f"n{i:04d}"), "stereonet_x": None, "stereonet_y": None}
+            for i in range(_STEREONET_MAX_POINTS * 2)
+        ] + [_row(source_row_id=f"ok{i}") for i in range(10)]
+        result = await query_stereonet(
+            deps=_make_deps(pg_pool=_make_pool(rows)),
+            workspace_id="ws",
+            project_id="proj",
+        )
+        assert result.count == 10
+        assert result.unoriented_count == _STEREONET_MAX_POINTS * 2
+
+    @pytest.mark.asyncio
+    async def test_oriented_projects_report_zero_unoriented(self) -> None:
+        result = await query_stereonet(
+            deps=_make_deps(pg_pool=_make_pool([_row(source_row_id="v1")])),
+            workspace_id="ws",
+            project_id="proj",
+        )
+        assert result.unoriented_count == 0
+
 
 # ---------------------------------------------------------------------------
 # Helpers — direct unit tests for the pure functions

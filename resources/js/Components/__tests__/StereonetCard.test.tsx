@@ -103,6 +103,24 @@ describe('StereonetCard — empty state', () => {
     });
 });
 
+describe('StereonetCard — measurements with no orientation', () => {
+    it('says how many were left off the net instead of plotting them at the centre', () => {
+        render(<StereonetCard meta={{ ...META, unoriented_count: 4 }} />);
+        expect(screen.getByTestId('stereonet-unoriented').textContent ?? '').toContain(
+            '4 without orientation, not plotted',
+        );
+        // The three oriented points are still the only dots.
+        expect(screen.queryByTestId('stereonet-point-3')).toBeNull();
+    });
+
+    it('shows no such chip when every measurement is oriented', () => {
+        render(<StereonetCard meta={META} />);
+        expect(screen.queryByTestId('stereonet-unoriented')).toBeNull();
+        render(<StereonetCard meta={{ ...META, unoriented_count: 0 }} />);
+        expect(screen.queryByTestId('stereonet-unoriented')).toBeNull();
+    });
+});
+
 describe('StereonetCard — populated render', () => {
     it('renders header chips with projection + point count', () => {
         render(<StereonetCard meta={META} />);

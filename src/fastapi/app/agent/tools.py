@@ -3879,6 +3879,10 @@ class StereonetResult:
     data_source: str = (
         "PostGIS gold.structure_measurements_visual + mplstereonet server-render"
     )
+    #: Measurements on record that have no orientation (a NULL dip or dip
+    #: direction, so no stereonet x/y) and are therefore NOT plotted. They used
+    #: to be plotted at the centre of the net, i.e. as horizontal beds.
+    unoriented_count: int = 0
 
 
 # Cap render size so a project with thousands of measurements doesn't
@@ -4091,14 +4095,28 @@ async def query_stereonet(
         )
         raw_rows = []
 
-    sampled = _downsample_stereonet_points(raw_rows)
+    # promote_silver_to_gold writes stereonet_x/_y exactly when it writes a dip
+    # and a dip direction, and NULL otherwise: a NULL pair means the
+    # measurement has no orientation. It used to be coerced to 0.0 - the centre
+    # of the net, where the pole of a HORIZONTAL bed plots - which invented a
+    # population of flat-lying structures (GIS audit 2026-10). Never substitute
+    # 0: leave the row out and count it. Done before the downsample so the cap
+    # is not spent on rows that cannot be drawn.
+    oriented = [
+        r for r in raw_rows
+        if r.get("stereonet_x") is not None and r.get("stereonet_y") is not None
+    ]
+    unoriented = len(raw_rows) - len(oriented)
+    if unoriented:
+        logger.info(
+            "query_stereonet: %d of %d measurement(s) have no orientation and "
+            "are not plotted project=%s",
+            unoriented, len(raw_rows), project_id,
+        )
+    sampled = _downsample_stereonet_points(oriented)
 
     points: list[StereonetPoint] = []
     for r in sampled:
-        # Defensive: stereonet_x/_y are mandatory in the gold table for
-        # planar measurements but lineation-only rows may carry NULLs.
-        # Fall back to 0/0 so the dataclass shape is preserved; the
-        # renderer uses strike/dip or trend/plunge directly anyway.
         points.append(StereonetPoint(
             depth=r.get("depth"),
             structure_type=r.get("structure_type") or "other",
@@ -4107,8 +4125,8 @@ async def query_stereonet(
             dip_direction_deg=r.get("dip_direction_deg"),
             plunge_deg=r.get("plunge_deg"),
             trend_deg=r.get("trend_deg"),
-            stereonet_x=float(r.get("stereonet_x") or 0.0),
-            stereonet_y=float(r.get("stereonet_y") or 0.0),
+            stereonet_x=float(r["stereonet_x"]),
+            stereonet_y=float(r["stereonet_y"]),
             source_row_id=str(r.get("source_row_id") or ""),
         ))
 
@@ -4129,6 +4147,7 @@ async def query_stereonet(
         project_id=project_id,
         workspace_id=workspace_id,
         count=len(points),
+        unoriented_count=unoriented,
     )
 
 
