@@ -115,6 +115,10 @@ def apply_retrieval_strategy(
                 new_filters[field] = None
         if "allowed_data_sources" in new_filters and new_filters["allowed_data_sources"]:
             new_filters["allowed_data_sources"] = []
+        # "Narrowed to nothing" is a restriction too: loosening drops it, or
+        # the empty allowed set above would keep denying every tool.
+        if new_filters.get("no_data_source_allowed"):
+            new_filters["no_data_source_allowed"] = False
         return {"retrieval_filters": new_filters, "_loosen_applied": True}
 
     if strategy == RepairStrategy.BROADEN_KNN:

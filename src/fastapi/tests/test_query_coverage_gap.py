@@ -224,3 +224,66 @@ class TestQueryCoverageGap:
         assert result.ingest_gap.indexed == 0
         assert result.attribute_coverage == []
         assert result.findings == []
+
+
+class TestIngestStageIsProjectScoped:
+    """2026-10-10 audit, finding 12: the ingest stage counted bronze.ingest_manifest
+    by workspace_id only, so a project answer reported the whole workspace's
+    indexed / processed counts -- every other project's files included -- next
+    to project-scoped attribute coverage.
+
+    The manifest has no project column. A project's rows are found the way the
+    Sources page finds them: the PLSS sections named in the source paths of the
+    provenance rows of the project's own collars and reports. These tests pin
+    the shape of the query the mock pool sees; the arithmetic was run against
+    a real PostgreSQL 16 with a seeded two-workspace, three-project fixture
+    (indexed/processed: 8/1 and 7/1 for the two archive projects, 0/0 for a
+    project uploaded through the live pipeline and for the wrong workspace,
+    where the old query said 19/2 for every one of them).
+    """
+
+    WORKSPACE = "a0000000-0000-0000-0000-000000000001"
+    PROJECT = "b0000000-0000-0000-0000-000000000001"
+
+    async def _ingest_call(self) -> _SqlCall:
+        pool, captured = _build_pool(
+            indexed=8, processed=1, collars_total=3, attribute_data={"assays_v2": 1}
+        )
+        await query_coverage_gap(
+            _make_deps(pg_pool=pool), workspace_id=self.WORKSPACE, project_id=self.PROJECT
+        )
+        return next(c for c in captured if "WITH indexed AS" in c.sql)
+
+    @pytest.mark.asyncio
+    async def test_the_ingest_query_is_bound_to_the_project_too(self) -> None:
+        call = await self._ingest_call()
+        assert call.args == (self.WORKSPACE, self.PROJECT)
+
+    @pytest.mark.asyncio
+    async def test_processed_counts_only_this_projects_reports(self) -> None:
+        sql = (await self._ingest_call()).sql
+        processed = sql[sql.index("processed AS") :]
+        assert "r.project_id = $2::uuid" in processed
+
+    @pytest.mark.asyncio
+    async def test_indexed_is_restricted_to_this_projects_sections(self) -> None:
+        sql = (await self._ingest_call()).sql
+        indexed = sql[sql.index("WITH indexed AS") : sql.index("processed AS")]
+        # the manifest has no project column: its rows are attributed through
+        # the project's own collars and reports...
+        assert "m.guessed_project IN (" in indexed
+        assert "bp.target_table = 'collars'" in indexed
+        assert "bp.target_table = 'reports'" in indexed
+        assert indexed.count("c.project_id = $2::uuid") == 1
+        assert indexed.count("r.project_id = $2::uuid") == 1
+        # ...and still inside the caller's workspace
+        assert "m.workspace_id = $1::uuid" in indexed
+        assert indexed.count("bp.workspace_id = $1::uuid") == 2
+
+    @pytest.mark.asyncio
+    async def test_no_unscoped_manifest_count_is_left(self) -> None:
+        """The old query was `SELECT COUNT(*) FROM bronze.ingest_manifest WHERE
+        workspace_id = $1` and nothing else."""
+        sql = (await self._ingest_call()).sql
+        assert sql.count("bronze.ingest_manifest") == 1
+        assert "guessed_project" in sql

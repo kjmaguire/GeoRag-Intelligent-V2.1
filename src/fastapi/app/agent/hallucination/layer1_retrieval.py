@@ -227,9 +227,19 @@ def _counts_as_evidence(
         return True
     if intent is None or intent not in _DOCUMENT_CENTRIC_INTENTS or query is None:
         return True
-    from app.agent.hole_id_patterns import HOLE_ID_RE  # noqa: PLC0415
+    from app.agent.hole_id_patterns import (  # noqa: PLC0415
+        iter_compact_hole_id_matches,
+        iter_hole_id_matches,
+    )
 
-    return _is_drill_data_question(query) or bool(HOLE_ID_RE.search(query))
+    # "Pre-2010" and "Zone-3" have a hole ID's shape and are not one: a
+    # question that only says "pre-2010" must not count project-wide rows as
+    # evidence for a document question.
+    return (
+        _is_drill_data_question(query)
+        or next(iter_hole_id_matches(query), None) is not None
+        or next(iter_compact_hole_id_matches(query), None) is not None
+    )
 
 
 def assess_retrieval_quality(

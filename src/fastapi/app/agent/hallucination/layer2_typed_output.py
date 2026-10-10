@@ -22,6 +22,11 @@ in the agentic graph, so failures are repaired rather than retried.
 
 Repairs applied
 ---------------
+- Grouped markers are rewritten as single ones first ("[NI43-1, NI43-2]" ->
+  "[NI43-1] [NI43-2]", see ``citation_markers.normalize_grouped_markers``):
+  the checks below only know one marker per bracket, so a fully cited
+  sentence looked uncited and was dropped (2026-10-10 audit, finding 5).
+  Each id is still checked on its own, so an invented one is not let through.
 - An invented citation marker (in the text, but with no Citation behind it)
   takes the sentence it supported with it. It used to be stripped on its own
   and the claim kept, which shipped the claim uncited — exactly what rule 4
@@ -29,6 +34,10 @@ Repairs applied
   marker keeps that marker and loses only the invented one. The sentence
   rule is Layer 5's, shared through
   ``layer5_provenance.scrub_rejected_markers``.
+- An evidence-id marker ("[ev:abc123]") is an invented marker too unless the
+  citation span resolver is on (CITATION_SPAN_RESOLVER_ENABLED, off by
+  default): nothing else resolves it, and it used to count as a citation
+  without being checked against anything (2026-10-10 audit, finding 6).
 - A substantive sentence with no citation marker is removed by
   :func:`enforce_claim_citations`; if no cited claim is left the answer
   becomes a typed refusal.
@@ -58,7 +67,10 @@ import re
 from app.agent.hallucination.citation_markers import (
     ALL_MARKER_RE,
     CITATION_MARKER_CAPTURE_RE,
+    EV_MARKER_CAPTURE_RE,
+    canonical_ev_marker,
     canonical_marker,
+    ungroup_response_markers,
 )
 from app.agent.hallucination.claim_sentences import (
     Unit,
@@ -73,9 +85,21 @@ from app.agent.hallucination.refusals import (
     UNSUPPORTED_BY_SOURCES_MESSAGE,
     make_refusal_payload,
 )
+from app.config import settings
 from app.models.rag import Citation, GeoRAGResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _ev_markers_cite() -> bool:
+    """Whether an ``[ev:...]`` marker can stand for a citation at all.
+
+    Only the citation span resolver resolves an evidence-id marker to a span
+    of a retrieved chunk. While it is off (the default) such a marker names
+    nothing, so it is treated exactly like a numeric marker with no Citation
+    behind it: an orphan.
+    """
+    return bool(getattr(settings, "CITATION_SPAN_RESOLVER_ENABLED", False))
 
 
 def _unsupported_refusal_payload() -> dict[str, object]:
@@ -114,6 +138,9 @@ def validate_and_repair_with_findings(
     issues: list[str] = []
     findings: list[str] = []
 
+    # One marker per bracket from here on ("[NI43-1, NI43-2]" is two).
+    response = ungroup_response_markers(response)
+
     # ── Check 1: citation marker ↔ citation list consistency ──────────────
     known_ids = set(c.citation_id for c in response.citations)
     orphan_ids: set[str] = set()
@@ -122,6 +149,13 @@ def validate_and_repair_with_findings(
         cid = canonical_marker(m.group(1), m.group(3))
         if cid not in known_ids:
             orphan_ids.add(cid)
+    # An evidence-id marker has no Citation either, and nothing resolves it
+    # unless the span resolver is on.
+    if not _ev_markers_cite():
+        orphan_ids.update(
+            canonical_ev_marker(m.group(1))
+            for m in EV_MARKER_CAPTURE_RE.finditer(response.text)
+        )
 
     if orphan_ids:
         from app.agent.hallucination.layer5_provenance import (  # noqa: PLC0415
@@ -233,7 +267,6 @@ _OIUR_UNCITED_SECTIONS: tuple[str, ...] = (
 )
 _OIUR_RE = re.compile(r"(?mi)^##\s+observations\b")
 _H2_RE = re.compile(r"^\s*##\s+(?P<title>[^#].*?)\s*$")
-_EV_MARKER_RE = re.compile(r"\[ev[:-][A-Za-z0-9-]+\]")
 
 
 def _is_system_text(text: str) -> bool:
@@ -269,7 +302,7 @@ def _real_citation_ids(citations: list[Citation]) -> set[str]:
 
 
 def _cites(piece: str, valid_ids: set[str]) -> bool:
-    if _EV_MARKER_RE.search(piece):
+    if _ev_markers_cite() and EV_MARKER_CAPTURE_RE.search(piece):
         return True
     return any(
         canonical_marker(m.group(1), m.group(3)) in valid_ids
@@ -319,9 +352,11 @@ def enforce_claim_citations(
     The proactive-insights block (deterministic system output, see
     ``anomaly_detector``) and canned system texts are never touched.
 
-    Returns ``(response, findings)``. The response is the SAME object and
-    ``findings`` is empty when nothing was removed.
+    Returns ``(response, findings)``. ``findings`` is empty and the response
+    is the SAME object when nothing was removed (a response whose grouped
+    markers were rewritten as singles comes back as a copy carrying them).
     """
+    response = ungroup_response_markers(response)
     text = response.text or ""
     if not text.strip() or _is_system_text(text):
         return response, []

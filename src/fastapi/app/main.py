@@ -134,17 +134,24 @@ def _init_reranker(app: FastAPI) -> None:
     """Build the reranker and stamp it on ``app.state`` (lifespan step 6).
 
     Split out of the lifespan so the failure policy is testable: a retired
-    backend value (``RetiredAzureConfiguration``) propagates and stops
+    backend value (``RetiredAzureConfiguration``) or one that is not a
+    backend at all (``UnsupportedRerankerBackend``) propagates and stops
     startup; any other failure leaves ``app.state.reranker = None``, which a
     hosted backend turns into a ``reranker_unavailable`` retrieval failure
     per query (see the lifespan comment).
     """
+    # Resolved here, at call time, not bound at import: the `except` below
+    # compares class identity, and a module that is re-executed (the test
+    # suite reloads app.services.reranker) re-creates the class.
+    from app.services.reranker import UnsupportedRerankerBackend  # noqa: PLC0415
+
     _t1 = time.perf_counter()
     try:
         from app.services.reranker import (  # noqa: PLC0415
             RERANKER_BACKEND,
             active_reranker_version,
             get_reranker_or_none,
+            reranker_backend_is_hosted,
         )
 
         # get_reranker_or_none() implements the full backend precedence:
@@ -165,7 +172,7 @@ def _init_reranker(app: FastAPI) -> None:
                 "%s",
                 RERANKER_BACKEND,
                 "FAIL CLOSED with RETRIEVAL_UNAVAILABLE (hosted backend)"
-                if RERANKER_BACKEND == "bedrock"
+                if reranker_backend_is_hosted(RERANKER_BACKEND)
                 else "degrade to RRF order, flagged rerank_degraded (local backend)",
             )
         else:
@@ -173,10 +180,12 @@ def _init_reranker(app: FastAPI) -> None:
                 "Reranker ready: backend=%s version=%s loaded in %.2fs",
                 RERANKER_BACKEND, _version, _elapsed_r,
             )
-    except RetiredAzureConfiguration:
-        # A deployment that was never repointed off Foundry: stop, do not
-        # serve (ADR-0022 gotcha 3). This used to be swallowed by the generic
-        # handler below, so the service started with no reranker.
+    except (RetiredAzureConfiguration, UnsupportedRerankerBackend):
+        # A deployment that was never repointed off Foundry, or that mistyped
+        # the variable: stop, do not serve (ADR-0022 gotcha 3). This used to
+        # be swallowed by the generic handler below, so the service started
+        # with no reranker -- and, for a value that was not a backend, with a
+        # local-backend fallback to RRF order and no relevance floor.
         raise
     except Exception:
         logger.exception(
@@ -785,7 +794,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # answer would bypass the Layer 1 relevance floor. Only the explicitly
     # local/dev backends (cross_encoder, qwen3_causal) still degrade to RRF
     # order, flagged rerank_degraded. A retired backend value
-    # (RetiredAzureConfiguration) is a deployment error and stops startup.
+    # (RetiredAzureConfiguration) and a value that is not a backend at all
+    # (UnsupportedRerankerBackend) are deployment errors and stop startup.
     _init_reranker(app)
 
     # -------------------------------------------------------------------------
@@ -1011,24 +1021,50 @@ _safety_logger = logging.getLogger("georag.safety")
 # runtime) — scripts/check-log-marker-alarms.py greps for it.
 POSTURE_CRITICAL_MARKER = "GEORAG_POSTURE_CRITICAL"
 
-if not settings.NUMERICAL_VERIFICATION_ENABLED:
-    _safety_logger.critical(
-        "%s NUMERICAL_VERIFICATION_ENABLED=False — Layer 3 (numerical claim "
-        "verification) is DISABLED. Ungrounded numbers may reach users.",
-        POSTURE_CRITICAL_MARKER,
-    )
-if not settings.ENTITY_RESOLUTION_ENABLED:
-    _safety_logger.critical(
-        "%s ENTITY_RESOLUTION_ENABLED=False — Layer 4 (entity resolution) is "
-        "DISABLED. Fabricated hole IDs and entity names may reach users.",
-        POSTURE_CRITICAL_MARKER,
-    )
-if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
-    _safety_logger.critical(
-        "%s GEOLOGICAL_CONSTRAINTS_ENABLED=False — Layer 6 (geological "
-        "constraints) is DISABLED. Physically impossible values may reach users.",
-        POSTURE_CRITICAL_MARKER,
-    )
+
+def _assert_guard_posture() -> None:
+    """CRITICAL, with the paging marker, for every §04i guard switched off.
+
+    Layers 3, 4 and 6 were covered; the two gates restored on 2026-09-24
+    (Layer 1's retrieval-quality gate and Layer 5's chunk-provenance gate) were
+    not, so turning either off left nothing in the logs that anyone is paged
+    on (2026-10-10 audit, finding 11). All seven now say so the same way.
+    """
+    if not settings.NUMERICAL_VERIFICATION_ENABLED:
+        _safety_logger.critical(
+            "%s NUMERICAL_VERIFICATION_ENABLED=False — Layer 3 (numerical claim "
+            "verification) is DISABLED. Ungrounded numbers may reach users.",
+            POSTURE_CRITICAL_MARKER,
+        )
+    if not settings.ENTITY_RESOLUTION_ENABLED:
+        _safety_logger.critical(
+            "%s ENTITY_RESOLUTION_ENABLED=False — Layer 4 (entity resolution) is "
+            "DISABLED. Fabricated hole IDs and entity names may reach users.",
+            POSTURE_CRITICAL_MARKER,
+        )
+    if not settings.GEOLOGICAL_CONSTRAINTS_ENABLED:
+        _safety_logger.critical(
+            "%s GEOLOGICAL_CONSTRAINTS_ENABLED=False — Layer 6 (geological "
+            "constraints) is DISABLED. Physically impossible values may reach users.",
+            POSTURE_CRITICAL_MARKER,
+        )
+    if not settings.RETRIEVAL_QUALITY_GATE_ENABLED:
+        _safety_logger.critical(
+            "%s RETRIEVAL_QUALITY_GATE_ENABLED=False — Layer 1 (retrieval quality "
+            "gate) is DISABLED. A question nothing relevant was retrieved for is "
+            "answered anyway instead of refused before the LLM is called.",
+            POSTURE_CRITICAL_MARKER,
+        )
+    if not settings.CHUNK_PROVENANCE_GATE_ENABLED:
+        _safety_logger.critical(
+            "%s CHUNK_PROVENANCE_GATE_ENABLED=False — Layer 5 (chunk provenance "
+            "gate) is DISABLED. Citations to chunks that were never retrieved for "
+            "the query, or that name another document, may reach users.",
+            POSTURE_CRITICAL_MARKER,
+        )
+
+
+_assert_guard_posture()
 
 
 def _assert_production_posture() -> None:

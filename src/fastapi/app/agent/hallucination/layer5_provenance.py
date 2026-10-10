@@ -91,7 +91,10 @@ from typing import Any
 
 from app.agent.hallucination.citation_markers import (
     CITATION_MARKER_CAPTURE_RE,
+    EV_MARKER_CAPTURE_RE,
+    canonical_ev_marker,
     canonical_marker,
+    ungroup_response_markers,
 )
 from app.agent.hallucination.claim_sentences import (
     Unit,
@@ -133,6 +136,8 @@ def _is_placeholder_report_id(report_id: Any) -> bool:
 
 #: Cleans up double-spaces left behind after a marker is removed mid-sentence.
 _MULTI_SPACE_RE = re.compile(r"  +")
+#: ... and a space left in front of the punctuation that followed it.
+_SPACE_BEFORE_PUNCTUATION_RE = re.compile(r"[ \t]+([.,;:!?])")
 
 
 def scrub_rejected_markers(
@@ -173,25 +178,43 @@ def scrub_rejected_markers(
     if not rejected_citation_ids:
         return text, proactive_insights_offset, 0
 
+    # An evidence-id marker ("[ev:abc123]") is a rejected id when the caller
+    # names it so ([ev:abc123] in ``rejected_citation_ids``); otherwise it is
+    # a citation like any other only while the span resolver is on.
+    ev_cites = bool(getattr(settings, "CITATION_SPAN_RESOLVER_ENABLED", False))
+
     def _ids(piece: str) -> list[str]:
         return [
             canonical_marker(m.group(1), m.group(3))
             for m in CITATION_MARKER_CAPTURE_RE.finditer(piece)
+        ] + [
+            canonical_ev_marker(m.group(1)) for m in EV_MARKER_CAPTURE_RE.finditer(piece)
         ]
+
+    def _valid(cid: str) -> bool:
+        if cid.startswith("[ev:"):
+            return ev_cites and cid not in rejected_citation_ids
+        return cid in valid_citation_ids
 
     def _drop(i: int, units: list[Unit]) -> bool:
         ids = _ids(units[i].text)
         if not any(cid in rejected_citation_ids for cid in ids):
             return False
-        return not any(cid in valid_citation_ids for cid in ids)
+        return not any(_valid(cid) for cid in ids)
 
     def _rewrite(i: int, units: list[Unit]) -> str:
         sentence = units[i].text
         for m in list(CITATION_MARKER_CAPTURE_RE.finditer(sentence)):
             if canonical_marker(m.group(1), m.group(3)) in rejected_citation_ids:
                 sentence = sentence.replace(m.group(0), "")
+        for m in list(EV_MARKER_CAPTURE_RE.finditer(sentence)):
+            if canonical_ev_marker(m.group(1)) in rejected_citation_ids:
+                sentence = sentence.replace(m.group(0), "")
         if sentence == units[i].text:
             return sentence
+        # "Claim [NI43-1] [NI43-9]." loses the second marker's brackets but
+        # not the space in front of it: close that gap before the full stop.
+        sentence = _SPACE_BEFORE_PUNCTUATION_RE.sub(r"\1", sentence)
         return _MULTI_SPACE_RE.sub(" ", sentence).strip()
 
     return drop_units(
@@ -265,13 +288,19 @@ def gate_citation_provenance(
     becomes a typed refusal (see the module docstring's "Gate half").
 
     Returns ``(response, warnings)``. ``warnings`` is empty and ``response``
-    is returned UNCHANGED (same object) when nothing was rejected. Never
-    raises on well-formed input — pure computation, no I/O.
+    is returned UNCHANGED (same object) when nothing was rejected -- bar the
+    one rewrite of grouped markers into single ones ("[NI43-1, NI43-2]"),
+    which comes back as a copy. Never raises on well-formed input — pure
+    computation, no I/O.
     """
     if not settings.CHUNK_PROVENANCE_GATE_ENABLED:
         return response, []
     if not response.citations:
         return response, []
+
+    # One marker per bracket: "[NI43-1, NI43-2]" cites two chunks, and a
+    # rejected one must be removable from the sentence on its own.
+    response = ungroup_response_markers(response)
 
     retrieved = _retrieved_chunk_reports(tool_results)
 

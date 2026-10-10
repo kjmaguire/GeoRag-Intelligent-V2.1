@@ -76,6 +76,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.deps import AgentDeps
 from app.agent.event_stamper import EventStamper
+from app.agent.query_sanitizer import MAX_QUERY_CHARS
 from app.config import settings
 from app.db.scoped_pool import bind_workspace_scope
 from app.models.rag import GeoRAGResponse
@@ -95,7 +96,11 @@ router = APIRouter(tags=["queries"])
 class QueryRequest(BaseModel):
     """Payload sent by Laravel's GeoRagService to POST /internal/queries."""
 
-    query: str = Field(..., min_length=1, max_length=4096, description="Natural-language geological query")
+    # max_length is the sanitiser's own constant: what the router accepts is
+    # what the sanitiser keeps (it used to cut at 1000, silently).
+    query: str = Field(
+        ..., min_length=1, max_length=MAX_QUERY_CHARS, description="Natural-language geological query"
+    )
     project_id: str = Field(..., min_length=1, description="UUID of the active project scope")
     # Phase 3 / Step 3.2 — optional 12-field context envelope + Field/Office
     # mode. Forwarded by the Laravel bridge job; when the agentic-retrieval

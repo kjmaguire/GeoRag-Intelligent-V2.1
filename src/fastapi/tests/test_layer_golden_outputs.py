@@ -152,9 +152,14 @@ ONE_FABRICATED_GRADE = (
 
 NEGATIVE_FINDING = (
     "PLS-22-08 returned 2.31 g/t Au over the 145.2 to 148.0 m interval "
-    "[DATA-2]. Core recovery data is not available for the upper 40 m "
+    "[DATA-2]. Core recovery data is not available for the upper 145 m "
     "[DATA-1]."
 )
+
+#: The same sentence as it stood until 2026-10-10, with an invented depth.
+#: "40 m" is in no tool result; it used to pass only because the collars carry
+#: an azimuth of 45.0, inside 0.5x-2x of it (audit finding 1).
+NEGATIVE_FINDING_WITH_AN_INVENTED_DEPTH = NEGATIVE_FINDING.replace("145 m", "40 m")
 
 BARE_ASSERTION = (
     "PLS-22-08 reached 510 m [DATA-1]. The deposit is clearly economic and "
@@ -187,12 +192,24 @@ class TestAGroundedAnswerIsLeftAlone:
         assert warnings == []
 
     def test_a_negative_finding_is_not_a_defect(self) -> None:
-        """"Core recovery data is not available for the upper 40 m" is the
+        """"Core recovery data is not available for the upper 145 m" is the
         behaviour the citation contract asks for, not a refusal and not a
-        fabrication. 40 is ungrounded in the literal sense — no tool returned
-        it — and must survive the derivation tolerance."""
+        fabrication. The 145 m is the depth the first assay interval starts
+        at (145.2 m), restated to the precision the answer writes it."""
         assert _numbers(NEGATIVE_FINDING) == []
         assert verify_constraints(NEGATIVE_FINDING) == []
+
+    def test_a_negative_finding_does_not_launder_an_invented_depth(self) -> None:
+        """This sentence used to say "the upper 40 m" and was held up as the
+        case the derivation window must keep passing. 40 is in no tool result;
+        it passed because an azimuth of 45.0 sits within 0.5x-2x of it. The
+        refusal-shaped sentence is fine; the number in it still has to come
+        from somewhere."""
+        warnings = _numbers(NEGATIVE_FINDING_WITH_AN_INVENTED_DEPTH)
+
+        assert len(warnings) == 1
+        assert "40" in warnings[0]
+        assert verify_constraints(NEGATIVE_FINDING_WITH_AN_INVENTED_DEPTH) == []
 
 
 class TestLayer3CatchesAFabricatedGrade:
