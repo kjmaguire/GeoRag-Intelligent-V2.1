@@ -8,6 +8,11 @@ use App\Services\Citations\CitationResolverRegistry;
 use App\Services\Citations\Resolvers\AssayResolver;
 use App\Services\Citations\Resolvers\CollarsResolver;
 use App\Services\Citations\Resolvers\LithologyResolver;
+use App\Services\Citations\Resolvers\ProjectAggregates\CoverageGapResolver;
+use App\Services\Citations\Resolvers\ProjectAggregates\DrillTracesResolver;
+use App\Services\Citations\Resolvers\ProjectAggregates\ProjectOverviewResolver;
+use App\Services\Citations\Resolvers\ProjectAggregates\ProjectSummaryResolver;
+use App\Services\Citations\Resolvers\ProjectAggregates\StructureMeasurementsResolver;
 use App\Services\Citations\Resolvers\PublicGeoscience\AssessmentSurveyResolver;
 use App\Services\Citations\Resolvers\PublicGeoscience\DrillholeResolver;
 use App\Services\Citations\Resolvers\PublicGeoscience\MineralDispositionResolver;
@@ -61,6 +66,13 @@ final class CitationResolverServiceProvider extends ServiceProvider
             $registry->register(new SamplesResolver);
             // 2026-05-20 drillhole schema — assays_v2 wide-form table.
             $registry->register(new AssayResolver);
+
+            // Project-level tool results (5): these cite a rowset, not a row.
+            $registry->register(new ProjectOverviewResolver);
+            $registry->register(new ProjectSummaryResolver);
+            $registry->register(new CoverageGapResolver);
+            $registry->register(new DrillTracesResolver);
+            $registry->register(new StructureMeasurementsResolver);
 
             // Public Geoscience resolvers (7)
             $registry->register(new MineResolver);

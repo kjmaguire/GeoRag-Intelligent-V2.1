@@ -44,7 +44,14 @@ use Illuminate\Http\Request;
  *   silver.collars:miss
  *   silver.lithology_logs:hole=PLS-20-01:collar=...:intervals=4
  *   silver.samples:element=U3O8_ppm:count=25
+ *   silver.assays_v2:assay_id=<uuid>
  *   georag_reports:44a67709-...:section=13:chunk=...
+ *   georag_reports:None:section=unknown:chunk=<passage uuid>   (ADR-0012 summary)
+ *   silver.projects:slug=<slug>:company=...:curves=3:reports=12
+ *   silver.project_summary:project=<uuid>:rows=8:first_row=...
+ *   silver.coverage_gap:project=<uuid>:indexed=40:processed=31:attrs=5
+ *   silver.drill_traces:project=<uuid>:holes=12:first_collar=<uuid>:hole_filter=all
+ *   gold.structure_measurements_visual:project=<uuid>:points=57:first=...
  *   pg_mine:CA-SK-MINE-LOC:feature=12345:pg_id=<uuid>
  *   pg_mineral_occurrence:CA-SK-SMDI:feature=7788:pg_id=<uuid>
  *   pg_drillhole_collar:CA-SK-DRILLHOLE:feature=9001:pg_id=<uuid>

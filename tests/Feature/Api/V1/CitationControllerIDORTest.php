@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -485,6 +486,75 @@ class CitationControllerIDORTest extends TestCase
         $this->actingAs($this->userB, 'sanctum');
         $this->getJson($this->resolveUrl('silver.collars:count=3:first=abc'))->assertNotFound();
         $this->getJson($this->resolveUrl('silver.assays_v2:assay_id='.str_repeat('-', 36)))->assertNotFound();
+    }
+
+    /**
+     * The project-level tool citations (audit 2026-10-10 CH-4) had no
+     * resolver, so every such chip opened on "Source type not recognized".
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function projectAggregateCitations(): array
+    {
+        return [
+            'project summary' => ['silver.project_summary:project={project}:rows=8:first_row=abc', 'project_summary'],
+            'coverage gap' => ['silver.coverage_gap:project={project}:indexed=40:processed=31:attrs=5', 'coverage_gap'],
+            'drill traces' => ['silver.drill_traces:project={project}:holes=12:first_collar=none:hole_filter=PLS-20-01', 'drill_traces'],
+            'structures' => ['gold.structure_measurements_visual:project={project}:points=57:first=none', 'structure_measurements'],
+            'project overview' => ['silver.projects:slug={slug}:company=Tenant B:curves=3:reports=12', 'project_overview'],
+        ];
+    }
+
+    #[DataProvider('projectAggregateCitations')]
+    public function test_a_project_level_citation_resolves_for_a_member(string $template, string $sourceType): void
+    {
+        $this->actingAs($this->userB, 'sanctum');
+
+        $this->getJson($this->resolveUrl($this->projectCitation($template, $this->projectBId)))
+            ->assertOk()
+            ->assertJsonPath('source_type', $sourceType)
+            ->assertJsonPath('metadata.project_id', $this->projectBId);
+    }
+
+    #[DataProvider('projectAggregateCitations')]
+    public function test_a_project_level_citation_is_scoped_to_the_callers_projects(string $template, string $sourceType): void
+    {
+        // User A belongs to another workspace: B's project is a 404, the
+        // same answer as a project that does not exist.
+        $this->actingAs($this->userA, 'sanctum');
+
+        $this->getJson($this->resolveUrl($this->projectCitation($template, $this->projectBId)))
+            ->assertNotFound()
+            ->assertJsonPath('source_type', $sourceType);
+    }
+
+    public function test_a_project_level_citation_with_a_malformed_project_is_a_404(): void
+    {
+        $this->actingAs($this->userB, 'sanctum');
+
+        $this->getJson($this->resolveUrl('silver.drill_traces:project=not-a-uuid:holes=1'))->assertNotFound();
+        $this->getJson($this->resolveUrl('silver.project_summary:rows=1'))->assertNotFound();
+        $this->getJson($this->resolveUrl('silver.projects:slug=unknown:company=x:curves=0:reports=0'))->assertNotFound();
+    }
+
+    public function test_a_project_level_citation_shows_the_tool_counts_and_never_echoes_a_spoofed_filter(): void
+    {
+        $this->actingAs($this->userB, 'sanctum');
+
+        $response = $this->getJson($this->resolveUrl(
+            "silver.drill_traces:project={$this->projectBId}:holes=12:first_collar=none:hole_filter=<img src=x>",
+        ))->assertOk();
+
+        $this->assertStringContainsString('12 holes', (string) $response->json('text'));
+        $this->assertStringNotContainsString('<img', (string) $response->json('text'));
+        $this->assertNull($response->json('metadata.hole_id'));
+    }
+
+    private function projectCitation(string $template, string $projectId): string
+    {
+        $slug = (string) DB::table('silver.projects')->where('project_id', $projectId)->value('slug');
+
+        return str_replace(['{project}', '{slug}'], [$projectId, $slug], $template);
     }
 
     private function insertPassage(?string $reportId, string $workspaceId, ?string $projectId, int $ordinal, string $text): string
