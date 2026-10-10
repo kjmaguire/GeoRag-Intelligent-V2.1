@@ -506,8 +506,10 @@ variable "container_insights" {
     nothing alarms on an ECS task that is crash-looping or wedged. Container
     health checks (services.tf) detect it and ECS replaces the task, but no
     human is told. `HealthyHostCount` covers laravel-octane and laravel-reverb
-    only — the two behind the ALB — so a hatchet-worker OOM-restarting every
-    four minutes is silent, which is the exact shape Ch 12 §6 flags as
+    only — the two behind the ALB, each with a dead-air alarm in alerts.tf
+    (the Reverb one since 2026-10-10; before that the claim here was true of
+    the metric and false of the alarms) — so a hatchet-worker OOM-restarting
+    every four minutes is silent, which is the exact shape Ch 12 §6 flags as
     "ingestion has stopped moving" and sends you to the logs for.
 
     Closing it does NOT require this setting: AWS/ECS carries per-service
