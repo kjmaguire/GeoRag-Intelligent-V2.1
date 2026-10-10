@@ -78,6 +78,11 @@ tests/test_workspace_export_restore.py
 
 # ── Support + operations surfaces ─────────────────────────────────────
 tests/test_support_packet.py
+# A dry run writes nothing to the ticket, a repeated replay_request_id runs the
+# chain once, and a row is never left 'running' (2026-10-10, finding 7).
+# test_support_replay_workspace_scope.py (finding 22) runs in the
+# cron-sweeps-app-role job instead: it needs the strict ops.support_* policies
+# from db:apply-raw and a NOBYPASSRLS role, which this job has neither of.
 tests/test_support_replay_workflow.py
 tests/test_escalation_routing.py
 tests/test_root_cause_investigation.py

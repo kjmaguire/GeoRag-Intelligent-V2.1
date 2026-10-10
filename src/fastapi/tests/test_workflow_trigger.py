@@ -255,6 +255,31 @@ def test_support_replay_checks_the_ticket_is_in_the_workspace(harness) -> None:
     assert dispatched[0][1].dry_run is True
 
 
+def test_support_replay_is_handed_the_workspace_it_was_authorised_for(harness) -> None:
+    """The route checks the ticket belongs to the workspace. The worker must not
+    rediscover that workspace under the default tenant: ops.support_* is STRICT
+    RLS, so as georag_app it could see only a default-tenant ticket and a replay
+    for any other workspace died after this route had accepted it (finding 22)."""
+    client, dispatched, _ = harness
+    r = _post(client, "support_replay", {"workspace_id": _OTHER_WS, "input": _replay()})
+    assert r.status_code == 202
+    assert str(dispatched[0][1].workspace_id) == _OTHER_WS
+
+
+def test_support_replay_input_naming_another_workspace_is_refused(harness) -> None:
+    client, dispatched, db = harness
+    r = _post(client, "support_replay", {
+        "workspace_id": _WS, "input": _replay(workspace_id=_OTHER_WS),
+    })
+    assert r.status_code == 422
+    assert dispatched == [] and db["scopes"] == []
+
+    # Naming the authorised workspace itself is fine.
+    ok = _post(client, "support_replay", {"workspace_id": _WS, "input": _replay(workspace_id=_WS)})
+    assert ok.status_code == 202
+    assert str(dispatched[0][1].workspace_id) == _WS
+
+
 # ---------------------------------------------------------------------------
 # Phase 0 agents
 # ---------------------------------------------------------------------------

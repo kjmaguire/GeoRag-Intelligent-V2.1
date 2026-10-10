@@ -37,8 +37,9 @@ from uuid import UUID
 import asyncpg
 
 from app.audit import emit_audit
-from app.db import BareConnectionError, lookup_and_rescope
+from app.db import BareConnectionError
 from app.db.dsn import build_dsn
+from app.services.support_cockpit._scope import ticket_connection
 
 log = logging.getLogger("georag.support_cockpit.customer_response_drafting")
 
@@ -163,6 +164,8 @@ async def draft_customer_response(
     ticket_id: UUID | str,
     actor_user_id: int,
     pool: asyncpg.Pool | None = None,
+    workspace_id: UUID | str | None = None,
+    dry_run: bool = False,
 ) -> DraftOutcome:
     """Draft a customer-visible response for the ticket.
 
@@ -170,6 +173,11 @@ async def draft_customer_response(
         ticket_id: UUID of the row in ops.support_tickets.
         actor_user_id: public.users.id of the drafting user/agent.
         pool: optional asyncpg pool to reuse.
+        workspace_id: the workspace the caller has already authorised the
+            ticket for; scopes the connection directly instead of discovering
+            it under the default tenant (see ``_scope``).
+        dry_run: return the drafted text without saving it to the ticket or
+            emitting the audit anchor (READ ONLY transaction, no row lock).
 
     Returns:
         DraftOutcome with the drafted response_text + word count.
@@ -198,19 +206,21 @@ async def draft_customer_response(
         #   5. Yields (conn, ticket) — subsequent writes are scoped.
         # Raises BareConnectionError if the ticket doesn't exist or has
         # a malformed workspace_id; the caller catches Exception → 500.
-        async with lookup_and_rescope(
+        async with ticket_connection(
             pool,
-            lookup_sql="""
+            ticket_id=ticket_str,
+            lookup_sql=f"""
                 SELECT ticket_id::text AS ticket_id,
                        workspace_id::text AS workspace_id,
                        category, severity, status
                   FROM ops.support_tickets
                  WHERE ticket_id = $1::uuid
-                   FOR UPDATE
+                   {"" if dry_run else "FOR UPDATE"}
                 """,
-            lookup_args=(ticket_str,),
             site="support_cockpit.customer_response_drafting",
             bootstrap_reason="support_cockpit.elevated_lookup",
+            workspace_id=workspace_id,
+            read_only=dry_run,
         ) as (conn, ticket):
             # 2. Look up the most-recent investigation summary, if any.
             inv_row = await conn.fetchrow(
@@ -234,40 +244,42 @@ async def draft_customer_response(
                 investigation_summary=investigation_summary,
             )
 
-            # 4. Persist on the ticket.
-            await conn.execute(
-                """
-                UPDATE ops.support_tickets
-                   SET customer_visible_response = $1
-                 WHERE ticket_id = $2::uuid
-                """,
-                response_text, ticket_str,
-            )
-
-            # 5. Audit anchor.
             word_count = len(response_text.split())
-            await emit_audit(
-                conn,
-                action_type="support.ticket.response_drafted",
-                workspace_id=ticket["workspace_id"],
-                actor_id=actor_user_id,
-                actor_kind="agent",
-                target_schema="ops",
-                target_table="support_tickets",
-                target_id=ticket_str,
-                payload={
-                    "evaluator": "synthetic_stub",
-                    "doc_phase": 143,
-                    "category": ticket["category"],
-                    "severity": ticket["severity"],
-                    "response_word_count": word_count,
-                    "investigation_summary_used": investigation_summary is not None,
-                },
-            )
+            if not dry_run:
+                # 4. Persist on the ticket.
+                await conn.execute(
+                    """
+                    UPDATE ops.support_tickets
+                       SET customer_visible_response = $1
+                     WHERE ticket_id = $2::uuid
+                    """,
+                    response_text, ticket_str,
+                )
+
+                # 5. Audit anchor.
+                await emit_audit(
+                    conn,
+                    action_type="support.ticket.response_drafted",
+                    workspace_id=ticket["workspace_id"],
+                    actor_id=actor_user_id,
+                    actor_kind="agent",
+                    target_schema="ops",
+                    target_table="support_tickets",
+                    target_id=ticket_str,
+                    payload={
+                        "evaluator": "synthetic_stub",
+                        "doc_phase": 143,
+                        "category": ticket["category"],
+                        "severity": ticket["severity"],
+                        "response_word_count": word_count,
+                        "investigation_summary_used": investigation_summary is not None,
+                    },
+                )
 
             log.info(
-                "customer_response_drafting.completed ticket=%s "
+                "customer_response_drafting.%s ticket=%s "
                 "category=%s severity=%s word_count=%d",
+                "dry_run_nothing_written" if dry_run else "completed",
                 ticket_str, ticket["category"], ticket["severity"],
                 word_count,
             )

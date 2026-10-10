@@ -236,7 +236,14 @@ def _prepare_replay(validated: SupportReplayInput, scope: str | None) -> Support
             _UNPROCESSABLE,
             "support_replay is dispatched with dry_run=true only",
         )
-    return validated
+    if validated.workspace_id is not None:
+        _same_workspace(validated.workspace_id, scope)
+    # Hand the workflow the workspace that was authorised here. Without it the
+    # support agents look the ticket up under the default tenant to discover the
+    # workspace, which the NOBYPASSRLS worker role can do only for a ticket in
+    # the default tenant (ops.support_* is STRICT RLS) -- so a replay for any
+    # other workspace was accepted at this route and then died in the worker.
+    return validated.model_copy(update={"workspace_id": UUID(scope)})
 
 
 async def _check_ticket(conn: asyncpg.Connection, validated: SupportReplayInput, scope: str) -> None:

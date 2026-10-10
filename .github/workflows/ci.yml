@@ -1583,7 +1583,8 @@ jobs:
         run: |
           uv run pytest -v --tb=short -m integration -p no:randomly \
             tests/test_cron_sweeps_under_app_role.py \
-            tests/test_citation_feedback_integration.py
+            tests/test_citation_feedback_integration.py \
+            tests/test_support_replay_workspace_scope.py
 
   # ─── Frontend lint + build ────────────────────────────────────────────
   frontend:
