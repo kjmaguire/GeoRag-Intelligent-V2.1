@@ -3076,11 +3076,13 @@ class IngestGapStats:
 
     indexed: count of rows in ``bronze.ingest_manifest`` that belong to this
         project -- its PLSS sections, as named in the source paths of the
-        provenance rows of its collars and reports. 0 for a project that did
-        not come from the bulk archive import (the manifest has no project
-        column, and the live pipeline writes no provenance).
-    processed: count of this project's distinct ``silver.reports`` that have
-        a ``bronze.provenance`` entry.
+        provenance rows of its collars and reports. For a project with none
+        (it did not come from the bulk archive import; the manifest has no
+        project column and the live pipeline writes no provenance), the files
+        uploaded to it, from ``silver.ingest_progress`` (latest attempt each).
+    processed: for an archive project, count of its distinct
+        ``silver.reports`` that have a ``bronze.provenance`` entry; otherwise
+        its uploaded files whose latest attempt completed.
     gap_pct: 100 * (indexed - processed) / indexed when indexed > 0, else 0.
     """
 
@@ -3586,12 +3588,16 @@ async def query_coverage_gap(
     # The project's rows are found the way the Sources page finds them
     # (SourcesController::resolveProjectSections): the PLSS sections named in
     # the source paths of the provenance rows of THIS project's collars and
-    # reports. A project that did not come from that archive (everything
-    # uploaded through the live pipeline, which writes no provenance) has no
-    # sections, so its ingest stage is 0 / 0 -- "not applicable", not the
-    # workspace's numbers. The "processed" count is the distinct reports of
-    # this project that appear in bronze.provenance -- the strongest
-    # available ingest signal.
+    # reports. The "processed" count is the distinct reports of this project
+    # that appear in bronze.provenance -- the strongest available ingest
+    # signal for that archive.
+    #
+    # A project that did not come from the archive (everything uploaded
+    # through the live pipeline, which writes no provenance) has no sections,
+    # and reporting it as 0 / 0 told the model nothing had been ingested. Its
+    # files are in silver.ingest_progress instead: indexed is its files (the
+    # latest attempt of each), processed the ones that completed. The two
+    # sources are never added together, so nothing is counted twice.
     ingest_sql = """
         WITH indexed AS (
             SELECT COUNT(*)::int AS n
@@ -3624,9 +3630,23 @@ async def query_coverage_gap(
             WHERE bp.workspace_id = $1::uuid
               AND r.workspace_id = $1::uuid
               AND r.project_id = $2::uuid
+        ),
+        live AS (
+            -- The live upload pipeline: silver.ingest_progress holds one row
+            -- per run, and the latest attempt of a file is that file's state.
+            SELECT COUNT(*)::int AS indexed_n,
+                   (COUNT(*) FILTER (WHERE latest.status = 'completed'))::int AS done_n
+            FROM (
+                SELECT DISTINCT ON (ip.minio_key) ip.status
+                FROM silver.ingest_progress ip
+                WHERE ip.workspace_id = $1::uuid
+                  AND ip.project_id = $2::uuid
+                ORDER BY ip.minio_key, ip.attempt_number DESC, ip.started_at DESC
+            ) latest
         )
-        SELECT indexed.n AS indexed_n, processed.n AS processed_n
-        FROM indexed, processed
+        SELECT CASE WHEN indexed.n > 0 THEN indexed.n ELSE live.indexed_n END AS indexed_n,
+               CASE WHEN indexed.n > 0 THEN processed.n ELSE live.done_n END AS processed_n
+        FROM indexed, processed, live
     """
 
     # ── Per-attribute coverage ──

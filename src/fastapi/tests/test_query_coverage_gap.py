@@ -239,7 +239,8 @@ class TestIngestStageIsProjectScoped:
     a real PostgreSQL 16 with a seeded two-workspace, three-project fixture
     (indexed/processed: 8/1 and 7/1 for the two archive projects, 0/0 for a
     project uploaded through the live pipeline and for the wrong workspace,
-    where the old query said 19/2 for every one of them).
+    where the old query said 19/2 for every one of them). Since then a project
+    with no archive files reports its uploads from silver.ingest_progress.
     """
 
     WORKSPACE = "a0000000-0000-0000-0000-000000000001"
@@ -279,6 +280,20 @@ class TestIngestStageIsProjectScoped:
         # ...and still inside the caller's workspace
         assert "m.workspace_id = $1::uuid" in indexed
         assert indexed.count("bp.workspace_id = $1::uuid") == 2
+
+    @pytest.mark.asyncio
+    async def test_a_project_with_no_archive_files_reports_its_uploads(self) -> None:
+        """A project uploaded through the live pipeline has no manifest rows;
+        0 / 0 told the model nothing had been ingested. Its uploads are in
+        silver.ingest_progress, used only when the archive count is zero."""
+        sql = (await self._ingest_call()).sql
+        live = sql[sql.index("live AS") :]
+        assert "FROM silver.ingest_progress ip" in live
+        assert "ip.workspace_id = $1::uuid" in live
+        assert "ip.project_id = $2::uuid" in live
+        assert "DISTINCT ON (ip.minio_key)" in live
+        assert "CASE WHEN indexed.n > 0 THEN indexed.n ELSE live.indexed_n END" in live
+        assert "CASE WHEN indexed.n > 0 THEN processed.n ELSE live.done_n END" in live
 
     @pytest.mark.asyncio
     async def test_no_unscoped_manifest_count_is_left(self) -> None:
