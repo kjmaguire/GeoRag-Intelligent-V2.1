@@ -27,6 +27,10 @@
 #              run before the writers are at zero, no promotion before the
 #              task exits 0, no traffic after a restore failure.
 #
+#              The clock is a fake (fake-date, 10:00 unless a case says
+#              otherwise): the rotation refuses to start near the nightly
+#              shutdown sweep, and a test cannot depend on when it is run.
+#
 #              Two more are pinned here because each is silent until the
 #              worst moment. The task must run the image that is IN SERVICE
 #              (the one rotation.tf pins is expired out of ECR eventually),
@@ -51,7 +55,8 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "${WORK}/bin"
 cp "${HERE}/fake-aws" "${WORK}/bin/aws"
 cp "${HERE}/fake-php" "${WORK}/bin/php"
-chmod +x "${WORK}/bin/aws" "${WORK}/bin/php"
+cp "${HERE}/fake-date" "${WORK}/bin/date"
+chmod +x "${WORK}/bin/aws" "${WORK}/bin/php" "${WORK}/bin/date"
 
 PASS=0
 FAIL=0
@@ -302,6 +307,88 @@ run_outer outer_refuses_a_missing_task_definition FAKE_AWS_NO_TASKDEF=1 -- --app
 assert_rc 1
 assert_aws_not_called "create-db-snapshot"
 assert_says "rotation.tf"
+done_case
+
+# --- the nightly shutdown sweep --------------------------------------------
+# It scales every service to zero and stops RDS at 17:00 America/Vancouver,
+# and does not look for a rotation in progress. A rotation caught by it loses
+# its database mid-restore, which is the one state no key reads. So the script
+# refuses to start within 45 minutes of it, on either side, by the clock in the
+# maintenance timezone.
+run_outer outer_refuses_to_start_just_before_the_shutdown_sweep FAKE_NOW=16:30 -- --apply
+assert_rc 1
+assert_aws_not_called "register-task-definition"
+assert_aws_not_called "create-db-snapshot"
+assert_aws_not_called "put-secret-value"
+assert_aws_not_called "update-service"
+assert_aws_not_called "run-task"
+assert_says "30 minutes before the nightly shutdown sweep"
+done_case
+
+# After 17:00 the sweep is still working, and RDS has not stopped yet, so the
+# database check alone would let this through.
+run_outer outer_refuses_to_start_while_the_shutdown_sweep_is_running FAKE_NOW=17:20 -- --apply
+assert_rc 1
+assert_aws_not_called "create-db-snapshot"
+assert_aws_not_called "update-service"
+assert_says "20 minutes after the nightly shutdown sweep"
+done_case
+
+# The edges: the guard's full width clear is allowed, one minute inside it is not.
+run_outer outer_allows_exactly_45_minutes_before_the_sweep FAKE_NOW=16:15 -- --apply
+assert_rc 0
+done_case
+
+run_outer outer_refuses_44_minutes_before_the_sweep FAKE_NOW=16:16 -- --apply
+assert_rc 1
+assert_aws_not_called "create-db-snapshot"
+done_case
+
+run_outer outer_allows_exactly_45_minutes_after_the_sweep FAKE_NOW=17:45 -- --apply
+assert_rc 0
+done_case
+
+# A distance computed as |now - shutdown| calls 23:50 and 00:10 1420 minutes
+# apart. They are 20.
+run_outer outer_the_guard_wraps_midnight FAKE_NOW=23:50 ROTATE_SHUTDOWN_AT=00:10 -- --apply
+assert_rc 1
+assert_says "20 minutes before the nightly shutdown sweep"
+done_case
+
+# "08" and "09" are not valid octal: $((09 * 60)) is a bash error, and a
+# comparison against the empty result is quietly false -- which reads as "far
+# from the sweep". So the case asserts the NUMBER the guard computed, not just
+# that it let the run through: 09:08 is 548, the sweep is 1020, 472 apart.
+run_outer outer_two_digit_times_are_not_read_as_octal FAKE_NOW=09:08
+assert_rc 0
+assert_says "472 minutes before it"
+done_case
+
+run_outer outer_reads_the_clock_in_the_maintenance_timezone -- --apply
+assert_rc 0
+grep -qx "America/Vancouver" "${STATE}/date.tz" 2>/dev/null \
+  || fail_case "the clock was not read in America/Vancouver"
+done_case
+
+# A dry run that passed at 16:50 would promise something --apply then refuses.
+run_outer outer_a_dry_run_refuses_too_so_the_plan_is_not_a_false_promise FAKE_NOW=16:50
+assert_rc 1
+assert_says "nightly shutdown sweep"
+done_case
+
+# The guard's defaults are a second copy of terraform/variables.tf's
+# shutdown_cron and maintenance_timezone. Nothing else keeps the two together,
+# and a guard on the wrong hour is worse than none: it reads as protection.
+TFVARS="$(dirname "$ROOT")/terraform/variables.tf"
+tf_default() {
+  awk -v v="$1" '$0 ~ "^variable \"" v "\"" {f=1} f && /^[[:space:]]*default[[:space:]]*=/ {print; exit}' "$TFVARS"
+}
+read -r TF_MIN TF_HOUR <<< "$(tf_default shutdown_cron | sed -E 's/.*cron\(([0-9]+) ([0-9]+) .*/\1 \2/')"
+TF_AT="$(printf '%02d:%02d' "${TF_HOUR:-99}" "${TF_MIN:-99}")"
+TF_TZ="$(tf_default maintenance_timezone | sed -E 's/.*"([^"]+)".*/\1/')"
+run_outer outer_guard_defaults_match_variables_tf
+assert_rc 0
+assert_says "sweep is at ${TF_AT} ${TF_TZ}"
 done_case
 
 # rotation.tf pins var.image_tag from the last apply, CD never re-registers
@@ -570,6 +657,25 @@ assert_desired laravel-horizon 1
 # live image: a pinned tag that has expired would fail it too.
 assert_registered_image 1 "$LIVE_IMAGE"
 assert_taskdef_at_runtask 1 "task-definition/georag-app-key-rotation:101$"
+done_case
+
+# --finish is the recovery path. Refusing it until morning would leave the
+# apps starting on a key the ledger is not under, so the clock does not apply.
+CURRENT=outer_finish_is_not_refused_near_the_shutdown_sweep
+fresh_state
+jq --arg k "$NEW_KEY" '.APP_KEY_NEXT = $k
+   | .APP_KEY_ROTATION_REENCRYPTED = "arn:aws:ecs:us-east-1:000000000000:task/georag/earlier"
+   | .APP_KEY_ROTATION_RESTORE = "laravel-octane:3 laravel-horizon:1"' \
+   < "${STATE}/secret.json" > "${STATE}/s2" && mv "${STATE}/s2" "${STATE}/secret.json"
+printf '0' > "${STATE}/desired.laravel-octane"
+printf '0' > "${STATE}/desired.laravel-horizon"
+OUT="$(env PATH="${WORK}/bin:${PATH}" FAKE_AWS_LOG="${STATE}/aws.log" FAKE_AWS_STATE="${STATE}" \
+      FAKE_NOW=16:50 \
+      ROTATE_SUBNETS=subnet-a ROTATE_SECURITY_GROUP=sg-a ROTATE_WAIT_TRIES=2 ROTATE_WAIT_INTERVAL=0 \
+      bash "$OUTER" --finish 2>&1)"; RC=$?
+assert_rc 0
+assert_secret_eq APP_KEY "$NEW_KEY"
+assert_desired laravel-octane 3
 done_case
 
 # APP_KEY_NEXT is written BEFORE the task runs, so it is in the secret after a

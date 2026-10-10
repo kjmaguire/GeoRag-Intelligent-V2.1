@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Stand-in for date(1), used by run.sh. The rotation refuses to start near the
+# nightly shutdown sweep, which it decides by the clock in the maintenance
+# timezone, and a test cannot depend on what time of day it happens to be run.
+#
+#   FAKE_NOW   the local time `date +%H:%M` reports            (10:00)
+#
+# The TZ the script asked for is appended to $FAKE_AWS_STATE/date.tz, so a case
+# can assert the guard reads the clock in the maintenance timezone and not in
+# whatever zone the operator's shell happens to be in. Every other invocation
+# (the snapshot timestamp) goes to the real date.
+if [ "$*" = "+%H:%M" ]; then
+  [ -n "${FAKE_AWS_STATE:-}" ] && printf '%s\n' "${TZ:-unset}" >> "${FAKE_AWS_STATE}/date.tz"
+  printf '%s\n' "${FAKE_NOW:-10:00}"
+  exit 0
+fi
+# Drop this directory from PATH so the real date is found, not this file again.
+PATH="${PATH#*:}" exec date "$@"

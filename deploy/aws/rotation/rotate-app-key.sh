@@ -30,6 +30,8 @@
 #     rollback of the secret;
 #   - one service failing to roll does not stop the others, for the same
 #     reason the nightly sweeps are not `set -e`;
+#   - it does not start within 45 minutes of the nightly shutdown sweep, which
+#     would stop the services and RDS under a rotation in progress;
 #   - a task that never started (an image that cannot be pulled, a secret
 #     that cannot be injected) touched nothing and is reversed like a dump
 #     failure; one that started and then reports no exit code is not;
@@ -344,6 +346,62 @@ DB_STATE="$(aws rds describe-db-instances --db-instance-identifier "$DB_INSTANCE
   exit 1
 }
 
+# The nightly shutdown sweep scales every service to zero and then stops RDS,
+# on a clock, and knows nothing about a rotation in progress. One still
+# running then has its database taken from under it, and a task killed
+# mid-restore is the one state no key reads. So refuse to start close to it —
+# on either side: before, the rotation cannot finish; after, the sweep is
+# still working. --finish is exempt: it is the recovery path, and refusing it
+# until morning would leave the apps starting on a key the data is not under.
+#
+# These mirror the shutdown_cron and maintenance_timezone defaults in
+# terraform/variables.tf; tests/run.sh fails if they drift apart.
+MAINT_TZ="${ROTATE_MAINT_TZ:-America/Vancouver}"
+SHUTDOWN_AT="${ROTATE_SHUTDOWN_AT:-17:00}"
+SHUTDOWN_GUARD="${ROTATE_SHUTDOWN_GUARD_MINUTES:-45}"
+
+# Minutes since local midnight. 10# because "08" and "09" are not octal.
+minute_of_day() { echo $(( 10#${1%%:*} * 60 + 10#${1##*:} )); }
+
+SHUTDOWN_SINCE=""
+if [ "$MODE" != finish ]; then
+  case "$SHUTDOWN_AT" in [0-2][0-9]:[0-5][0-9]) ;; *) die "ROTATE_SHUTDOWN_AT must be HH:MM, got '${SHUTDOWN_AT}'." ;; esac
+  case "$SHUTDOWN_GUARD" in ''|*[!0-9]*) die "ROTATE_SHUTDOWN_GUARD_MINUTES must be a number, got '${SHUTDOWN_GUARD}'." ;; esac
+  # An unknown zone is not an error to date(1): it silently answers in UTC,
+  # which would put the guard seven hours out without a word.
+  if [ -d /usr/share/zoneinfo ] && [ ! -e "/usr/share/zoneinfo/${MAINT_TZ}" ]; then
+    die "unknown timezone '${MAINT_TZ}' (ROTATE_MAINT_TZ)."
+  fi
+  NOW_LOCAL="$(TZ="$MAINT_TZ" date +%H:%M)"
+  case "$NOW_LOCAL" in [0-2][0-9]:[0-5][0-9]) ;; *) die "cannot read the time in ${MAINT_TZ} (got '${NOW_LOCAL}')." ;; esac
+  # Both are checked before they are used: a failed expansion leaves an empty
+  # operand, and every comparison against an empty operand is simply false —
+  # which would read as "far from the sweep" and let the rotation start.
+  NOW_MIN="$(minute_of_day "$NOW_LOCAL" 2>/dev/null)"
+  AT_MIN="$(minute_of_day "$SHUTDOWN_AT" 2>/dev/null)"
+  case "${NOW_MIN}:${AT_MIN}" in
+    *[!0-9:]*|:*|*:) die "cannot work out how far ${NOW_LOCAL} is from the shutdown sweep at ${SHUTDOWN_AT}." ;;
+  esac
+  SHUTDOWN_SINCE=$(( ( NOW_MIN - AT_MIN + 1440 ) % 1440 ))
+  if [ "$SHUTDOWN_SINCE" -lt 720 ]; then
+    SHUTDOWN_AWAY="$SHUTDOWN_SINCE"; SHUTDOWN_SIDE=after
+  else
+    SHUTDOWN_AWAY=$(( 1440 - SHUTDOWN_SINCE )); SHUTDOWN_SIDE=before
+  fi
+  if [ "$SHUTDOWN_AWAY" -lt "$SHUTDOWN_GUARD" ]; then
+    cat >&2 <<TOOLATE
+ABORT: it is ${NOW_LOCAL} in ${MAINT_TZ}, ${SHUTDOWN_AWAY} minutes ${SHUTDOWN_SIDE} the nightly shutdown sweep (${SHUTDOWN_AT}).
+That sweep scales every service to zero and stops RDS on a clock, and does not look
+for a rotation in progress. A rotation caught by it loses its database part-way
+through, and a task killed mid-restore is the one state no key reads.
+
+Start at least ${SHUTDOWN_GUARD} minutes clear of it, after startup-sweep.sh has brought the
+platform up (deploy/aws/terraform/scheduler.tf has both times).
+TOOLATE
+    exit 1
+  fi
+fi
+
 aws ecs describe-clusters --clusters "$CLUSTER" \
     --query 'clusters[0].clusterName' --output text 2>/dev/null | grep -qx "$CLUSTER" \
   || die "ECS cluster ${CLUSTER} not found."
@@ -447,6 +505,9 @@ if [ "$MODE" = dry ]; then
 # The task will run ${LIVE_IMAGE},
 # the image ${IMAGE_FROM} is serving now, on a fresh revision of ${TASK_FAMILY}
 # registered before anything is touched.
+#
+# The nightly shutdown sweep is at ${SHUTDOWN_AT} ${MAINT_TZ}. It is ${NOW_LOCAL} there,
+# ${SHUTDOWN_AWAY} minutes ${SHUTDOWN_SIDE} it; --apply refuses inside ${SHUTDOWN_GUARD}.
 #
 # Stopped for the re-encryption, and restored to exactly these counts afterwards:
 PLAN
