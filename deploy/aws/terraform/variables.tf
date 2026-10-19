@@ -286,14 +286,6 @@ variable "db_maintenance_window" {
 # ARNs, and a placeholder that looks plausible is worse than a missing
 # value that stops the plan.
 
-variable "bedrock_embed_model_id" {
-  # The EMBEDDING_BACKEND=bedrock rollback only. ADR-0025 moved the default to
-  # Cohere's own API (var.cohere_embed_model); remove this variable and its
-  # iam.tf grant after the 14-day rollback window.
-  type    = string
-  default = "cohere.embed-v4:0"
-}
-
 variable "bedrock_rerank_model_id" {
   description = <<-EOT
     Cohere Rerank 3.5 — NOT v4, which Bedrock does not serve. The score
@@ -353,8 +345,7 @@ variable "cohere_parse_model" {
 variable "embedding_backend" {
   description = <<-EOT
     Which host embeds, on fastapi (queries) AND hatchet-worker (ingest)
-    together: "bedrock" (Cohere Embed v4, the pre-ADR-0025 production state
-    and the rollback) or "cohere" (Embed 5 Pro on Cohere's own API).
+    together. Only "cohere" (Embed 5 Pro on Cohere's own API) is accepted.
 
     Production cut over to "cohere" on 2026-10-05 (ADR-0025): every stored
     vector is in the Embed 5 space now. The default follows production, so
@@ -364,18 +355,20 @@ variable "embedding_backend" {
     production.tfvars, so the tfvars has no line for this variable and the
     default IS what production gets.
 
-    Setting it to "bedrock" is the rollback, and it is a vector-space change,
-    not a config tweak: apply, CD, then restore the pre-cutover Qdrant
-    snapshot (deploy/aws/README.md, "Embed 5 cutover"). Applying "bedrock"
-    without the restore queries the v5 collection with v4 vectors and every
-    guard still passes.
+    "bedrock" (Cohere Embed v4) was the rollback for the 14 days after the
+    cutover and is refused since that window closed (2026-10-19, ADR-0025
+    step 7): its bedrock:InvokeModel grant and the pre-cutover Qdrant
+    snapshot are both gone, so it would plan cleanly and then fail every
+    embed with AccessDenied, against a collection of Embed 5 vectors it
+    cannot read. Going back to Embed v4 now means a re-encode and a new
+    grant, not this switch.
   EOT
   type        = string
   default     = "cohere"
 
   validation {
-    condition     = contains(["bedrock", "cohere"], var.embedding_backend)
-    error_message = "embedding_backend must be \"bedrock\" or \"cohere\"."
+    condition     = var.embedding_backend == "cohere"
+    error_message = "embedding_backend must be \"cohere\". The Embed v4 rollback (\"bedrock\") ended on 2026-10-19 with ADR-0025 step 7; its IAM grant and the pre-cutover snapshot are gone."
   }
 }
 

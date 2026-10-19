@@ -153,7 +153,7 @@ Embedding is `cohere` (Embed 5 Pro, since 2026-10-05) and rerank `bedrock` in pr
 - Switching embedding backends needs a **full re-embed** via
   `src/fastapi/scripts/reset_embeddings_for_reencode.py`. Production embeds
   with Cohere Embed 5 Pro (`embed-v5.0-pro`) on Cohere's own API since
-  2026-10-05 (ADR-0025; Embed v4 on Bedrock is the rollback until
+  2026-10-05 (ADR-0025; the Embed v4 rollback on Bedrock ended
   2026-10-19). At 1024 dims it matches `georag_chunks`, so no Qdrant migration is needed — but dimension
   matching is not the same as vector-space compatibility.
 

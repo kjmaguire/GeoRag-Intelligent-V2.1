@@ -99,8 +99,9 @@ to `terraform destroy`.
 ## Model hosting posture
 
 - **Bedrock**, serverless, nothing accrues at rest: Cohere **Rerank 3.5**
-  (NOT v4), plus Cohere Embed v4 kept only as the ADR-0025 rollback until
-  2026-10-19 (with the v4 Qdrant snapshot and the Bedrock embed grant).
+  (NOT v4). Cohere Embed v4 was the ADR-0025 rollback until 2026-10-19;
+  step 7 removed its grant and settings and `embedding_backend` now accepts
+  only `cohere`.
 - **Cohere's own API**: Command A+ chat and Parse 5 OCR since ADR-0023, and
   Cohere **Embed 5 Pro** (`embed-v5.0-pro`, 1024 dims, matches
   `georag_chunks`) since 2026-10-05 (ADR-0025, Terraform

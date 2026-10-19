@@ -425,29 +425,24 @@ locals {
     #
     # EMBEDDING_BACKEND goes to BOTH fastapi and hatchet-worker through this
     # one map, so one apply moves them together (ADR-0025 gotcha 1). It is
-    # var.embedding_backend, default "cohere" since the ADR-0025 cutover
-    # (2026-10-05). "bedrock" is the rollback and needs the snapshot restore
-    # with it; the COHERE_EMBED_* settings below are harmless under it.
+    # var.embedding_backend, "cohere" since the ADR-0025 cutover (2026-10-05)
+    # and the only value it accepts since the rollback window closed
+    # (2026-10-19, step 7).
     BEDROCK_REGION    = local.bedrock_region
     LLM_BACKEND       = "cohere"
     EMBEDDING_BACKEND = var.embedding_backend
     RERANKER_BACKEND  = "bedrock"
 
-    # 2026-10-04 (ADR-0025): the Embed v4 rollback (EMBEDDING_BACKEND=bedrock)
-    # keeps its settings AND its bedrock:InvokeModel grant in iam.tf for the
-    # 14-day rollback window that starts at the cutover (migration step 7).
-    # Afterwards delete BEDROCK_EMBED_MODEL_ID, BEDROCK_EMBED_DIMENSION, the
-    # bedrock_embed_model_id variable and the iam.tf resource together.
-    BEDROCK_EMBED_MODEL_ID  = var.bedrock_embed_model_id
-    BEDROCK_EMBED_DIMENSION = local.embed_dimension
+    # BEDROCK_EMBED_MODEL_ID and BEDROCK_EMBED_DIMENSION went on 2026-10-19
+    # (ADR-0025 step 7) with the Embed v4 grant in iam.tf: they served only the
+    # EMBEDDING_BACKEND=bedrock rollback, whose 14-day window has closed.
     BEDROCK_RERANK_MODEL_ID = var.bedrock_rerank_model_id
 
     # The same number, under the name the OTHER readers use, so all of them
     # agree by construction rather than by all defaulting to 1024:
     #
     #   services/embedding.py      sizes the vectors it writes, from
-    #                              COHERE_EMBED_DIMENSION (BEDROCK_EMBED_DIMENSION
-    #                              under the rollback backend)
+    #                              COHERE_EMBED_DIMENSION
     #   scripts/init_qdrant.py     sizes the collection it creates
     #   config.py                  fails startup when COHERE_EMBED_DIMENSION
     #                              differs from EMBEDDING_DIMENSION

@@ -6,7 +6,7 @@
 > production: production embeds with Cohere Embed 5 Pro (`embed-v5.0-pro`)
 > on Cohere's own API since 2026-10-05 (ADR-0025,
 > `docs/adr/0025-embedding-moves-to-coheres-own-api-on-embed-5.md`), with
-> Embed v4 on Bedrock as the rollback until 2026-10-19. The "has NOT been
+> the Embed v4 rollback on Bedrock ended 2026-10-19 (ADR-0025 step 7). The "has NOT been
 > executed" status below is the 2026-06-03 state of the local bge-small →
 > Qwen3 re-embed and has not been re-verified since.
 

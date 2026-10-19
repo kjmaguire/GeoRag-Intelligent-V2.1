@@ -99,22 +99,20 @@ data "aws_iam_policy_document" "task" {
     actions = [
       "bedrock:InvokeModel",
     ]
-    # Scoped to the two models this deployment uses, not "*". A wildcard
+    # Scoped to the one model this deployment uses, not "*". A wildcard
     # here would let a compromised task invoke any model in the account,
     # which is a cost problem before it is a security one.
     #
-    # 2026-10-04 (ADR-0025): Embed v4 is the rollback route only now. Dense
-    # embedding runs on Cohere's own API (Embed 5, not on Bedrock), so this
-    # model's ARN is kept solely for EMBEDDING_BACKEND=bedrock during the
-    # 14-day rollback window after cutover. Remove the embed line below and
-    # var.bedrock_embed_model_id when the window closes; Rerank stays.
+    # 2026-10-19 (ADR-0025 step 7): Embed v4 is gone from this list. Dense
+    # embedding moved to Cohere's own API (Embed 5, not on Bedrock) on
+    # 2026-10-05, and its ARN stayed here only for the EMBEDDING_BACKEND=bedrock
+    # rollback during the 14-day window after the cutover, which has closed.
     #
-    # Two, not four. Command A+ and Parse 5 were never Bedrock models —
+    # One, not four. Command A+ and Parse 5 were never Bedrock models —
     # they are AWS Marketplace SageMaker packages, and ADR-0023 moved both
     # to Cohere's own API rather than pay for endpoints that bill idle. The
     # `sagemaker:InvokeEndpoint` statement that sat here went with them.
     resources = [
-      "arn:aws:bedrock:${local.bedrock_region}::foundation-model/${var.bedrock_embed_model_id}",
       "arn:aws:bedrock:${local.bedrock_region}::foundation-model/${var.bedrock_rerank_model_id}",
     ]
   }
@@ -127,7 +125,7 @@ data "aws_iam_policy_document" "task" {
     # production still logged "no identity-based policy allows the
     # bedrock:Rerank action" (2026-09-24). Which model a Rerank call may
     # use is still bounded by bedrock:InvokeModel above, which names only
-    # Embed v4 and Rerank 3.5.
+    # Rerank 3.5.
     #
     # Unverified (the AWS Service Authorization Reference was unreachable
     # when this was written): that Rerank enforces InvokeModel on the

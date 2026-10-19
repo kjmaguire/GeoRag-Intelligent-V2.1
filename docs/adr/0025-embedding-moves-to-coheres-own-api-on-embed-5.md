@@ -1,7 +1,7 @@
 # ADR 0025: Embedding moves to Cohere's own API, on Embed 5
 
 - **Date**: 2026-10-01
-- **Status**: Accepted (2026-10-04); **implemented in production 2026-10-05** (steps 1-6 as run below; step 7, the 14-day rollback hold, ends 2026-10-19) — see "Cutover record"
+- **Status**: Accepted (2026-10-04); **implemented in production 2026-10-05** (steps 1-6 as run below); **step 7**, closing the 14-day rollback hold, began 2026-10-19 — see "Cutover record" and "Step 7"
 - **Implemented (code half)**: 2026-10-04. The adapter, the probe's `embed`
   section, the `--all` reset, the `embed_model` tag, `answer_runs.embedding_model`,
   Terraform, compose, the chart and the docs are in the tree; migration steps
@@ -168,8 +168,9 @@ measured step (see sub-decision).**
   `fake_cohere.py` gains a fake `/v2/embed`.
 - Terraform: `EMBEDDING_BACKEND=cohere` and the two model settings in
   `config.tf`. After the rollback window, `bedrock_embed_model_id` and
-  its `bedrock:InvokeModel` resource in `iam.tf:111` are removed. The rerank
-  grant stays.
+  its `bedrock:InvokeModel` resource in `iam.tf` are removed (done in step 7,
+  2026-10-19, with `BEDROCK_EMBED_MODEL_ID` / `BEDROCK_EMBED_DIMENSION`, and
+  `embedding_backend` now accepts only `cohere`). The rerank grant stays.
 - Docs: CLAUDE.md's "Embedding / rerank / OCR" line, the manual's maintained
   chapters, `.env.example` / `.env.production.example`, and
   `docker-compose.yml`'s hosted-backend defaults.
@@ -427,6 +428,24 @@ is account state, readable only in the dashboard (no API reports it). Until
 someone with the login confirms it is off, assume the default, i.e. the
 whole corpus, every question and answer, and every scanned page sent since
 ADR-0023 may be eligible for training.
+
+## Step 7 — closing the rollback (from 2026-10-19)
+
+The 14-day hold ended on 2026-10-19 with no rollback taken. Kyle approved
+step 7 on 2026-10-06. Each row is filled in as it runs; a row without a run
+reference has not happened.
+
+| # | what | as run |
+|---|---|---|
+| 7a | Remove the Embed v4 rollback from Terraform: the `bedrock:InvokeModel` ARN for `var.bedrock_embed_model_id` (`iam.tf`), `BEDROCK_EMBED_MODEL_ID` and `BEDROCK_EMBED_DIMENSION` (`config.tf`), `variable "bedrock_embed_model_id"`; `embedding_backend` accepts only `cohere`, and `terraform.yml` no longer offers `bedrock`. Rerank 3.5 stays on Bedrock. | code PR opened 2026-10-19; merge pending Kyle |
+| 7b | `terraform.yml` action=plan, `embedding_backend=keep`, image tag pinned to what production runs; plan shown to Kyle | pending |
+| 7c | `terraform.yml` action=apply (Kyle approves the `production` environment gate) | pending |
+| 7d | `cd.yml`, so fastapi and hatchet-worker register task definitions without the two `BEDROCK_EMBED_*` settings | pending |
+| 7e | Delete `s3://georag-backups-046369253475/_ops/qdrant-snapshots/20261004T224003Z-before-embed5/`. The bucket is versioned, so the objects stay recoverable as noncurrent versions for 90 days. | pending |
+
+The application code keeps `EMBEDDING_BACKEND=bedrock` as a selectable
+backend (on-prem and compose can still point it at a Bedrock account of their
+own); only this AWS deployment's route to it is gone.
 
 ## Verification (this commit)
 

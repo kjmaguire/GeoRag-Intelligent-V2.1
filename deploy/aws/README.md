@@ -1039,9 +1039,10 @@ Qdrant is up but the collections the query path needs are absent. If you skip
 this step the deploy gate tells you.
 
 The collection is sized from the dimension variable of the backend that writes
-into it — `COHERE_EMBED_DIMENSION` under the default `EMBEDDING_BACKEND=cohere`
-(ADR-0025), `BEDROCK_EMBED_DIMENSION` under the `bedrock` rollback — so it
-cannot drift from what the embedder is asked to return.
+into it — `COHERE_EMBED_DIMENSION` under `EMBEDDING_BACKEND=cohere`
+(ADR-0025), the only backend this deployment accepts since the Embed v4
+rollback ended on 2026-10-19 — so it cannot drift from what the embedder is
+asked to return.
 
 **A live `georag_chunks` whose `workspace_id` index predates `is_tenant`.** A
 normal run never touches an index that already exists (re-PUTting it would
@@ -1080,9 +1081,11 @@ worker's task definition and puts the report in the step summary. Order:
 | 7 | `embed5-cutover` step=**verify** | re-run until exit 0: every point tagged `embed_model=embed-v5.0-pro`, no passage left to embed, image points present. Exit 3 = the 10-minute sweep is still working. |
 | 8 | `embed5-cutover` step=**questions** label=after | compare with step 2. |
 
-Rollback inside the 14-day hold: `terraform` apply with `embedding_backend=bedrock`,
-`cd`, then restore the step-3 snapshot (`PUT /collections/georag_chunks/snapshots/recover`
-with the S3 location) — the v4 vectors come back without a re-embed.
+The 14-day rollback hold ended on 2026-10-19 (ADR-0025 step 7). It was:
+`terraform` apply with `embedding_backend=bedrock`, `cd`, then restore the
+step-3 snapshot. Neither half exists any more: `embedding_backend` accepts only
+`cohere`, the Embed v4 grant is gone from `iam.tf`, and the snapshot is deleted
+once that is applied (ADR-0025, "Step 7"). Going back to Embed v4 now means a new grant and a full re-encode.
 
 ## One posture decision left open: X-Forwarded-For
 
