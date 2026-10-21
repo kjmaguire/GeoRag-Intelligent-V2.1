@@ -126,12 +126,14 @@ def test_the_compose_and_terraform_defaults_agree_with_the_code() -> None:
     # over on 2026-10-05 and production.tfvars has no line for it (the
     # cutover passed it on the command line), so the variable's DEFAULT is
     # what production runs: it must be cohere, or an unrelated apply plus
-    # the next CD puts v4 queries against the v5 collection. Its validation
-    # still names bedrock, the rollback.
+    # the next CD puts v4 queries against the v5 collection. Since the
+    # rollback ended (2026-10-19, ADR-0025 step 7) its validation accepts
+    # only cohere: the Embed v4 grant and snapshot that bedrock needed are gone.
     terraform = (_REPO / "deploy" / "aws" / "terraform" / "config.tf").read_text(encoding="utf-8")
     assert re.search(r"EMBEDDING_BACKEND\s*=\s*var\.embedding_backend", terraform)
     variables = (_REPO / "deploy" / "aws" / "terraform" / "variables.tf").read_text(encoding="utf-8")
     block = re.search(r'variable "embedding_backend" \{.*?\n\}', variables, re.S)
     assert block is not None
     assert re.search(r'default\s*=\s*"cohere"', block.group(0))
-    assert re.search(r'contains\(\["bedrock", "cohere"\]', block.group(0))
+    assert re.search(r'condition\s*=\s*var\.embedding_backend\s*==\s*"cohere"', block.group(0))
+    assert '"bedrock"' not in re.search(r"condition\s*=.*", block.group(0)).group(0)

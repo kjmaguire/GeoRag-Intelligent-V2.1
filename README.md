@@ -39,7 +39,7 @@ The full ship-readiness checklist lives at
 - **Data Stores**: PostgreSQL 18 + PostGIS 3.6 (PgBouncer edoburu 1.25.1 in compose only; RDS for PostgreSQL 18 in production), Qdrant v1.19, Redis 8.6 (8.10 in production), SeaweedFS in compose / AWS S3 in production (both S3-compatible). No knowledge graph — Neo4j was removed 2026-07-28.
 - **Ingestion**: Hatchet workflows (`ingest_pdf`, `ingest_tabular`, `ingest_spatial`, `ingest_well_logs`, `ingest_geophysics`, …) on one `hatchet-worker`; parsers in the local `georag_geoparsers` package (Polars, GDAL via pyogrio/GeoPandas/rasterio, lasio, …); scanned-page OCR is Cohere Parse 5 with Tesseract as last resort
 - **LLM**: Cohere Command A+ on Cohere's own API (`LLM_BACKEND=cohere`, the default); `bedrock`, `vllm` and `anthropic` (Claude, optional fallback) are selectable
-- **Embedding / rerank**: Cohere Embed 5 Pro (`embed-v5.0-pro`, 1024 dims) on Cohere's own API in production since 2026-10-05 (ADR-0025; Embed v4 on Bedrock is the rollback until 2026-10-19), Cohere Rerank 3.5 on Bedrock; in dev, local Qwen3 embedding/reranker + SPLADE++ sparse sidecars
+- **Embedding / rerank**: Cohere Embed 5 Pro (`embed-v5.0-pro`, 1024 dims) on Cohere's own API in production since 2026-10-05 (ADR-0025; the Embed v4 rollback on Bedrock ended 2026-10-19), Cohere Rerank 3.5 on Bedrock; in dev, local Qwen3 embedding/reranker + SPLADE++ sparse sidecars
 - **Production**: Amazon ECS Fargate, Terraform in `deploy/aws/terraform/` (ADR-0022)
 
 ## Getting Started (Development)

@@ -16,7 +16,7 @@ only the *route* changed when the platform moved to AWS.
 | Chat | `command-a-plus-05-2026` | **Cohere's own API** | `LLM_BACKEND=cohere` |
 | OCR | Parse 5 (`parse-v5.0`) | **Cohere's own API** | `OCR_ENGINE=cohere_parse` |
 | Embedding | Cohere **Embed 5 Pro** (`embed-v5.0-pro`), 1024 dims | **Cohere's own API** (since 2026-10-05, ADR-0025) | `EMBEDDING_BACKEND=cohere` |
-| Embedding (rollback until 2026-10-19) | Cohere Embed v4, 1024 dims | **Bedrock** (serverless) | `EMBEDDING_BACKEND=bedrock` |
+| Embedding (rollback, ended 2026-10-19) | Cohere Embed v4, 1024 dims | **Bedrock** (serverless), no longer granted on AWS | `EMBEDDING_BACKEND=bedrock` (code only) |
 | Rerank | Cohere **Rerank 3.5** | **Bedrock** (serverless) | `RERANKER_BACKEND=bedrock` |
 
 Chat, Parse and Embed 5 share one key: `COHERE_API_KEY`, against
@@ -31,7 +31,7 @@ that bill whether or not anything calls them, because a Marketplace endpoint
 has **no idle state**. Rerank 3.5 stays on Bedrock precisely because it
 *is* serverless and accrues nothing at rest. Embed v4 stayed there too until
 ADR-0025 moved production to Embed 5 Pro on Cohere's own API on 2026-10-05;
-v4 on Bedrock (and the v4 Qdrant snapshot) is the rollback until 2026-10-19.
+v4 on Bedrock (with the v4 Qdrant snapshot) was the rollback until 2026-10-19, when ADR-0025 step 7 removed it.
 A v4/v5 mixed collection returns meaningless cosines with every guard
 passing — switching back means a full reset and re-embed, not a flag flip.
 
