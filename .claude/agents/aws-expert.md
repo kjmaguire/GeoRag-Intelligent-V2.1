@@ -72,14 +72,19 @@ Destroy rather than stop, because: RDS force-starts a stopped instance after
 between them just for existing).
 
 **The nightly sweeps.** `deploy/aws/scheduler/`. Shutdown
-`cron(0 17 * * ? *)` America/Vancouver, startup `cron(30 8 * * ? *)`.
+`cron(0 22 * * ? *)` America/Vancouver, startup `cron(0 9 * * ? *)` (since
+2026-10-21; 17:00 / 08:30 before). `.github/workflows/power.yml` runs either
+sweep on demand.
 `startup-sweep.sh` does `rds start-db-instance` → `wait db-instance-available`
 → TIER1 (`redis qdrant hatchet sparse`) → `services-stable` → TIER2
 (`hatchet-worker fastapi martin`) → TIER3 (Laravel).
 **The sweep firing is not the platform being up.** The Hatchet *engine* is
 TIER1; until it is stable a cron tick produces nothing and is **not queued for
-later**. That is why startup moved to 08:30 — the 17:00 UTC crons need the
-engine alive before they fire. The window arithmetic in `scheduler.tf` is
+later**. That is why startup sat at 08:30 from 2026-09-16 — in PST 09:00 was
+17:00 UTC, the instant of four crons that need the engine alive. Since
+2026-10-21 it is 09:00 again (window 22:00-09:00 Pacific), safe only because
+Vancouver no longer has a PST: 09:00 is 16:00 UTC all year. Outside the
+window, `.github/workflows/power.yml` wakes or sleeps the platform on demand. The window arithmetic in `scheduler.tf` is
 minute-granular (`*_minute_of_day`); hour-granular arithmetic silently
 truncates and the shortfall lands at the END of the window, where the
 shutdown-complete marker ages out while the platform is still down, the

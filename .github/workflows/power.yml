@@ -1,0 +1,167 @@
+# Wake or sleep the platform outside the nightly schedule (added 2026-10-21).
+#
+#   Actions → Power → Run workflow (on main)
+#     action: wake   run the startup sweep now: RDS, then the three service
+#                    tiers, about fifteen minutes to a working platform
+#     action: sleep  run the shutdown sweep now: services to zero, RDS stopped
+#
+# The schedule itself is unchanged by this: EventBridge still runs the
+# shutdown sweep at 22:00 and the startup sweep at 09:00 America/Vancouver
+# (deploy/aws/terraform/scheduler.tf). So a platform woken at 23:00 stays up
+# until 22:00 the NEXT day unless someone sleeps it — about $9 a day at the
+# README's ~$9.50 per daily hour per month. Sleep it when you are done.
+#
+# It runs the SAME task definitions the schedules run, so there is one copy of
+# each sweep and nothing here can drift from them: `aws ecs run-task` on
+# georag-startup-sweep / georag-shutdown-sweep, then the task's own exit code
+# is the verdict, the way cd.yml judges its smoke task.
+#
+# GATES, and what they cost if skipped:
+#   * A sweep task already running (the scheduled one, or a second dispatch).
+#     Two sweeps scaling the same services in opposite directions leave the
+#     platform in whatever state the last call left it.
+#   * A CD deploy in flight. A sleep mid-deploy cuts off its migration or its
+#     rollout, the half-deployed state cd.yml's own sweep gate exists to
+#     prevent from the other side.
+# Neither needs clock arithmetic. Still avoid dispatching within a few minutes
+# of 09:00 or 22:00 Pacific: the gate sees a sweep that is running, not one
+# EventBridge is about to start.
+#
+# A `sleep` before 11:00 Pacific pages once that evening. The dead-air
+# alarms' suppressor (alerts.tf, maintenance_window) holds for the schedule's
+# eleven-hour night from the shutdown sweep's completion marker, so a sleep at
+# 10:00 lets go at 21:00 and the octane/reverb dead-air composites email
+# until the 22:00 sweep renews it. Harmless, and named here so it is not
+# mistaken for an outage.
+#
+# Uses the CD deploy role (AWS_DEPLOY_ROLE_ARN), which trusts refs/heads/main
+# only (deploy/aws/terraform/ci.tf); a dispatch from another branch fails at
+# "Configure AWS credentials". That role may RunTask georag-* on this cluster
+# and, since 2026-10-21, pass the sweeps' task role.
+
+name: Power
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "wake (startup sweep now) or sleep (shutdown sweep now)"
+        required: true
+        default: wake
+        type: choice
+        options:
+          - wake
+          - sleep
+
+# Its own group, not cd.yml's deploy-georag: GitHub keeps one pending run per
+# group and cancels the older, so joining it could cancel a queued deploy. The
+# CD gate below covers the overlap instead.
+concurrency:
+  group: power-georag
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: georag
+  SCHEDULER_LOG_GROUP: /ecs/georag/scheduler
+
+permissions:
+  contents: read
+
+jobs:
+  power:
+    name: ${{ inputs.action }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # The startup sweep waits on RDS and three tiers of services-stable; the
+    # scheduled task has no timeout of its own, so this is the ceiling.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - name: CD gate (no deploy in flight)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ACTIVE=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/cd.yml/runs?per_page=20" \
+            --jq '[.workflow_runs[] | select(.status != "completed")] | length')
+          if [ "$ACTIVE" != "0" ]; then
+            echo "::error::a CD deploy is in flight (${ACTIVE} run(s) not completed). Re-run when it has finished."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sweep gate (no sweep running)
+        run: |
+          set -euo pipefail
+          for family in georag-startup-sweep georag-shutdown-sweep; do
+            RUNNING=$(aws ecs list-tasks --cluster "$ECS_CLUSTER" \
+              --family "$family" --desired-status RUNNING \
+              --query 'taskArns' --output text)
+            if [ -n "$RUNNING" ] && [ "$RUNNING" != "None" ]; then
+              echo "::error::${family} is running (${RUNNING}); wait for it to stop, then re-run."
+              exit 1
+            fi
+          done
+
+      - name: Run the sweep
+        env:
+          ACTION: ${{ inputs.action }}
+          SUBNETS: ${{ secrets.AWS_PRIVATE_SUBNET_IDS }}
+          SECURITY_GROUP: ${{ secrets.AWS_TASK_SECURITY_GROUP_ID }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+            wake)  FAMILY=georag-startup-sweep;  PREFIX=startup ;;
+            sleep) FAMILY=georag-shutdown-sweep; PREFIX=shutdown ;;
+            *) echo "::error::unknown action '${ACTION}'"; exit 1 ;;
+          esac
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$FAMILY" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS}],securityGroups=[${SECURITY_GROUP}],assignPublicIp=DISABLED}" \
+            --started-by "github-power-${ACTION}" \
+            --query 'tasks[0].taskArn' --output text)
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::run-task returned no task ARN"
+            exit 1
+          fi
+          echo "${FAMILY}: ${TASK_ARN}"
+
+          # `aws ecs wait tasks-stopped` gives up after ten minutes and a cold
+          # startup sweep takes about fifteen, so poll instead.
+          while :; do
+            STATUS=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' --output text)
+            [ "$STATUS" = "STOPPED" ] && break
+            echo "$(date -u +%H:%M:%S) ${STATUS}"
+            sleep 30
+          done
+
+          # The sweep's own log, so the run page says what it did.
+          STREAM="${PREFIX}/sweep/${TASK_ARN##*/}"
+          aws logs get-log-events --log-group-name "$SCHEDULER_LOG_GROUP" \
+            --log-stream-name "$STREAM" --start-from-head \
+            --query 'events[].message' --output text 2>/dev/null | tr '\t' '\n' || true
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          REASON=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          echo "sweep exit code: ${EXIT_CODE} (${REASON})"
+          # A task killed before its container ran reports no exit code. That
+          # is not success.
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::the ${PREFIX} sweep did not complete (exit ${EXIT_CODE}: ${REASON}); its log is above"
+            exit 1
+          fi

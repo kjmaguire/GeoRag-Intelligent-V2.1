@@ -30,14 +30,20 @@ window.
 
 | what | when |
 | --- | --- |
-| shutdown sweep fires | 17:00 **America/Vancouver** (`shutdown_cron`) |
-| startup sweep fires | 08:30 **America/Vancouver** (`startup_cron`) |
-| so the stack is down | roughly **00:00–15:30 UTC** (PDT) / **01:00–16:30 UTC** (PST) |
+| shutdown sweep fires | 22:00 **America/Vancouver** (`shutdown_cron`) |
+| startup sweep fires | 09:00 **America/Vancouver** (`startup_cron`) |
+| so the stack is down | roughly **05:00–16:15 UTC** (Vancouver is UTC-7 all year since 2026-03-08) |
 
 The times are Terraform defaults (`deploy/aws/terraform/variables.tf`:
-`shutdown_cron`, `startup_cron`, `maintenance_timezone`); check the live
-tfvars if they may have been overridden. (Corrected 2026-10-10: this table
-said 23:00 / 06:00 US-Pacific, which matches no schedule in the repo.)
+`shutdown_cron`, `startup_cron`, `maintenance_timezone`), since 2026-10-21;
+check the live tfvars if they may have been overridden. (Corrected 2026-10-10:
+this table said 23:00 / 06:00 US-Pacific, which matches no schedule in the
+repo. Before 2026-10-21 the defaults were 17:00 / 08:30.)
+
+**Someone may have woken it.** `.github/workflows/power.yml` runs either
+sweep on demand, so a platform that is up at 02:00 local, or down at 14:00,
+is not by itself an incident: check that workflow's recent runs before the
+sweep logs.
 
 One fire each, not two. EventBridge Scheduler is timezone-aware, so the
 Azure-era double-fire — both candidate UTC hours, with a DST guard inside

@@ -170,8 +170,8 @@ resource "aws_scheduler_schedule" "token_check" {
 
 locals {
   # The maintenance window's length, derived from the two cron expressions
-  # rather than configured separately. `cron(0 17 * * ? *)` -> 17:00,
-  # `cron(30 8 * * ? *)` -> 08:30, so the window is 930 minutes — 15h30m.
+  # rather than configured separately. `cron(0 22 * * ? *)` -> 22:00,
+  # `cron(0 9 * * ? *)` -> 09:00, so the window is 660 minutes — 11h.
   #
   # Deriving it is the point. On Azure the window was spelled out in the
   # shutdown cron, the startup cron, the DST guard's target hour and the
@@ -197,8 +197,9 @@ locals {
 
   maintenance_window_minutes = (local.startup_minute_of_day - local.shutdown_minute_of_day + 1440) % 1440
 
-  # Fractional on purpose: 930 minutes is 15.5, and an operator reading the
-  # output needs the half hour to be visible rather than floored away.
+  # Fractional on purpose: the 08:30 start of 2026-09-16 to 2026-10-21 made
+  # it 15.5, and an operator reading the output needs a half hour to be
+  # visible rather than floored away.
   maintenance_window_hours = local.maintenance_window_minutes / 60
 
   # The dead-air suppressor (alerts.tf) is sized from this, not from the window

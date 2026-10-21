@@ -7,14 +7,15 @@ WHAT THE WINDOW ACTUALLY IS
     and a cron scheduled inside it does not run late -- it does not run.
 
     Rewritten 2026-09-08 for ADR-0022. The window is now scheduled in a
-    NAMED TIMEZONE (EventBridge Scheduler), not in UTC. Since 2026-09-16
-    it runs 17:00 to 08:30 America/Vancouver -- fifteen and a half hours
-    closed, to fit the platform inside a business day and a $100/month
-    credit. Hatchet crons are UTC, so the window's UTC position still
-    moves with DST -- 00:00-15:30 in PDT, 01:00-16:30 in PST -- and both
-    are therefore treated as closed, leaving 16:30-00:00 UTC as the span
-    a fixed-hour cron can sit in. The times are read from the Terraform
-    below, so do not trust this paragraph over shutdown_window().
+    NAMED TIMEZONE (EventBridge Scheduler), not in UTC. Since 2026-10-21
+    it runs 22:00 to 09:00 America/Vancouver -- eleven hours closed (it was
+    17:00 to 08:30 from 2026-09-16). Hatchet crons are UTC, so the window's
+    UTC position is whatever the zone's offset makes it. Vancouver has been
+    UTC-7 all year since 2026-03-08 (tz 2026b), which puts the window at
+    05:00-16:00 UTC; a zone that still changes its clocks has two positions,
+    and every one the tz database gives is treated as closed (_utc_offsets).
+    The times are read from the Terraform below, so do not trust this
+    paragraph over shutdown_window().
 
     THE SWEEP FIRING IS NOT THE PLATFORM BEING UP, which is the distinction
     this file missed until 2026-09-16 and STARTUP_GRACE_MINUTES now carries.
@@ -56,6 +57,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, date, datetime, timedelta
+from functools import cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -71,10 +73,9 @@ WORKFLOWS = Path(__file__).resolve().parent.parent / "app" / "hatchet_workflows"
 #: the sweep ever stops scaling the Hatchet worker to zero.
 EXEMPT: dict[str, str] = {}
 
-#: US-Pacific offsets from UTC. The window is scheduled in local time and
-#: Hatchet crons are UTC, so its UTC position moves by an hour twice a
-#: year. Both are treated as closed.
-_PACIFIC_OFFSETS = (7, 8)  # PDT, PST
+#: The years the window's UTC position is read for: the first full year after
+#: British Columbia's last clock change (2026-03-08, tz 2026b) and nine more.
+OFFSET_YEARS = range(2027, 2037)
 
 #: How long after the startup sweep FIRES before a cron tick can be real.
 #:
@@ -99,9 +100,9 @@ def _local_minutes(variable: str) -> int:
 
     Reads `cron(<minute> <hour> ...)` out of the variable's default in
     variables.tf, which is the same string EventBridge Scheduler is given.
-    MINUTES, not hours: `startup_cron` is `cron(30 8 * * ? *)`, and an
-    hour-granular read of that is wrong by exactly the margin it exists to
-    create.
+    MINUTES, not hours: `startup_cron` was `cron(30 8 * * ? *)` from
+    2026-09-16 to 2026-10-21, and an hour-granular read of that is wrong by
+    exactly the margin it existed to create.
     """
     text = TERRAFORM.read_text(encoding="utf-8")
     block = re.search(
@@ -118,10 +119,10 @@ def _local_minutes(variable: str) -> int:
 def shutdown_window() -> tuple[int, int]:
     """(first closed minute, first USABLE minute) in UTC, from the Terraform.
 
-    Both as minutes past midnight UTC. Both DST offsets count as closed, so
-    the returned span is the widest the window is ever open -- the only safe
-    thing for a schedule that cannot know which side of a DST boundary it
-    will run on.
+    Both as minutes past midnight UTC. Every offset the zone runs at counts
+    as closed, so the returned span is the widest the window is ever closed
+    -- the only safe thing for a schedule that cannot know which side of a
+    DST boundary it will run on.
 
     The second element is when the platform can RUN something, not when the
     sweep fires: STARTUP_GRACE_MINUTES is added. A cron at exactly that
@@ -129,9 +130,34 @@ def shutdown_window() -> tuple[int, int]:
     """
     stop_local = _local_minutes("shutdown_cron")
     start_local = _local_minutes("startup_cron")
-    stop = min((stop_local + off * 60) % 1440 for off in _PACIFIC_OFFSETS)
-    start = max((start_local + off * 60) % 1440 for off in _PACIFIC_OFFSETS)
+    stop = min((stop_local + off * 60) % 1440 for off in _utc_offsets())
+    start = max((start_local + off * 60) % 1440 for off in _utc_offsets())
     return stop, start + STARTUP_GRACE_MINUTES
+
+
+@cache
+def _utc_offsets() -> tuple[int, ...]:
+    """Hours behind UTC that ``maintenance_timezone`` runs at in OFFSET_YEARS.
+
+    Read from the tz database rather than written down. This was the constant
+    ``(7, 8)`` -- PDT and PST -- until 2026-10-21, which kept the window an
+    hour wider than it is after British Columbia stopped falling back: a
+    09:00 start read as 17:00 UTC, the instant of four crons, although it is
+    16:00 UTC every day now. Sampling the middle of each month
+    sees both offsets of a zone that still changes its clocks.
+    """
+    tz = _current_zone(_maintenance_timezone())
+    hours: set[int] = set()
+    for year in OFFSET_YEARS:
+        for month in range(1, 13):
+            offset = datetime(year, month, 15, 12, tzinfo=tz).utcoffset() or timedelta()
+            seconds = -int(offset.total_seconds())
+            assert seconds % 3600 == 0, (
+                f"{tz.key} is UTC{-seconds / 3600:+g} in {year}-{month:02d}; the "
+                "window arithmetic here is whole hours"
+            )
+            hours.add(seconds // 3600)
+    return tuple(sorted(hours))
 
 
 def _hhmm(minutes: int) -> str:
@@ -192,7 +218,7 @@ def test_the_sweep_gets_a_head_start_on_the_first_cron() -> None:
 
     fires_at = max(
         (_local_minutes("startup_cron") + off * 60) % 1440
-        for off in _PACIFIC_OFFSETS
+        for off in _utc_offsets()
     )
     earliest = min(
         (hour * 60 + minute for _, _, hour, minute in daily_crons()),
@@ -285,12 +311,14 @@ def test_the_window_is_scheduled_in_a_named_timezone() -> None:
     )
     assert block, "no maintenance_timezone variable"
 
-    # An ALLOW-LIST, not a single literal. _PACIFIC_OFFSETS above encodes
-    # UTC-7/UTC-8 and the North American DST transition dates, so what this
-    # has to assert is "the zone is Pacific", not "the zone is spelled
-    # America/Los_Angeles". Vancouver moved here on 2026-09-16 and is the
-    # same clock to the second: same offsets, same transitions, different
-    # name for where the operator actually is.
+    # An ALLOW-LIST, not a single literal. _utc_offsets() reads whatever
+    # offsets the zone has, but the cron slots, the backup windows and the
+    # sweeps' hours were all chosen against Pacific time, so what this has to
+    # assert is "the zone is Pacific", not "the zone is spelled
+    # America/Los_Angeles". Vancouver moved here on 2026-09-16, the name for
+    # where the operator actually is; it shared Los Angeles's clock until
+    # British Columbia stopped falling back, and _utc_offsets() is what keeps
+    # that difference from mattering here.
     #
     # Adding to this list is only safe for a zone that shares BOTH offsets
     # AND both transition dates. America/Phoenix is the trap — it is
@@ -299,8 +327,8 @@ def test_the_window_is_scheduled_in_a_named_timezone() -> None:
     pacific = ("America/Los_Angeles", "America/Vancouver", "America/Tijuana")
     assert any(f'default     = "{z}"' in block.group(1) for z in pacific), (
         "the maintenance window's timezone is not one of the US/Canada "
-        f"Pacific zones {pacific}; _PACIFIC_OFFSETS above is derived from "
-        "Pacific time and must change with it"
+        f"Pacific zones {pacific}; every schedule checked here was chosen "
+        "against Pacific time and must be re-read with it"
     )
 
 
@@ -420,11 +448,11 @@ def test_cron_budgets_are_readable() -> None:
 
 
 def test_no_daily_cron_runs_past_the_shutdown() -> None:
-    """start + execution_timeout must end before the NEXT stop, PDT and PST.
+    """start + execution_timeout must end before the NEXT stop, at every offset.
 
     ``shutdown_window()``'s first element is the earliest the stop lands in
-    UTC across both DST halves (00:00 UTC in PDT), so ending by then is
-    ending by the stop in both. schedule_timeout (queue wait) is not added:
+    UTC across every offset the zone runs at, so ending by then is ending by
+    the stop in all of them. schedule_timeout (queue wait) is not added:
     a run still queued at the stop never starts, so it wastes nothing.
     """
     stop, usable = shutdown_window()
@@ -454,12 +482,19 @@ def test_no_daily_cron_runs_past_the_shutdown() -> None:
 
 
 def test_the_end_time_check_catches_the_enrich_regression() -> None:
-    """The case HAT-14 found: 21:45 UTC plus a 3 h budget."""
+    """The shape HAT-14 found, against today's stop.
+
+    It was 21:45 UTC plus a 3 h budget, 2h15m before a 00:00 UTC stop, and a
+    2 h cap fixed it. The stop has moved since (05:00 UTC from 2026-10-21), so
+    the same distance is measured back from wherever it is now; at the old
+    instant the case would pass vacuously and prove nothing about the check.
+    """
     stop, usable = shutdown_window()
-    start = 21 * 60 + 45
-    assert usable <= start
-    assert start + 180 > stop + 1440, "a 3 h budget from 21:45 must be caught"
-    assert start + 120 <= stop + 1440, "the 2 h cap must clear the stop"
+    start = (stop - 135) % 1440
+    assert not (stop <= start < usable), "the case must start in the open window"
+    deadline = stop + 1440 if start >= usable else stop
+    assert start + 180 > deadline, "a 3 h budget 2h15m before the stop must be caught"
+    assert start + 120 <= deadline, "the 2 h cap must clear the stop"
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +502,7 @@ def test_the_end_time_check_catches_the_enrich_regression() -> None:
 # ---------------------------------------------------------------------------
 # Hatchet is not the only scheduler that stops with the platform. bootstrap.sql
 # schedules partman's maintenance with pg_cron INSIDE the RDS instance, and the
-# instance is stopped for the same fifteen and a half hours. pg_cron does not
+# instance is stopped for the same eleven hours. pg_cron does not
 # run a job it missed, so `0 3 * * *` -- 03:00 UTC, closed in both DST halves --
 # did not run late: it never ran, and nothing ever created or dropped a
 # partition through it. Every check above reads the Hatchet workflows, so none
@@ -578,12 +613,19 @@ def test_pg_cron_still_schedules_in_gmt() -> None:
 
 
 def test_the_pg_cron_check_catches_the_03_00_regression() -> None:
-    """The case AW-10 found, and the slot it moved to."""
+    """The case AW-10 found, and the slot it moved to.
+
+    It was `0 3 * * *`, inside the 00:00-16:30 UTC window of the time. Since
+    2026-10-21 the stop is 05:00 UTC and 03:00 is open, so the caught case is
+    an hour after today's stop instead: the point is that the scan sees a job
+    in the window, not which hour the window happens to cover.
+    """
     stop, usable = shutdown_window()
     job = "SELECT cron.schedule('partman-maintenance', '{}', $$CALL partman.run_maintenance_proc()$$);"
 
-    (_, _, hour, minute), = pg_cron_daily_jobs(job.format("0 3 * * *"))
-    assert stop <= hour * 60 + minute < usable, "03:00 UTC must be caught"
+    inside_hour, inside_minute = divmod((stop + 60) % 1440, 60)
+    (_, _, hour, minute), = pg_cron_daily_jobs(job.format(f"{inside_minute} {inside_hour} * * *"))
+    assert stop <= hour * 60 + minute < usable, f"{_hhmm(stop + 60)} UTC must be caught"
 
     (_, _, hour, minute), = pg_cron_daily_jobs(job.format("45 18 * * *"))
     assert not stop <= hour * 60 + minute < usable, "18:45 UTC must clear it"

@@ -93,7 +93,7 @@ env:
   AWS_REGION: us-east-1
   ECS_CLUSTER: georag
   # The RDS instance behind the migration task and every service.
-  # Deliberately stopped 17:00-08:30 US/Canada Pacific nightly for cost (see
+  # Deliberately stopped 22:00-09:00 US/Canada Pacific nightly for cost (see
   # deploy/aws/terraform/scheduler.tf). The deploy job gates on its state
   # so an in-window merge fails with the real story instead of a generic
   # migration failure. Unlike the Azure gate, this needs no timezone
@@ -368,9 +368,9 @@ jobs:
           echo "database state: $STATE"
           if [ "$STATE" != "available" ]; then
             echo "::error::${DB_INSTANCE} is '${STATE}', not 'available'."
-            echo "The platform is stopped nightly for cost (17:00-08:30 US/Canada Pacific)."
-            echo "Re-run this deploy after the morning startup sweep, or start the"
-            echo "instance by hand if this is urgent."
+            echo "The platform is stopped nightly for cost (22:00-09:00 US/Canada Pacific)."
+            echo "Re-run this deploy after the morning startup sweep, or run"
+            echo "Actions -> Power -> wake first if this is urgent."
             exit 1
           fi
 
@@ -380,13 +380,13 @@ jobs:
       # workers, then Laravel), so RDS can answer while most of the rest does
       # not, and a deploy that lands in either sweep fights it:
       #
-      #   * startup (08:30): RDS is available minutes before the Laravel tier
+      #   * startup (09:00): RDS is available minutes before the Laravel tier
       #     exists. Every service is still at desiredCount 0 and the sweep is
       #     setting counts as it goes, so this deploy would migrate a
       #     database the sweep is still bringing up, wait for "stable" on
       #     services that have no tasks, and then fail the smoke task against
       #     services nobody has started.
-      #   * shutdown (17:00): the sweep scales services to zero and then
+      #   * shutdown (22:00): the sweep scales services to zero and then
       #     stops RDS. A deploy now has its migration or its rollout cut off
       #     part-way, which is the half-deployed state the single-flight gate
       #     below exists to prevent.

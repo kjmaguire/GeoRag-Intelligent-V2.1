@@ -267,7 +267,8 @@ defaults (Fargate Spot, `db.t4g.small`):
 | --- | --- |
 | powered off | ~$13 |
 | 4h/day, weekdays only (a demo stack) | ~$39 |
-| **8.5h/day (what the nightly sweeps give you)** | **~$93** |
+| **13h/day (what the nightly sweeps give you, 09:00-22:00 since 2026-10-21)** | **~$136** |
+| 8.5h/day (08:30-17:00, 2026-09-16 to 2026-10-21) | ~$93 |
 | 8h/day (the sweeps before `startup_cron` moved to 08:30) | ~$88 |
 | 17h/day (the pre-2026-09-16 default) | ~$173 |
 | 24/7 | ~$240 |
@@ -277,11 +278,18 @@ defaults; it is what on-demand at the original sizing would cost. The model
 these come from reads the sizing out of `main.tf` rather than estimating --
 every rate is a named constant, so swapping one moves every number with it.
 
-The **8.5h row is interpolated, not re-modelled**: the rows above sit on a
+The **13h and 8.5h rows are interpolated, not re-modelled**: the rows above sit on a
 line of ~$9.50 per daily-hour per month plus ~$12 of always-on (ALB, NAT,
 EFS, S3), which reproduces every other figure in the table to the dollar.
 Nothing here has been billed on a real account yet, so treat the whole
 column as a sizing estimate and check Cost Explorer after the first week.
+
+13h/day is over the $100/month credit (break-even is about 9.4 hours a day)
+by roughly $36 a month, on purpose: evenings were worth more (2026-10-21,
+`shutdown_cron` in variables.tf). For an hour outside the window, don't widen
+it: **Actions → Power → wake** (`.github/workflows/power.yml`) runs the
+startup sweep now, and **sleep** runs the shutdown sweep. A woken platform
+stays up until the next 22:00 sweep unless it is put back to sleep.
 
 The switch is a Terraform variable:
 
@@ -313,8 +321,7 @@ and `terraform/power.tf` carries the full reasoning. The short version is that
   and it wakes up, bills a day of compute, and sleeps again, repeatedly, with
   nothing reporting it.
 
-The nightly sweeps are still the right tool for a fifteen-and-a-half-hour
-window. They are not an off switch for a week.
+The nightly sweeps are still the right tool for an eleven-hour window. They are not an off switch for a week.
 
 **Your data survives.** Nothing holding state is gated: S3 (the corpus), EFS
 (the Qdrant index and Redis AOF), ECR, Secrets Manager and the CloudWatch log
@@ -1204,9 +1211,9 @@ lets the suppressor go before the startup sweep fires, so `octane-dead-air`
 pages about five minutes before the platform has been asked to start.
 America/Vancouver no longer has that night: British Columbia's 2026-03-08
 spring forward was its last clock change (tz database 2026b), so every night
-is the schedule's 15h30m. Set the slack to 60 for a `maintenance_timezone`
+is the schedule's eleven hours. Set the slack to 60 for a `maintenance_timezone`
 that still observes DST. The cost is then on every morning: a platform that
-never comes up is paged at about 10:25 rather than 09:25. `sweep-failed` and
+never comes up is paged at about 10:55 rather than 09:55. `sweep-failed` and
 `sweep-missing` read the sweep's own verdict and are not delayed either way.
 `test_crons_avoid_the_shutdown_window.py` measures the nights from the tz
 database and fails if the slack is short of the longest one, or longer.
