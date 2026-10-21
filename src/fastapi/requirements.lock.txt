@@ -376,7 +376,7 @@ pdfplumber==0.11.10
     # via georag-fastapi
 pikepdf==10.13.0.post1
     # via georag-fastapi
-pillow==12.3.0
+pillow==13.0.0
     # via
     #   georag-fastapi
     #   georag-geoparsers
