@@ -224,7 +224,7 @@ dependencies = [
     # Pillow: MIT-CMU — the actual image type pdf2image/pytesseract pass
     #   around, and what the oversized-scan tiling preprocessor is built on.
     #   Also undeclared before this pin (2026-07-29).
-    "Pillow>=12.3",
+    "Pillow>=13.0",
     # docling (and its onnxruntime-gpu dependency) removed 2026-07-29.
     # It powered §04p Phase 1.C-i layout region detection (GET
     # /pdf/find_legends, now also removed) plus optional OCR/table

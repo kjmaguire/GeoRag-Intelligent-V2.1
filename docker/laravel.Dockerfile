@@ -265,6 +265,20 @@ RUN { \
 # a dev workstation with 64 GB RAM. Adjust downward if running many replicas.
 RUN echo "memory_limit=512M" > /usr/local/etc/php/conf.d/memory.ini
 
+# PHP2Shell (CVE-2026-109618, CVE-2026-109619; 2026-10-21): two
+# unauthenticated RCEs fixed in PHP 8.5.12, while the digest above is 8.5.10
+# and Docker Hub had published no 8.5.12 image on the day. Each setting
+# closes one published exploit path and neither closes every variant, so
+# this is a stopgap, not the fix: the fix is re-pinning BOTH `FROM` lines to
+# an 8.5.12 digest, after which this block can go. Nothing in the app reads
+# upload progress (no upload_progress reference anywhere in app/, config/ or
+# resources/). The one cost is that a PHP fatal error's log line loses the
+# backtrace 8.5 adds to it; exceptions still log their own trace.
+RUN { \
+    echo "session.upload_progress.enabled=0"; \
+    echo "fatal_error_backtraces=0"; \
+} > /usr/local/etc/php/conf.d/php2shell-mitigation.ini
+
 WORKDIR /app
 
 # Copy application (vendor, built assets, and source) from builder.
