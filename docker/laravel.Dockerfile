@@ -35,6 +35,13 @@
 #               perl / perl-base / perl-modules-5.40 / libperl5.40 at
 #               5.40.1-6, fixed in 5.40.1-6+deb13u1. Re-pinned to the
 #               digest `php:8.5-cli` resolved to that day.
+#   2026-10-21  not a Trivy finding: PHP2Shell (CVE-2026-109618,
+#               CVE-2026-109619), unauthenticated RCEs in PHP itself, fixed
+#               in 8.5.12. The 2026-09-14 digest was PHP 8.5.10. Pinned to
+#               the `php:8.5.12-cli` index digest Docker Hub served after its
+#               18:59 UTC rebuild (amd64 image sha256:4c398f7e…, the same one
+#               `php:8.5-cli` served then). The tag names the patch version
+#               from here on, so a pin states which PHP it is.
 #
 # The 2026-09-14 re-pin did NOT clear the perl CVEs: the digest it moved
 # to is built on a Debian 13.6 snapshot that predates the
@@ -50,7 +57,7 @@
 # and a digest that does not clear the finding costs a full CI cycle to
 # discover. A base bump also moves the PHP patch version under the
 # application.
-FROM php:8.5-cli@sha256:a39fb299e915914e5d587baaca6c9c7a782b00235375ad33abd16bb2df529975 AS builder
+FROM php:8.5.12-cli@sha256:595a7cbb1e0547336319f228c4dc991c2a199350ab12b1c8fda05f73abd06e6b AS builder
 
 # Build-time system dependencies.
 # libpq-dev      → pdo_pgsql / pgsql extensions
@@ -184,7 +191,7 @@ RUN rm -rf node_modules
 # We re-install system packages and PHP extensions from scratch rather than
 # copying from builder; this keeps the runtime image clean and auditable.
 # -----------------------------------------------------------------------------
-FROM php:8.5-cli@sha256:a39fb299e915914e5d587baaca6c9c7a782b00235375ad33abd16bb2df529975 AS runtime
+FROM php:8.5.12-cli@sha256:595a7cbb1e0547336319f228c4dc991c2a199350ab12b1c8fda05f73abd06e6b AS runtime
 
 LABEL org.opencontainers.image.title="GeoRAG Laravel"
 LABEL org.opencontainers.image.description="Laravel 13 on Octane/Swoole — shared image for octane, horizon, reverb services"
@@ -266,11 +273,11 @@ RUN { \
 RUN echo "memory_limit=512M" > /usr/local/etc/php/conf.d/memory.ini
 
 # PHP2Shell (CVE-2026-109618, CVE-2026-109619; 2026-10-21): two
-# unauthenticated RCEs fixed in PHP 8.5.12, while the digest above is 8.5.10
-# and Docker Hub had published no 8.5.12 image on the day. Each setting
-# closes one published exploit path and neither closes every variant, so
-# this is a stopgap, not the fix: the fix is re-pinning BOTH `FROM` lines to
-# an 8.5.12 digest, after which this block can go. Nothing in the app reads
+# unauthenticated RCEs fixed in PHP 8.5.12. The fix is the 8.5.12 pin on both
+# `FROM` lines; these two settings were the stopgap shipped before an 8.5.12
+# image existed, each closing one published exploit path. They stay for the
+# first 8.5.12 deploy as a second layer and can go in a later change once
+# production is confirmed on 8.5.12. Nothing in the app reads
 # upload progress (no upload_progress reference anywhere in app/, config/ or
 # resources/). The one cost is that a PHP fatal error's log line loses the
 # backtrace 8.5 adds to it; exceptions still log their own trace.
