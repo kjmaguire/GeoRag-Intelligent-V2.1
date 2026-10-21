@@ -357,7 +357,7 @@ DB_STATE="$(aws rds describe-db-instances --db-instance-identifier "$DB_INSTANCE
 # These mirror the shutdown_cron and maintenance_timezone defaults in
 # terraform/variables.tf; tests/run.sh fails if they drift apart.
 MAINT_TZ="${ROTATE_MAINT_TZ:-America/Vancouver}"
-SHUTDOWN_AT="${ROTATE_SHUTDOWN_AT:-17:00}"
+SHUTDOWN_AT="${ROTATE_SHUTDOWN_AT:-22:00}"
 SHUTDOWN_GUARD="${ROTATE_SHUTDOWN_GUARD_MINUTES:-45}"
 
 # Minutes since local midnight. 10# because "08" and "09" are not octal.

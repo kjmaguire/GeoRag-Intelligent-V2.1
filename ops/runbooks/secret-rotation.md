@@ -139,7 +139,7 @@ new value — read
 and roll the secret back (put the old value, force-new-deployment again)
 before anything else.
 
-**Maintenance window.** RDS is stopped roughly 17:00–08:30
+**Maintenance window.** RDS is stopped roughly 22:00–09:00
 America/Vancouver by the nightly sweep (`ops/runbooks/aws-oncall.md` §0,
 `deploy/aws/scheduler/`). Nothing in this runbook that touches a database
 role works while the instance is stopped, and a service rolled during the

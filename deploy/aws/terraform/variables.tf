@@ -240,11 +240,10 @@ variable "db_backup_window" {
     Daily automated-backup window, UTC, "hh24:mi-hh24:mi" (at least 30 min).
 
     Must fall inside the hours the instance is RUNNING. The nightly sweep
-    stops it 17:00-08:30 America/Vancouver, so it runs 15:30-24:00 UTC under
-    PDT and 16:30-01:00 UTC under PST; the overlap valid all year is
-    16:30-24:00 UTC. The default, 17:00-17:30 UTC, is 10:00 PDT / 09:00 PST,
-    after the startup sweep has finished. Single-AZ, so expect a brief I/O
-    pause while the snapshot starts.
+    stops it 22:00-09:00 America/Vancouver, which has been UTC-7 all year
+    since 2026-03-08 (tz 2026b), so it runs 16:00-05:00 UTC. The default,
+    17:00-17:30 UTC, is 10:00 local, after the startup sweep has finished.
+    Single-AZ, so expect a brief I/O pause while the snapshot starts.
 
     Move it if you move `startup_cron` or `shutdown_cron`, and keep it clear
     of `db_maintenance_window` (RDS rejects an overlap).
@@ -265,7 +264,7 @@ variable "db_maintenance_window" {
     maintenance (including the minor-version upgrades
     `auto_minor_version_upgrade` opts into) never finds the instance up.
 
-    Default sun:18:00-sun:18:30 UTC = Sunday 11:00 PDT / 10:00 PST: the
+    Default sun:18:00-sun:18:30 UTC = Sunday 11:00 America/Vancouver: the
     platform is up (the sweeps run every day) and nobody is likely to be
     mid-query. A maintenance action can restart the instance for a few
     minutes — that is the trade for maintenance happening at all.
@@ -411,27 +410,31 @@ variable "shutdown_cron" {
     db.t4g.small, the difference is not marginal:
 
       24h/day   ~$240/month
-      17h/day   ~$173/month     <- what this used to be
-      8.5h/day   ~$93/month     <- what it is now
-       8h/day    ~$88/month     <- what it was earlier on 2026-09-16
+      17h/day   ~$173/month     <- the pre-2026-09-16 default
+      13h/day   ~$136/month     <- what it is now (09:00-22:00, 2026-10-21)
+      8.5h/day   ~$93/month     <- 08:30-17:00, 2026-09-16 to 2026-10-21
 
     against a $100/month promotional credit with no cash line behind it
-    (budget.tf). 17h/day overspent the credit by roughly 70% every month, for
-    a platform with no users yet. 8.5h/day fits inside it — the break-even is
-    about 9.4 hours a day — but the headroom is now about $7/month rather
-    than $12, so a second surprise does not fit. The extra half hour is on
-    `startup_cron`, which explains what it buys.
+    (budget.tf). The break-even is about 9.4 hours a day, so 13h/day
+    overspends the credit by roughly $36 a month. That is a deliberate choice
+    (Kyle, 2026-10-21): an evening of use is worth more than staying inside
+    the credit, and the wake workflow (.github/workflows/power.yml) covers the
+    occasional hour outside the window without widening it. Narrow the window
+    again here if the bill matters more than the evenings.
 
     Changing this changes nothing else by hand: the maintenance-window alarm
     in alerts.tf derives its period from these two expressions, so the dead-air
-    suppression follows automatically.
+    suppression follows automatically. Two things DO mirror it and have tests
+    that fail when they drift: deploy/aws/rotation/rotate-app-key.sh's
+    ROTATE_SHUTDOWN_AT, and the Hatchet and pg_cron schedules, which must all
+    finish before it (src/fastapi/tests/test_crons_avoid_the_shutdown_window.py).
   EOT
   type        = string
-  default     = "cron(0 17 * * ? *)"
+  default     = "cron(0 22 * * ? *)"
 
   validation {
     condition     = can(regex("^cron\\([0-9]{1,2} [0-9]{1,2} ", var.shutdown_cron))
-    error_message = "shutdown_cron must fire at one fixed minute and one fixed hour, e.g. \"cron(30 8 * * ? *)\". scheduler.tf reads both fields with tonumber() to derive the maintenance window's length, and a \"*/15\" or \"8,9\" there is either a plan error or a silently wrong alert-suppression period."
+    error_message = "shutdown_cron must fire at one fixed minute and one fixed hour, e.g. \"cron(0 22 * * ? *)\". scheduler.tf reads both fields with tonumber() to derive the maintenance window's length, and a \"*/15\" or \"8,9\" there is either a plan error or a silently wrong alert-suppression period."
   }
 }
 
@@ -440,41 +443,35 @@ variable "startup_cron" {
     Local-time cron for the startup sweep, in `maintenance_timezone`. See
     `shutdown_cron` for what the window costs.
 
-    08:30-17:00 is a working day, chosen deliberately over the wider window
-    it replaces. The platform is DOWN outside it — not degraded, destroyed to
-    the power flag's keep-list — so pick hours you will actually be at the
-    keyboard. Coming back up takes about fifteen minutes.
+    09:00-22:00 (since 2026-10-21; 08:30-17:00 before). The platform is DOWN
+    outside it — not degraded, scaled to zero with RDS stopped — so pick
+    hours you will actually be at the keyboard. Coming back up takes about
+    fifteen minutes. Outside the window, .github/workflows/power.yml runs
+    this same sweep on demand.
 
-    THE HALF HOUR IS NOT COSMETIC. This sweep is scheduled in local time and
-    Hatchet crons are UTC, so the window's UTC position moves with DST. At
-    09:00 local — where this sat for part of 2026-09-16 — the PST half of the
-    year started the platform at 17:00 UTC exactly, which is the
-    same instant as four Hatchet crons that fire at `0 17 * * *`
+    THE START HAS TO LEAD THE FIRST HATCHET CRON. This sweep is scheduled in
+    local time and Hatchet crons are UTC. Four of them fire at `0 17 * * *`
     (`audit_ledger_verify`, `nightly_ingestion_integrity`,
-    `tenant_isolation_audit`, `what_changed_weekly`) and minutes before two
-    more. RDS has not started at that instant and the Hatchet engine that
-    creates cron runs does not exist yet, so those ticks would not have been
-    late — they would have been lost, every day from November to March, with
-    no run, no failure and no alarm to say so.
+    `tenant_isolation_audit`, `what_changed_weekly`). A start AT 17:00 UTC
+    loses those ticks rather than delaying them: RDS has not started and the
+    Hatchet engine that creates cron runs does not exist yet, so there is no
+    run, no failure and no alarm. That is what 09:00 did in PST until it moved
+    to 08:30 on 2026-09-16.
 
-    08:30 puts the PST start at 16:30 UTC and gives the sweep thirty minutes
-    before the first tick. It was chosen over re-slotting the crons because
-    the staggers between them carry the meaning (the shadow aggregate 15 min
-    behind the audit verify, the JWT key reaper 2h behind it), and moving
-    twenty crons to protect four is the larger change.
-
-    THIRTY MINUTES IS AN ESTIMATE, NOT A MEASUREMENT. Nothing has been
-    deployed on this account, so the dominant term — RDS cold start, ahead of
-    tier 1 reaching `services-stable` — has never been observed here. If a
-    morning sweep is ever seen finishing after 17:00 UTC in PST, move this
-    number, not the crons.
+    It is safe at 09:00 again because America/Vancouver no longer changes
+    its clocks (tz 2026b: UTC-7 all year since 2026-03-08), so 09:00 is
+    16:00 UTC every day and the sweep has an hour before the first tick.
+    test_crons_avoid_the_shutdown_window.py measures ten years of the tz
+    database and fails if that head start drops under thirty minutes. A
+    `maintenance_timezone` that still observes DST puts 09:00 on 17:00 UTC
+    half the year; use 08:30 there.
   EOT
   type        = string
-  default     = "cron(30 8 * * ? *)"
+  default     = "cron(0 9 * * ? *)"
 
   validation {
     condition     = can(regex("^cron\\([0-9]{1,2} [0-9]{1,2} ", var.startup_cron))
-    error_message = "startup_cron must fire at one fixed minute and one fixed hour, e.g. \"cron(30 8 * * ? *)\". scheduler.tf reads both fields with tonumber() to derive the maintenance window's length, and a \"*/15\" or \"8,9\" there is either a plan error or a silently wrong alert-suppression period."
+    error_message = "startup_cron must fire at one fixed minute and one fixed hour, e.g. \"cron(0 9 * * ? *)\". scheduler.tf reads both fields with tonumber() to derive the maintenance window's length, and a \"*/15\" or \"8,9\" there is either a plan error or a silently wrong alert-suppression period."
   }
 }
 

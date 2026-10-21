@@ -119,11 +119,11 @@ CREATE EXTENSION IF NOT EXISTS pg_cron;
 -- unambiguously on a second run of this file.
 --
 -- WHEN IT RUNS. pg_cron schedules in GMT (data.tf does not set cron.timezone)
--- and the instance is STOPPED 17:00-08:30 America/Vancouver (variables.tf):
--- 00:00-15:30 UTC in PDT, 01:00-16:30 UTC in PST. This job was '0 3 * * *' --
--- 03:00 UTC, inside that span in both halves of the year -- and pg_cron does
--- not run a job it missed, so it never ran once. 18:45 UTC is 11:45 PDT /
--- 10:45 PST: well after the startup sweep, clear of the daily backup window
+-- and the instance is STOPPED 22:00-09:00 America/Vancouver (variables.tf),
+-- which is 05:00-16:00 UTC now that Vancouver stays at UTC-7. This job was
+-- '0 3 * * *' -- 03:00 UTC, inside the 17:00-08:30 window of the time in both
+-- halves of the year -- and pg_cron does not run a job it missed, so it never
+-- ran once. 18:45 UTC is 11:45 local: well after the startup sweep, clear of the daily backup window
 -- (17:00-17:30 UTC) and the Sunday maintenance window (18:00-18:30 UTC), and
 -- between the Hatchet crons that cluster on :00, :15 and :30. A test reads
 -- the statement below (src/fastapi/tests/test_crons_avoid_the_shutdown_window.py)

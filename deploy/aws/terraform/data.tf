@@ -208,7 +208,7 @@ resource "aws_db_instance" "this" {
   # Both windows inside the hours the instance is actually RUNNING (audit
   # AWS-13, 2026-09-29). Left unset, RDS picks a random 30-minute backup
   # window and weekly maintenance window per region — and this instance is
-  # stopped 17:00-08:30 America/Vancouver every night, so a window that lands
+  # stopped 22:00-09:00 America/Vancouver every night, so a window that lands
   # there never finds the instance up. See the two variables for the UTC
   # arithmetic.
   backup_window      = var.db_backup_window

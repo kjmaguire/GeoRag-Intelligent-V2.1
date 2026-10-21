@@ -310,12 +310,12 @@ assert_says "rotation.tf"
 done_case
 
 # --- the nightly shutdown sweep --------------------------------------------
-# It scales every service to zero and stops RDS at 17:00 America/Vancouver,
+# It scales every service to zero and stops RDS at 22:00 America/Vancouver,
 # and does not look for a rotation in progress. A rotation caught by it loses
 # its database mid-restore, which is the one state no key reads. So the script
 # refuses to start within 45 minutes of it, on either side, by the clock in the
 # maintenance timezone.
-run_outer outer_refuses_to_start_just_before_the_shutdown_sweep FAKE_NOW=16:30 -- --apply
+run_outer outer_refuses_to_start_just_before_the_shutdown_sweep FAKE_NOW=21:30 -- --apply
 assert_rc 1
 assert_aws_not_called "register-task-definition"
 assert_aws_not_called "create-db-snapshot"
@@ -325,9 +325,9 @@ assert_aws_not_called "run-task"
 assert_says "30 minutes before the nightly shutdown sweep"
 done_case
 
-# After 17:00 the sweep is still working, and RDS has not stopped yet, so the
+# After 22:00 the sweep is still working, and RDS has not stopped yet, so the
 # database check alone would let this through.
-run_outer outer_refuses_to_start_while_the_shutdown_sweep_is_running FAKE_NOW=17:20 -- --apply
+run_outer outer_refuses_to_start_while_the_shutdown_sweep_is_running FAKE_NOW=22:20 -- --apply
 assert_rc 1
 assert_aws_not_called "create-db-snapshot"
 assert_aws_not_called "update-service"
@@ -335,16 +335,16 @@ assert_says "20 minutes after the nightly shutdown sweep"
 done_case
 
 # The edges: the guard's full width clear is allowed, one minute inside it is not.
-run_outer outer_allows_exactly_45_minutes_before_the_sweep FAKE_NOW=16:15 -- --apply
+run_outer outer_allows_exactly_45_minutes_before_the_sweep FAKE_NOW=21:15 -- --apply
 assert_rc 0
 done_case
 
-run_outer outer_refuses_44_minutes_before_the_sweep FAKE_NOW=16:16 -- --apply
+run_outer outer_refuses_44_minutes_before_the_sweep FAKE_NOW=21:16 -- --apply
 assert_rc 1
 assert_aws_not_called "create-db-snapshot"
 done_case
 
-run_outer outer_allows_exactly_45_minutes_after_the_sweep FAKE_NOW=17:45 -- --apply
+run_outer outer_allows_exactly_45_minutes_after_the_sweep FAKE_NOW=22:45 -- --apply
 assert_rc 0
 done_case
 
@@ -358,10 +358,11 @@ done_case
 # "08" and "09" are not valid octal: $((09 * 60)) is a bash error, and a
 # comparison against the empty result is quietly false -- which reads as "far
 # from the sweep". So the case asserts the NUMBER the guard computed, not just
-# that it let the run through: 09:08 is 548, the sweep is 1020, 472 apart.
+# that it let the run through: 09:08 is 548 and the sweep is 1320, so it is
+# 668 minutes after the previous night's.
 run_outer outer_two_digit_times_are_not_read_as_octal FAKE_NOW=09:08
 assert_rc 0
-assert_says "472 minutes before it"
+assert_says "668 minutes after it"
 done_case
 
 run_outer outer_reads_the_clock_in_the_maintenance_timezone -- --apply
@@ -370,8 +371,8 @@ grep -qx "America/Vancouver" "${STATE}/date.tz" 2>/dev/null \
   || fail_case "the clock was not read in America/Vancouver"
 done_case
 
-# A dry run that passed at 16:50 would promise something --apply then refuses.
-run_outer outer_a_dry_run_refuses_too_so_the_plan_is_not_a_false_promise FAKE_NOW=16:50
+# A dry run that passed at 21:50 would promise something --apply then refuses.
+run_outer outer_a_dry_run_refuses_too_so_the_plan_is_not_a_false_promise FAKE_NOW=21:50
 assert_rc 1
 assert_says "nightly shutdown sweep"
 done_case
@@ -670,7 +671,7 @@ jq --arg k "$NEW_KEY" '.APP_KEY_NEXT = $k
 printf '0' > "${STATE}/desired.laravel-octane"
 printf '0' > "${STATE}/desired.laravel-horizon"
 OUT="$(env PATH="${WORK}/bin:${PATH}" FAKE_AWS_LOG="${STATE}/aws.log" FAKE_AWS_STATE="${STATE}" \
-      FAKE_NOW=16:50 \
+      FAKE_NOW=21:50 \
       ROTATE_SUBNETS=subnet-a ROTATE_SECURITY_GROUP=sg-a ROTATE_WAIT_TRIES=2 ROTATE_WAIT_INTERVAL=0 \
       bash "$OUTER" --finish 2>&1)"; RC=$?
 assert_rc 0

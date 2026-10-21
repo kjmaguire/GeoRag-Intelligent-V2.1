@@ -110,12 +110,12 @@ pool; today it is dormant. `python -m app.hatchet_workflows.worker --list`
 prints the names without connecting. Crons are UTC.
 
 Every fixed-hour slot below sits between 17:00 and 22:30 UTC. That is not a
-preference: since 2026-09-16 the EventBridge sweeps
-(`deploy/aws/terraform/scheduler.tf`) run the platform 08:30-17:00
-America/Vancouver, which closes 00:00-16:30 UTC once both sides of a DST
-boundary are taken as closed — and the half hour from 16:30 to 17:00 is the
-startup sweep's own head start, not open time, which is why 17:00 is the
-earliest slot anything uses. A cron outside that band does not run late, it
+preference: since 2026-10-21 the EventBridge sweeps
+(`deploy/aws/terraform/scheduler.tf`) run the platform 09:00-22:00
+America/Vancouver (08:30-17:00 from 2026-09-16), which is UTC-7 all year
+since British Columbia's last clock change and so closes 05:00-16:00 UTC —
+and the half hour after 16:00 is the startup sweep's own head start, not
+open time. 17:00 is the earliest slot anything uses. A cron outside that band does not run late, it
 does not run -- `src/fastapi/tests/test_crons_avoid_the_shutdown_window.py`
 derives the span from the Terraform and fails the build. The relative
 staggers (audit verify, then the shadow aggregate 15 minutes behind it, and
@@ -156,7 +156,7 @@ three times and will move again.
 | `verbalize_page_images` | `20 * * * *` | Inert unless `IMAGE_VERBALIZATION_ENABLED`; returns before touching Postgres |
 | `qdrant_payload_audit` | `0 * * * *` | Guard 2 payload-shape audit; fail-open when Qdrant is unreachable (§7) |
 | `answer_quality_watch` | `30 21 * * *` | Yesterday's refusal / guard-fire / zero-evidence / confidence signals vs the trailing week; feeds the `answer-quality-regression` alert |
-| `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage); 2 h budget so it ends 23:45, before the 00:00 UTC PDT stop (HAT-14) |
+| `enrich_passage_context` | `45 21 * * *` | Contextual-retrieval headers (one LLM call per passage); 2 h budget so it ends 23:45 (HAT-14, set against the 00:00 UTC stop of the time; the stop is 05:00 UTC since 2026-10-21) |
 | `model_cost_summary_run` | `0 22 * * *` | Phase 0 agent |
 | `continuous_learning_loop` | `30 22 * * *` | Retraining-readiness check: counts new `targeting.target_outcomes` and citations per workspace (scope bound per workspace), flags `train_target_model` / `train_source_trust` as pending, writes one audit anchor. No LLM, embed, rerank or Parse call and spawns nothing, which is why it may run unattended; 30 min budget ends 23:00. Declared "daily cron" in its docstring for months while having no `on_crons`; scheduled 2026-09-29 (HAT-13) |
 | `what_changed_weekly` | `0 17 * * 1` | Fans `what_changed_detector` across active workspaces |
@@ -335,8 +335,8 @@ Two schedules, defined in
 
 | Schedule | Cron | Timezone | Runs |
 |---|---|---|---|
-| `georag-shutdown` | `cron(0 17 * * ? *)` | `America/Vancouver` | RunTask `georag-shutdown-sweep` |
-| `georag-startup` | `cron(30 8 * * ? *)` | `America/Vancouver` | RunTask `georag-startup-sweep` |
+| `georag-shutdown` | `cron(0 22 * * ? *)` | `America/Vancouver` | RunTask `georag-shutdown-sweep` |
+| `georag-startup` | `cron(0 9 * * ? *)` | `America/Vancouver` | RunTask `georag-startup-sweep` |
 
 **One fire each.** EventBridge Scheduler takes an IANA timezone, so the
 Azure-era mechanism — both candidate UTC hours, with an in-script DST guard
@@ -347,9 +347,11 @@ checker that kept cron and guard agreeing is gone too, and by construction:
 Terraform reads the reviewed script with `file()`, so there is one copy
 rather than a reviewed file and a pasted `args` block that can drift.
 
-The window is therefore **17:00–08:30 US/Canada Pacific**, which in UTC is
-00:00–15:30 (PDT) or 01:00–16:30 (PST). This paragraph and the table above
-described 23:00–06:00 `America/Los_Angeles` until 2026-09-16 — the schedule
+The window is therefore **22:00–09:00 America/Vancouver**, which is
+05:00–16:00 UTC every day: Vancouver has stayed at UTC-7 since 2026-03-08
+(tz 2026b). From 2026-09-16 to 2026-10-21 it was 17:00–08:30. This paragraph
+and the table above described 23:00–06:00 `America/Los_Angeles` until
+2026-09-16 — the schedule
 this chapter's §2.2 preamble had already been re-pointed off, so the chapter
 disagreed with itself about the one thing that decides whether any cron runs
 at all. `src/fastapi/tests/test_cron_doc_parity.py` now reads this table and
@@ -358,10 +360,16 @@ its other two checks could see a row shaped like this one.
 
 **The startup sweep firing is not the platform being up.** It starts RDS,
 waits for it, then brings tier 1 (including the Hatchet engine that creates
-cron runs) to `services-stable`. `startup_cron` sits at 08:30 rather than
-09:00 specifically to put thirty minutes between that fire and the 17:00 UTC
-crons, which in PST would otherwise share its exact instant; `variables.tf`
-carries the reasoning and the ~$5/month it costs.
+cron runs) to `services-stable`. `startup_cron` fires at 16:00 UTC, an hour
+ahead of the 17:00 UTC crons. It sat at 08:30 from 2026-09-16 because 09:00
+was 17:00 UTC exactly in PST — those crons' own instant — and it could go
+back to 09:00 only because Vancouver no longer has a PST.
+`test_crons_avoid_the_shutdown_window.py` reads the offsets from the tz
+database and fails if the head start drops under thirty minutes.
+
+Outside the window, `.github/workflows/power.yml` runs either sweep on
+demand: `wake` brings the platform up for an evening, `sleep` puts it back
+before the scheduled stop.
 
 The scheduler task role is scoped to the actions the sweeps take; the Azure
 jobs held Contributor over the whole resource group until two cron runs
@@ -374,8 +382,8 @@ What the window does to orchestration:
   `could not poll cron schedules` and the worker retries its heartbeat until
   the database returns.
 - The fixed-hour block at 17:00–22:30 sits outside it. Still inside:
-  `index_health_check` at 06:00 and 12:00 (its 00:00 tick lands inside in PDT
-  and outside in PST, and its 18:00 tick is always outside), most ticks of
+  `index_health_check` at 06:00 and 12:00 (its 00:00 and 18:00 ticks are
+  outside), most ticks of
   `qdrant_payload_audit` and `verbalize_page_images`, and every tick of the
   minute-, 5-, 10- and 15-minute crons.
 - **`hatchet-worker` now genuinely stops** (`desired-count 0`). On Azure
@@ -408,10 +416,10 @@ What the window does to orchestration:
 | every 15 min | `stale_run_detector` |
 | :00 hourly | `qdrant_payload_audit`; `index_health_check` at 00/06/12/18 |
 | :20 hourly | `verbalize_page_images` (inert unless enabled) |
-| 00:00 (PDT) / 01:00 (PST) | shutdown sweep — one fire, timezone-scheduled |
+| 05:00 | shutdown sweep (22:00 America/Vancouver) — one fire, timezone-scheduled |
 | 05:17 | GitHub Actions `eval-gate` |
 | 06:40 Sun | GitHub Actions `coverage` |
-| 15:30 (PDT) / 16:30 (PST) | startup sweep — one fire, timezone-scheduled |
+| 16:00 | startup sweep (09:00 America/Vancouver) — one fire, timezone-scheduled |
 | 17:00 | `audit_ledger_verify`, `nightly_ingestion_integrity` pass 1, `tenant_isolation_audit` |
 | 17:00 Mon | `what_changed_weekly` |
 | 17:15 | `repair_shadow_aggregate` |

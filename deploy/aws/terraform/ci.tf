@@ -33,7 +33,8 @@
 #     those secrets and read them back through logs:GetLogEvents.
 #   * nothing that runs on a PR or a branch uses it. Its only callers are
 #     cd.yml (workflow_run on main, or dispatch), run-seeder.yml,
-#     project-diagnostics.yml and parse-comparison.yml (dispatch only). PR CI
+#     project-diagnostics.yml, parse-comparison.yml and power.yml (dispatch
+#     only). PR CI
 #     (ci.yml, docker-build.yml) never assumes it — docker-build's
 #     id-token:write is for SBOM attestation, not AWS.
 #
@@ -202,7 +203,18 @@ data "aws_iam_policy_document" "github_deploy" {
     # pass, so this was never caught by terraform plan/apply or by the
     # earlier build jobs -- only by a real RegisterTaskDefinition call for
     # one of those four services during "Deploy services".
-    resources = [aws_iam_role.execution.arn, aws_iam_role.task.arn, aws_iam_role.stores.arn]
+    #
+    # scheduler_task since 2026-10-21, for .github/workflows/power.yml: its
+    # wake/sleep runs the two sweep task definitions, which carry that role.
+    # What it adds is rds:StartDBInstance/StopDBInstance on this one instance,
+    # through the sweep scripts; this role could already scale every service
+    # (EcsRollOwnServices above), so stopping the platform is not new to it.
+    resources = [
+      aws_iam_role.execution.arn,
+      aws_iam_role.task.arn,
+      aws_iam_role.stores.arn,
+      aws_iam_role.scheduler_task.arn,
+    ]
   }
 
   statement {

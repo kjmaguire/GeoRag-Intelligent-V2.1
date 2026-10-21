@@ -90,8 +90,9 @@ what_changed_weekly = hatchet.workflow(
     # sweep scaling hatchet-worker-cc to zero at both DST candidate hours.
     # ADR-0022 retired all of that on 2026-09-08: shutdown-sweep.sh now scales
     # every ECS service to --desired-count 0 on ONE timezone-aware EventBridge
-    # schedule, and since 2026-09-16 the window is 08:30-17:00 Pacific, closing
-    # 00:00-16:30 UTC. See tests/test_crons_avoid_the_shutdown_window.py, which
+    # schedule, and since 2026-10-21 the platform runs 09:00-22:00 Pacific,
+    # closed 05:00-16:00 UTC (08:30-17:00, closed 00:00-16:30, from
+    # 2026-09-16). See tests/test_crons_avoid_the_shutdown_window.py, which
     # derives that span from the Terraform rather than from this comment.
     on_crons=["0 17 * * 1"],  # Mondays at 17:00 UTC
 )
