@@ -144,7 +144,14 @@ ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 
 # uv — fast Python package manager used for dependency installation.
-RUN pip install --no-cache-dir uv
+#
+# pip is upgraded in the same step because the base image's pip vendors its
+# own certifi (pip/_vendor/certifi), outside every lockfile. On 2026-10-21
+# Trivy failed the CRITICAL gate on that copy (2026.6.17, GHSA-6q48-6c7w-9gw2:
+# distrusted emSign roots); pip 26.2.2 vendors 2026.10.19. The runtime stage
+# upgrades to the SAME version before it copies this site-packages over its
+# own, so the base's older pip-*.dist-info is not left behind under it.
+RUN pip install --no-cache-dir "pip==26.2.2" uv
 
 WORKDIR /app
 
@@ -566,7 +573,12 @@ ENV HF_HOME=/opt/hf_cache \
 #
 # We do NOT copy the builder's system libraries (under /usr/lib, /usr/include)
 # because the runtime stage installs its own matching .so files above via apt.
+#
+# pip first, at the builder's version (see the uv step there): the COPY below
+# overlays site-packages rather than replacing it, so a different base pip
+# would leave its own dist-info, and a vendored certifi Trivy flags, behind.
 # ---------------------------------------------------------------------------
+RUN pip install --no-cache-dir "pip==26.2.2"
 COPY --from=builder /usr/local/lib/python3.13/site-packages \
                     /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin \
