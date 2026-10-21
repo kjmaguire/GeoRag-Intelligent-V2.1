@@ -370,12 +370,24 @@ data "aws_iam_policy_document" "scheduler" {
     # document is not — the role is free and keeping it stable across power
     # cycles avoids churning its trust relationship — so the resource list
     # degrades to a non-matching ARN rather than to [], which is invalid.
-    resources = coalescelist(compact([
-      try(one(aws_ecs_task_definition.shutdown_sweep).arn_without_revision, ""),
-      try(one(aws_ecs_task_definition.startup_sweep).arn_without_revision, ""),
-      # The daily Hatchet token check (scheduler.tf, audit AWS-12). It runs
-      # with the execution role only, which PassRole below already covers.
-      try(one(aws_ecs_task_definition.token_check).arn_without_revision, ""),
+    #
+    # EACH FAMILY TWICE, bare and `:*` (2026-10-21). The schedules name the
+    # family without a revision so they always run the latest one, but ECS
+    # authorises RunTask against the REVISIONED ARN it resolves to
+    # (task-definition/<family>:<n>), which a bare family ARN does not match.
+    # With only the bare form, every scheduled sweep was denied at launch and
+    # left no log at all: the platform ran through every "maintenance window"
+    # from at least 2026-09-29 (CD passed its database and services-up gates
+    # at 02:00-10:00 UTC that day, 03:14 UTC on 10-06, 00:45 UTC on 10-21).
+    # The deploy role never hit this because it is granted `georag-*`.
+    resources = coalescelist(flatten([
+      for arn in compact([
+        try(one(aws_ecs_task_definition.shutdown_sweep).arn_without_revision, ""),
+        try(one(aws_ecs_task_definition.startup_sweep).arn_without_revision, ""),
+        # The daily Hatchet token check (scheduler.tf, audit AWS-12). It runs
+        # with the execution role only, which PassRole below already covers.
+        try(one(aws_ecs_task_definition.token_check).arn_without_revision, ""),
+      ]) : [arn, "${arn}:*"]
     ]), ["arn:aws:ecs:::task-definition/none"])
     condition {
       test     = "ArnLike"

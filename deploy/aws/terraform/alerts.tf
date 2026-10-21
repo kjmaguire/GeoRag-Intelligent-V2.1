@@ -535,6 +535,31 @@ resource "aws_cloudwatch_metric_alarm" "sweep_missing" {
   depends_on = [aws_cloudwatch_log_metric_filter.sweep_complete]
 }
 
+# The rule above is satisfied by EITHER sweep's "sweep complete", so a
+# platform whose startup sweep works and whose shutdown sweep never runs (or
+# never finishes) passes it every day while running 24 hours a day: about
+# $240/month against the ~$136 the schedule is sized for. This one watches
+# the shutdown on its own (added 2026-10-21, with the scheduler role's
+# RunTask fix in iam.tf).
+resource "aws_cloudwatch_metric_alarm" "shutdown_missing" {
+  count = local.on
+
+  alarm_name        = "${local.name}-scheduler-shutdown-missing"
+  alarm_description = "No completed shutdown sweep in 25 hours: the platform is not being stopped at night and is billing around the clock. Check /ecs/${local.name}/scheduler for a shutdown/ stream; none at all means EventBridge could not launch the task (the scheduler role's ecs:RunTask), one ending INCOMPLETE means the sweep itself failed. Actions -> Power -> sleep stops it by hand."
+
+  namespace           = "GeoRAG/Markers"
+  metric_name         = "shutdown-sweep-complete"
+  statistic           = "Sum"
+  period              = 90000 # 25h — one full cycle plus an hour of slack
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = local.alarm_actions
+
+  depends_on = [aws_cloudwatch_log_metric_filter.shutdown_complete]
+}
+
 # ---------------------------------------------------------------------------
 # Public ingress
 # ---------------------------------------------------------------------------
