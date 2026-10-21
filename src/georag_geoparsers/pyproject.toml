@@ -25,7 +25,7 @@ dependencies = [
     # Undeclared until 2026-10-10: every test that reached it needed the
     # client delivery and skipped, so an install without Pillow went
     # unnoticed. Same floor as src/fastapi's.
-    "Pillow>=12.3",
+    "Pillow>=13.0",
 
     # Well logs.
     "lasio>=0.31",
