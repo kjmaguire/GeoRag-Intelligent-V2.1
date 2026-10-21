@@ -437,9 +437,9 @@ reference has not happened.
 
 | # | what | as run |
 |---|---|---|
-| 7a | Remove the Embed v4 rollback from Terraform: the `bedrock:InvokeModel` ARN for `var.bedrock_embed_model_id` (`iam.tf`), `BEDROCK_EMBED_MODEL_ID` and `BEDROCK_EMBED_DIMENSION` (`config.tf`), `variable "bedrock_embed_model_id"`; `embedding_backend` accepts only `cohere`, and `terraform.yml` no longer offers `bedrock`. Rerank 3.5 stays on Bedrock. | code PR opened 2026-10-19; merge pending Kyle |
-| 7b | `terraform.yml` action=plan, `embedding_backend=keep`, image tag pinned to what production runs; plan shown to Kyle | pending |
-| 7c | `terraform.yml` action=apply (Kyle approves the `production` environment gate) | pending |
+| 7a | Remove the Embed v4 rollback from Terraform: the `bedrock:InvokeModel` ARN for `var.bedrock_embed_model_id` (`iam.tf`), `BEDROCK_EMBED_MODEL_ID` and `BEDROCK_EMBED_DIMENSION` (`config.tf`), `variable "bedrock_embed_model_id"`; `embedding_backend` accepts only `cohere`, and `terraform.yml` no longer offers `bedrock`. Rerank 3.5 stays on Bedrock. | [#353](https://github.com/kjmaguire/GeoRag-Intelligent-V2.1/pull/353), merged by Kyle 2026-10-21 00:17Z as `a23dd05`; CI and CD on it green (CD run 39521421057, ~00:45Z) |
+| 7b | `terraform.yml` action=plan, `embedding_backend=keep`, image tag pinned to what production runs; plan shown to Kyle | run 39523669767, 2026-10-21 00:49Z, image tag `a23dd05`: 22 to add, 8 to change, 14 to destroy. Besides step 7 (the task role's `bedrock:InvokeModel` now names only `cohere.rerank-v3-5:0`; every task definition drops the two `BEDROCK_EMBED_*` settings) it carried the unapplied Terraform of #335, #337 and #347: the Reverb dead-air alarm and its composite, three marker alarms, `/apps/*` off the Reverb listener rule, new sweep scripts, the deploy role's 2 h session. Shown to Kyle, who approved the apply. |
+| 7c | `terraform.yml` action=apply (Kyle approves the `production` environment gate) | run 39531310223: the re-plan matched 7b's change list exactly; Kyle approved the gate 2026-10-21 ~02:52Z; applied, and hatchet/qdrant/redis rolled onto their new task definitions; finished 03:04Z. |
 | 7d | `cd.yml`, so fastapi and hatchet-worker register task definitions without the two `BEDROCK_EMBED_*` settings | pending |
 | 7e | Delete `s3://georag-backups-046369253475/_ops/qdrant-snapshots/20261004T224003Z-before-embed5/`. The bucket is versioned, so the objects stay recoverable as noncurrent versions for 90 days. | pending |
 
