@@ -19,7 +19,7 @@ resolution-markers = [
 [manifest]
 constraints = [
     { name = "affine", specifier = "<3.0" },
-    { name = "anthropic", specifier = "<1.0" },
+    { name = "anthropic", specifier = "<2.0" },
     { name = "gunicorn", specifier = "<26.0" },
     { name = "logfire-api", specifier = "<5.0" },
     { name = "mypy", specifier = "<2.0" },
@@ -259,21 +259,21 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.125.0"
+version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "distro" },
     { name = "docstring-parser" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "jiter" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/f8/6f0560884b5363848347bd640b6c1d04abc25e7aa61787a232f790c6b60a/anthropic-0.125.0.tar.gz", hash = "sha256:e0cdd336580cb7411c1cdab69f80973e9bf4bff7f8e08141811d46307d45c682", size = 1112593, upload-time = "2026-08-19T22:00:42.837Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/66/4ec271f7607460005276bb09b0d1c749a9ed0cead35a488a8676f15ed6d5/anthropic-1.17.0.tar.gz", hash = "sha256:dcf77a74dde89a9fd12405fca798b012725a107f7c9488454234a74e275c2163", size = 1756371, upload-time = "2026-10-20T22:13:35.117Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/1a/b1bd30cda3790557e8791bec5922a6ec8fabb6fa8b008c76a39cf7be6152/anthropic-0.125.0-py3-none-any.whl", hash = "sha256:3486013602eca76d8b12540764e53654f02cf4951110bca86cf06e67428a9f21", size = 1184067, upload-time = "2026-08-19T22:00:44.596Z" },
+    { url = "https://files.pythonhosted.org/packages/98/9d/b4d4e46ec05bf19bcfd46c1417337e7cf42b9ecb95c3c63f295e2e9fee4b/anthropic-1.17.0-py3-none-any.whl", hash = "sha256:ccb98b85e1a14f81cf1e2ba348393f341f342bad9e07e014f96c9b69f853aaa7", size = 2094718, upload-time = "2026-10-20T22:13:32.585Z" },
 ]
 
 [[package]]

@@ -34,7 +34,7 @@ annotated-doc==0.0.5
     #   typer
 annotated-types==0.8.0
     # via pydantic
-anthropic==0.125.0
+anthropic==1.17.0
     # via
     #   georag-fastapi
     #   pydantic-ai-slim
@@ -116,7 +116,6 @@ deprecated==1.3.1
     # via limits
 distro==1.9.0
     # via
-    #   anthropic
     #   langsmith
     #   openai
 docstring-parser==0.18.0
@@ -187,7 +186,6 @@ httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via
-    #   anthropic
     #   georag-fastapi
     #   huggingface-hub
     #   langchain-core
@@ -199,6 +197,7 @@ httpx==0.28.1
     #   qdrant-client
 httpx2==2.13.0
     # via
+    #   anthropic
     #   genai-prices
     #   langsmith
 httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
@@ -326,6 +325,7 @@ openpyxl==3.1.5
     #   georag-geoparsers
 opentelemetry-api==1.44.0
     # via
+    #   anthropic
     #   langfuse
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
