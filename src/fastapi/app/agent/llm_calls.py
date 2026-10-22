@@ -1369,11 +1369,16 @@ async def _call_anthropic_llm(
     # ``text_delta`` to the callback and accumulate the final message via
     # ``get_final_message()`` so all the existing usage / thinking-block
     # telemetry still works unchanged.
+    #
+    # No temperature/top_p/top_k: anthropic SDK 1.x removed them from these
+    # methods (a TypeError), API version 2026-10-21 rejects them with a 400,
+    # and Claude 4.7+ models accept only the defaults anyway. ``temperature``
+    # stays in the signature because the backend dispatcher passes it to
+    # every transport; this one ignores it.
     if token_callback is not None:
         async with client.messages.stream(
             model=effective_model,
             max_tokens=settings.ANTHROPIC_MAX_OUTPUT_TOKENS,
-            temperature=temperature,
             system=system_blocks,  # type: ignore[arg-type]
             messages=messages_payload,
             extra_headers=extra_headers or None,
@@ -1394,7 +1399,6 @@ async def _call_anthropic_llm(
         msg = await client.messages.create(
             model=effective_model,
             max_tokens=settings.ANTHROPIC_MAX_OUTPUT_TOKENS,
-            temperature=temperature,
             system=system_blocks,  # type: ignore[arg-type]
             messages=messages_payload,
             extra_headers=extra_headers or None,

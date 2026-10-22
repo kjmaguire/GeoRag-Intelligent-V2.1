@@ -17,6 +17,10 @@ These tests pin the new behaviour:
 
   3. A broken ``token_callback`` (raises) MUST NOT break the LLM call —
      the stream consumes the chunks and returns the full text anyway.
+
+  4. Neither path sends ``temperature``, ``top_p`` or ``top_k``. anthropic
+     SDK 1.x removed them from ``messages.create``/``stream`` and API
+     version 2026-10-21 rejects them with a 400.
 """
 
 from __future__ import annotations
@@ -82,14 +86,17 @@ def _make_client_blocking(final_text: str):
 def _make_client_streaming(chunks: list[str], final_text: str):
     """New streaming path — messages.stream returns an async CM."""
     stream_cm = _FakeStream(chunks, final_text)
+    calls: list[dict] = []
 
     def _stream_factory(**kwargs):
         # messages.stream is invoked with kwargs and returns a context
         # manager directly (it's NOT an async def on the real SDK; it's
         # a helper that returns the context object synchronously).
+        calls.append(kwargs)
         return stream_cm
 
     return SimpleNamespace(
+        stream_calls=calls,
         messages=SimpleNamespace(
             stream=_stream_factory,
             create=AsyncMock(side_effect=AssertionError(
@@ -229,3 +236,39 @@ async def test_empty_chunks_are_skipped(_enable_anthropic):
     )
     assert received == ["real", "text"]
     assert out == "realtext"
+
+
+_SAMPLING_PARAMS = {"temperature", "top_p", "top_k"}
+
+
+@pytest.mark.asyncio
+async def test_blocking_create_sends_no_sampling_params(_enable_anthropic):
+    client = _make_client_blocking("ok")
+    await _call_anthropic_llm(
+        "ctx",
+        temperature=0.1,
+        client=client,
+        workspace_id=_ALLOWED_WORKSPACE_ID,
+        pg_pool=_permissive_pool(),
+    )
+    sent = client.messages.create.await_args.kwargs
+    assert not _SAMPLING_PARAMS & sent.keys(), sent.keys()
+
+
+@pytest.mark.asyncio
+async def test_stream_sends_no_sampling_params(_enable_anthropic):
+    client = _make_client_streaming(["ok"], "ok")
+
+    async def _ignore(_token: str) -> None:
+        return None
+
+    await _call_anthropic_llm(
+        "ctx",
+        temperature=0.1,
+        client=client,
+        token_callback=_ignore,
+        workspace_id=_ALLOWED_WORKSPACE_ID,
+        pg_pool=_permissive_pool(),
+    )
+    assert len(client.stream_calls) == 1
+    assert not _SAMPLING_PARAMS & client.stream_calls[0].keys(), client.stream_calls[0].keys()
