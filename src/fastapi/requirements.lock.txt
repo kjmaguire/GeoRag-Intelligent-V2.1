@@ -455,7 +455,7 @@ pyparsing==3.3.2
     #   ezdxf
     #   matplotlib
     #   rasterio
-pypdf==6.19.0
+pypdf==6.21.2
     # via georag-fastapi
 pypdfium2==5.13.0
     # via
