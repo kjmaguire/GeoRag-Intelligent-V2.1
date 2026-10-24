@@ -69,7 +69,7 @@ botocore==1.40.61
     #   s3transfer
 brotli==1.2.0 ; platform_python_implementation == 'CPython'
     # via fonttools
-brotlicffi==1.2.0.2 ; platform_python_implementation != 'CPython'
+brotlicffi==1.2.1.0 ; platform_python_implementation != 'CPython'
     # via fonttools
 cachetools==7.1.8
     # via georag-fastapi
