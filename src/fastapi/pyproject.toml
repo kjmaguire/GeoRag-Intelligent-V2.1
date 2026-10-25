@@ -44,7 +44,13 @@ dependencies = [
     # never touches pydantic_ai at all). Neither RunContext nor
     # ModelRetry moved/renamed in the V2 upgrade guide, so no call-site
     # changes were needed beyond the version bump itself.
-    "pydantic-ai-slim[anthropic,openai]>=2.0,<3.0",
+    # 2026-10-25 — extras dropped, floor raised to 2.61. Nothing here uses
+    # pydantic-ai's model integrations, so the [anthropic,openai] extras
+    # only pinned the SDKs: from 2.33 [anthropic] needs anthropic>=1.0, and
+    # from 2.59 [openai] needs openai>=3.26, past the openai<3.0 ceiling
+    # below. anthropic is a direct dependency; openai still arrives via
+    # langfuse; tiktoken, which only [openai] pulled in, is gone.
+    "pydantic-ai-slim>=2.61,<3.0",
     "pydantic-settings>=2.7",
     "asyncpg>=0.30.0",
     "redis>=7.0",
@@ -381,7 +387,7 @@ packages = ["app"]
 # only) lock refresh. Several deps above have no upper bound in their
 # constraint string (redis>=7.0, mypy>=1.15, sentence-transformers>=5.0,
 # anthropic>=0.100) and several more are transitive with no pin at all
-# (openai via langfuse/pydantic-ai-slim[openai], gunicorn/setuptools via
+# (openai via langfuse, gunicorn/setuptools via
 # grpcio-tools+torch, websockets/xxhash via langgraph-sdk/langsmith, affine
 # via rasterio, logfire-api via pydantic-graph). Without this table,
 # `uv lock --upgrade` freely crossed a major version on each of them

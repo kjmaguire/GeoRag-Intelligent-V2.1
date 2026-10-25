@@ -35,9 +35,7 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
     # via pydantic
 anthropic==1.17.0
-    # via
-    #   georag-fastapi
-    #   pydantic-ai-slim
+    # via georag-fastapi
 anyio==4.15.1
     # via
     #   anthropic
@@ -143,7 +141,7 @@ fsspec==2026.7.0
     # via
     #   huggingface-hub
     #   torch
-genai-prices==0.1.7
+genai-prices==0.1.13
     # via pydantic-ai-slim
 geopandas==1.1.4
     # via
@@ -192,14 +190,13 @@ httpx==0.28.1
     #   langfuse
     #   langgraph-sdk
     #   openai
-    #   pydantic-ai-slim
-    #   pydantic-graph
     #   qdrant-client
 httpx2==2.13.0
     # via
     #   anthropic
     #   genai-prices
     #   langsmith
+    #   pydantic-ai-slim
 httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
     # via httpx2
 huggingface-hub==1.31.0
@@ -316,9 +313,7 @@ numpy==2.5.3
     #   xgboost
     #   xgboost-cpu
 openai==2.54.0
-    # via
-    #   langfuse
-    #   pydantic-ai-slim
+    # via langfuse
 openpyxl==3.1.5
     # via
     #   georag-fastapi
@@ -430,11 +425,11 @@ pydantic==2.13.5
     #   pydantic-graph
     #   pydantic-settings
     #   qdrant-client
-pydantic-ai-slim==2.31.1
+pydantic-ai-slim==2.61.0
     # via georag-fastapi
 pydantic-core==2.46.5
     # via pydantic
-pydantic-graph==2.31.1
+pydantic-graph==2.61.0
     # via pydantic-ai-slim
 pydantic-settings==2.15.0
     # via
@@ -503,15 +498,12 @@ rasterio==1.5.1
 redis==7.4.1
     # via georag-fastapi
 regex==2026.9.10
-    # via
-    #   tiktoken
-    #   transformers
+    # via transformers
 requests==2.34.2
     # via
     #   langsmith
     #   opentelemetry-exporter-otlp-proto-http
     #   requests-toolbelt
-    #   tiktoken
 requests-toolbelt==1.0.0
     # via langsmith
 rich==15.0.0
@@ -566,8 +558,6 @@ tenacity==9.1.4
     #   langchain-core
 threadpoolctl==3.7.0
     # via scikit-learn
-tiktoken==0.14.0
-    # via pydantic-ai-slim
 tinycss2==1.5.1
     # via
     #   cssselect2
