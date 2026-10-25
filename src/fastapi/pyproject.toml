@@ -161,6 +161,11 @@ dependencies = [
     # ceiling was just this file's usual "pin to current major" habit,
     # not a real compatibility constraint — nothing here found needing it.
     "cryptography>=50.0,<51",
+    # 2026-10-25: Trivy CRITICAL in the fastapi image.
+    #   brotli             GHSA-9v8h-qqgm-4m35 (decoder OOB write)   fix 1.2.1
+    # Transitive via fonttools (matplotlib), CPython only; the PyPy
+    # branch uses brotlicffi, which the advisory does not name.
+    "brotli>=1.2.1; platform_python_implementation == 'CPython'",
     # §04p Phase 1.A — PDF Ingestion Subsystem
     # pikepdf: MPL-2.0 (weak copyleft scoped to pikepdf itself only; does not
     #   affect GeoRAG's proprietary code per §04p license-posture note).
