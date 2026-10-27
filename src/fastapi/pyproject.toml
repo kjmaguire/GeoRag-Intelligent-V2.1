@@ -405,11 +405,14 @@ packages = ["app"]
 # `uv lock --upgrade` silently re-cross these majors. Revisit each ceiling
 # deliberately (and bump it) when a genuine major upgrade is evaluated.
 constraint-dependencies = [
-    # <2.0 (was <1.0 until 2026-10-22): 1.x moved to httpx2 and removed
-    # temperature/top_p/top_k from messages.create/stream, which
-    # _call_anthropic_llm no longer sends. 2.0 switches the API version to
-    # 2026-10-21 and needs a live call with a key before it is raised.
-    "anthropic<2.0",
+    # <3.0 (was <1.0 until 2026-10-22, <2.0 until 2026-10-27). 1.x moved
+    # to httpx2 and removed temperature/top_p/top_k from messages.create/
+    # stream, which _call_anthropic_llm no longer sends. 2.x sends API
+    # version 2026-10-21 (sampling params are a 400 there), sends the key
+    # as `Authorization: Bearer` instead of `X-Api-Key`, and is Apache-2.0
+    # instead of MIT. The client is built with api_key alone and messages
+    # are plain dicts, so none of 2.x's other changes reach this code.
+    "anthropic<3.0",
     "gunicorn<26.0",
     # <84: 83.0 fixes PYSEC-2026-3447 (2026-09-29). 82 removed
     # pkg_resources; nothing here needs it (grpc_tools imports it only on
