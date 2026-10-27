@@ -126,7 +126,7 @@ ezdxf==1.4.4
     # via georag-geoparsers
 fastapi==0.141.1
     # via georag-fastapi
-filelock==3.32.7
+filelock==4.2.1
     # via
     #   huggingface-hub
     #   torch
