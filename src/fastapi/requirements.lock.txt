@@ -320,7 +320,7 @@ openpyxl==3.1.5
     # via
     #   georag-fastapi
     #   georag-geoparsers
-opentelemetry-api==1.44.0
+opentelemetry-api==1.45.1
     # via
     #   anthropic
     #   langfuse
