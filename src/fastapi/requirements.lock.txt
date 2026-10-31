@@ -249,7 +249,7 @@ langdetect==1.0.9
     # via georag-fastapi
 langfuse==3.15.0
     # via georag-fastapi
-langgraph==1.2.11
+langgraph==1.2.19
     # via georag-fastapi
 langgraph-checkpoint==4.2.0
     # via
